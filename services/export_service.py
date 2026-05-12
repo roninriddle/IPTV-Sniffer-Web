@@ -103,7 +103,7 @@ class ExportService:
         if not channels:
             raise ValueError("没有填写任何频道名称，未生成输出文件")
         http_host = str(settings.get("http_host", "")).strip()
-        http_port = int(settings.get("http_port", 8686))
+        http_port = int(settings.get("http_port", 5140))
         path_mode = str(settings.get("path_mode", "rtp")).strip().lower()
         if path_mode not in {"rtp", "udp"}:
             path_mode = "rtp"

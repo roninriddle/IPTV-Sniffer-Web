@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.5.2"
-APP_DESCRIPTION = "IPTV 组播频道抓包、整理与 rtp2http 播放列表生成工具"
+APP_VERSION = "0.5.3"
+APP_DESCRIPTION = "IPTV 组播频道抓包、整理与 rtp2httpd 播放列表生成工具"
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR / "data"))).resolve()
@@ -21,8 +21,8 @@ WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8787"))
 WAITRESS_THREADS = int(os.environ.get("WAITRESS_THREADS", "6"))
 
-DEFAULT_RTP2HTTP_HOST = os.environ.get("RTP2HTTP_HOST", "")
-DEFAULT_RTP2HTTP_PORT = int(os.environ.get("RTP2HTTP_PORT", "8686"))
+DEFAULT_RTP2HTTP_HOST = os.environ.get("RTP2HTTPD_HOST", os.environ.get("RTP2HTTP_HOST", ""))
+DEFAULT_RTP2HTTP_PORT = int(os.environ.get("RTP2HTTPD_PORT", os.environ.get("RTP2HTTP_PORT", "5140")))
 DEFAULT_PATH_MODE = os.environ.get("PATH_MODE", "rtp")
 DEFAULT_CAPTURE_SECONDS = int(os.environ.get("CAPTURE_SECONDS", "30"))
 MAX_TIMED_CAPTURE_SECONDS = int(os.environ.get("MAX_TIMED_CAPTURE_SECONDS", "3600"))

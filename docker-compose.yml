@@ -1,7 +1,7 @@
 services:
   iptv-sniffer-web:
     build: .
-    image: iptv-sniffer-web:0.5.2
+    image: iptv-sniffer-web:0.5.3
     container_name: iptv-sniffer-web
     network_mode: host
     cap_add:
@@ -14,7 +14,7 @@ services:
       WEB_HOST: 0.0.0.0
       WEB_PORT: 8787
       WAITRESS_THREADS: 6
-      RTP2HTTP_PORT: 8686
+      RTP2HTTPD_PORT: 5140
       CAPTURE_SECONDS: 30
       MAX_TIMED_CAPTURE_SECONDS: 3600
       MIN_PACKET_COUNT: 3

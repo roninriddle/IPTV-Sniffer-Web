@@ -7,8 +7,6 @@ const state = {
   logPoller: null,
   streams: [],
   probingKeys: new Set(),
-  previewPlayer: null,
-  mpegtsLoader: null,
 };
 
 async function requestJson(url, options = {}) {
@@ -38,7 +36,7 @@ function formSettings() {
   return {
     interface: $("interface").value,
     http_host: $("httpHost").value.trim(),
-    http_port: Number($("httpPort").value || 8686),
+    http_port: Number($("httpPort").value || 5140),
     path_mode: $("pathMode").value,
     duration: Number($("duration").value || 0),
   };
@@ -92,7 +90,7 @@ async function loadSettings() {
   const data = await requestJson("/api/settings");
   $("interface").value = data.interface || $("interface").value;
   $("httpHost").value = data.http_host || "";
-  $("httpPort").value = data.http_port ?? 8686;
+  $("httpPort").value = data.http_port ?? 5140;
   $("pathMode").value = data.path_mode || "rtp";
   $("duration").value = data.duration ?? 30;
 }
@@ -111,7 +109,7 @@ function renderStatus(status) {
   const lines = [
     `<strong>${escapeHtml(status.message || "")}</strong>`,
     `接口：<span class="mono">${escapeHtml(status.interface || "-")}</span>`,
-    `播放地址前缀：<span class="mono">${status.http_host ? `http://${escapeHtml(status.http_host)}:${escapeHtml(status.http_port)}/${escapeHtml(status.path_mode)}/` : "-"}</span>`,
+    `rtp2httpd 前缀：<span class="mono">${status.http_host ? `http://${escapeHtml(status.http_host)}:${escapeHtml(status.http_port)}/${escapeHtml(status.path_mode)}/` : "-"}</span>`,
     `运行时间：${formatTime(status.elapsed)}`,
   ];
   if (status.remaining !== null && status.remaining !== undefined) lines.push(`剩余时间：${formatTime(status.remaining)}`);
@@ -194,16 +192,26 @@ function streamInfoHtml(stream) {
 }
 
 function previewHtml(stream) {
-  if (!stream.preview_url) return '<span class="muted">未设置 rtp2http 地址</span>';
+  if (!stream.preview_url) return '<span class="muted">未设置 rtp2httpd 地址</span>';
   const title = stream.name || stream.key;
-  const streamUrl = stream.preview_stream_url || stream.preview_url;
   return `<div class="preview-cell">
     <button class="secondary preview-play-btn"
-      data-stream-url="${escapeHtml(streamUrl)}"
-      data-source-url="${escapeHtml(stream.preview_url)}"
+      data-stream-url="${escapeHtml(stream.preview_url)}"
+      data-snapshot-url="${escapeHtml(stream.snapshot_url || "")}"
+      data-player-url="${escapeHtml(stream.player_url || "")}"
       data-title="${escapeHtml(title)}">播放预览</button>
     <a class="preview-link" href="${escapeHtml(stream.preview_url)}" target="_blank" rel="noreferrer">${escapeHtml(stream.preview_url)}</a>
   </div>`;
+}
+
+function snapshotHtml(stream) {
+  if (!stream.eligible || !stream.snapshot_url) return '<span class="muted">-</span>';
+  const title = stream.name || stream.key;
+  return `<button class="snapshot-thumb-btn"
+      data-snapshot-url="${escapeHtml(stream.snapshot_url)}"
+      data-title="${escapeHtml(title)}">
+    <img class="snapshot-thumb" src="${escapeHtml(stream.snapshot_url)}" alt="${escapeHtml(title)} 截图" loading="lazy">
+  </button>`;
 }
 
 function renderStreams(streams) {
@@ -211,7 +219,7 @@ function renderStreams(streams) {
   state.streams = preserveRowEdits(streams);
   const body = $("streamsTableBody");
   if (!state.streams.length) {
-    body.innerHTML = '<tr><td colspan="9" class="empty">暂无候选流</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="empty">暂无候选流</td></tr>';
     return;
   }
   body.innerHTML = state.streams.map((stream) => {
@@ -235,6 +243,7 @@ function renderStreams(streams) {
       <td><code>${escapeHtml(stream.key)}</code></td>
       <td>${escapeHtml(stream.packets)}</td>
       <td>${candidateBadge}</td>
+      <td>${snapshotHtml(stream)}</td>
       <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="例如 CCTV-4K 超高清"></td>
       <td>
         <select class="channel-category">
@@ -250,88 +259,38 @@ function renderStreams(streams) {
   }).join("");
 }
 
-function loadMpegts() {
-  if (window.mpegts) return Promise.resolve(true);
-  if (state.mpegtsLoader) return state.mpegtsLoader;
-  state.mpegtsLoader = new Promise((resolve) => {
-    const script = document.createElement("script");
-    const timer = setTimeout(() => resolve(false), 4000);
-    script.src = "https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js";
-    script.async = true;
-    script.onload = () => {
-      clearTimeout(timer);
-      resolve(Boolean(window.mpegts));
-    };
-    script.onerror = () => {
-      clearTimeout(timer);
-      resolve(false);
-    };
-    document.head.appendChild(script);
-  });
-  return state.mpegtsLoader;
-}
-
 function stopPreview() {
-  const video = $("previewVideo");
-  if (state.previewPlayer) {
-    try {
-      state.previewPlayer.pause();
-      state.previewPlayer.unload();
-      state.previewPlayer.detachMediaElement();
-      state.previewPlayer.destroy();
-    } catch (_) {}
-    state.previewPlayer = null;
-  }
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
+  $("previewFrame").removeAttribute("src");
+  $("previewSnapshot").removeAttribute("src");
 }
 
-async function openPreview(streamUrl, sourceUrl, title) {
+function openPreview(streamUrl, playerUrl, title, snapshotUrl) {
   $("previewTitle").textContent = title || "频道预览";
-  $("previewStatus").textContent = "正在连接预览流...";
-  $("previewExternalLink").href = sourceUrl;
-  $("previewExternalLink").textContent = sourceUrl;
+  $("previewStatus").textContent = "优先使用 rtp2httpd 内置播放器；若该页面未配置频道列表，请使用直连流或截图确认。";
+  $("previewExternalLink").href = streamUrl;
+  $("previewExternalLink").textContent = streamUrl;
+  $("previewDirectLink").href = streamUrl;
+  $("previewPlayerLink").href = playerUrl || "#";
+  $("previewSnapshot").src = snapshotUrl || "";
+  $("previewSnapshot").hidden = !snapshotUrl;
+  $("previewFrame").src = playerUrl || streamUrl;
   $("previewModal").hidden = false;
-  stopPreview();
-
-  const video = $("previewVideo");
-  const hasMpegts = await loadMpegts();
-  if (hasMpegts && window.mpegts?.isSupported()) {
-    try {
-      const player = window.mpegts.createPlayer({
-        type: "mpegts",
-        isLive: true,
-        url: streamUrl,
-      }, {
-        enableWorker: true,
-        lazyLoad: false,
-        liveBufferLatencyChasing: true,
-      });
-      state.previewPlayer = player;
-      player.attachMediaElement(video);
-      player.load();
-      await video.play();
-      $("previewStatus").textContent = "正在播放实时预览";
-      return;
-    } catch (err) {
-      stopPreview();
-      $("previewStatus").textContent = `MPEG-TS 播放器启动失败，尝试浏览器原生播放：${err.message}`;
-    }
-  }
-
-  video.src = streamUrl;
-  try {
-    await video.play();
-    $("previewStatus").textContent = "正在使用浏览器原生播放器预览";
-  } catch (err) {
-    $("previewStatus").textContent = `浏览器无法直接播放该流：${err.message}`;
-  }
 }
 
 function closePreview() {
   stopPreview();
   $("previewModal").hidden = true;
+}
+
+function openSnapshot(url, title) {
+  $("snapshotLarge").src = url;
+  $("snapshotLarge").alt = `${title || "频道"} 截图`;
+  $("snapshotModal").hidden = false;
+}
+
+function closeSnapshot() {
+  $("snapshotModal").hidden = true;
+  $("snapshotLarge").removeAttribute("src");
 }
 
 async function refreshStatusAndStreams() {
@@ -364,9 +323,10 @@ async function appendLogs() {
 
 function openLogs() {
   state.logsOpen = true;
+  document.body.classList.add("logs-open");
+  localStorage.setItem("logsOpen", "1");
   $("logsDrawer").classList.add("open");
   $("logsDrawer").setAttribute("aria-hidden", "false");
-  $("drawerMask").hidden = false;
   appendLogs().catch(() => {});
   if (state.logPoller) clearInterval(state.logPoller);
   state.logPoller = setInterval(() => appendLogs().catch(() => {}), 1000);
@@ -374,9 +334,10 @@ function openLogs() {
 
 function closeLogs() {
   state.logsOpen = false;
+  document.body.classList.remove("logs-open");
+  localStorage.setItem("logsOpen", "0");
   $("logsDrawer").classList.remove("open");
   $("logsDrawer").setAttribute("aria-hidden", "true");
-  $("drawerMask").hidden = true;
   if (state.logPoller) clearInterval(state.logPoller);
 }
 
@@ -453,6 +414,7 @@ async function bootstrap() {
   await loadSettings();
   await refreshStatusAndStreams();
   await appendLogs();
+  if (localStorage.getItem("logsOpen") === "1") openLogs();
   startPolling();
 }
 
@@ -521,7 +483,17 @@ $("streamsTableBody").addEventListener("click", (event) => {
   }
   const previewButton = event.target.closest(".preview-play-btn");
   if (previewButton) {
-    openPreview(previewButton.dataset.streamUrl, previewButton.dataset.sourceUrl, previewButton.dataset.title);
+    openPreview(
+      previewButton.dataset.streamUrl,
+      previewButton.dataset.playerUrl,
+      previewButton.dataset.title,
+      previewButton.dataset.snapshotUrl,
+    );
+    return;
+  }
+  const snapshotButton = event.target.closest(".snapshot-thumb-btn");
+  if (snapshotButton) {
+    openSnapshot(snapshotButton.dataset.snapshotUrl, snapshotButton.dataset.title);
   }
 });
 $("exportBtn").addEventListener("click", async () => {
@@ -534,10 +506,13 @@ $("exportBtn").addEventListener("click", async () => {
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
-$("drawerMask").addEventListener("click", closeLogs);
 $("closePreviewBtn").addEventListener("click", closePreview);
 $("previewModal").addEventListener("click", (event) => {
   if (event.target.id === "previewModal") closePreview();
+});
+$("closeSnapshotBtn").addEventListener("click", closeSnapshot);
+$("snapshotModal").addEventListener("click", (event) => {
+  if (event.target.id === "snapshotModal") closeSnapshot();
 });
 $("clearLogMemoryBtn").addEventListener("click", async () => {
   try {

@@ -137,7 +137,7 @@ class CaptureService:
         if interface not in interfaces:
             raise ValueError("抓包网卡无效，请刷新接口列表后重试")
         if not valid_ip_or_host(http_host):
-            raise ValueError("rtp2http 地址格式不正确")
+            raise ValueError("rtp2httpd 地址格式不正确")
         if not 1 <= http_port <= 65535:
             raise ValueError("端口必须位于 1-65535")
         if path_mode not in {"rtp", "udp"}:
@@ -168,7 +168,7 @@ class CaptureService:
 
         cmd = ["tcpdump", "-i", interface, "-n", "-l", "-q", CAPTURE_FILTER]
         self.logger.info(
-            f"开始抓包：接口={interface}，过滤条件={CAPTURE_FILTER}，播放地址前缀=http://{http_host}:{http_port}/{path_mode}/，时长={duration} 秒"
+            f"开始抓包：接口={interface}，过滤条件={CAPTURE_FILTER}，rtp2httpd 地址前缀=http://{http_host}:{http_port}/{path_mode}/，时长={duration} 秒"
         )
         proc = subprocess.Popen(
             cmd,

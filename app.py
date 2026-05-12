@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""IPTV Sniffer Web v0.5.2 application entrypoint."""
+"""IPTV Sniffer Web v0.5.3 application entrypoint."""
 from __future__ import annotations
 
 import time
@@ -99,13 +99,17 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             item["preview_failure"] = preview_failure
         item["preview_url"] = export_service.make_http_url(
             str(settings.get("http_host", "")),
-            int(settings.get("http_port", 8686)),
+            int(settings.get("http_port", 5140)),
             str(settings.get("path_mode", "rtp")),
             str(item["host"]),
             int(item["port"]),
         ) if settings.get("http_host") else ""
-        item["preview_stream_url"] = (
-            f"/api/preview/{item['host']}/{int(item['port'])}?path_mode={settings.get('path_mode', 'rtp')}"
+        item["snapshot_url"] = (
+            f"{item['preview_url']}?snapshot=1"
+            if settings.get("http_host") else ""
+        )
+        item["player_url"] = (
+            f"http://{settings.get('http_host')}:{int(settings.get('http_port', 5140))}/player"
             if settings.get("http_host") else ""
         )
         payload.append(item)
@@ -379,16 +383,16 @@ def api_preview(host: str, port: int):
     settings = settings_store.load()
     http_host = str(settings.get("http_host", "")).strip()
     try:
-        http_port = int(settings.get("http_port", 8686))
+        http_port = int(settings.get("http_port", 5140))
     except (TypeError, ValueError):
-        return api_error("rtp2http 端口配置不正确", 400)
+        return api_error("rtp2httpd 端口配置不正确", 400)
     path_mode = str(request.args.get("path_mode") or settings.get("path_mode", "rtp")).strip().lower()
     if not valid_ipv4_multicast(host):
         return api_error("预览地址必须是 IPv4 组播地址", 400)
     if not 1 <= port <= 65535:
         return api_error("预览端口必须位于 1-65535", 400)
     if not valid_ip_or_host(http_host):
-        return api_error("rtp2http 地址尚未正确配置", 400)
+        return api_error("rtp2httpd 地址尚未正确配置", 400)
     if path_mode not in {"rtp", "udp"}:
         return api_error("路径模式只能是 rtp 或 udp", 400)
     source_url = export_service.make_http_url(http_host, http_port, path_mode, host, port)
