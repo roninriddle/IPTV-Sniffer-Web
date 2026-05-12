@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_name }} v{{ app_version }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-version="{{ app_version }}">
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">{{ app_name }} <span class="version">v{{ app_version }}</span></div>
+      <h1>{{ app_description }}</h1>
+    </div>
+    <div class="top-actions">
+      <button id="refreshInterfacesBtn" class="secondary">刷新接口</button>
+      <button id="logsBtn" class="primary">实时日志</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="card hero-card">
+      <div class="section-title">
+        <h2>使用前必读</h2>
+        <span class="chip warning">宿主机必须能看到 IPTV 流量</span>
+      </div>
+      <p>本工具适合 OpenWrt、iStoreOS、飞牛 NAS 或其它 Linux Docker 宿主机。容器只能抓取宿主机实际可见的组播流量。</p>
+      <div class="grid two">
+        <article class="notice">
+          <h3>推荐：管理型交换机镜像口</h3>
+          <pre>光猫 IPTV 口 → 交换机 A 口
+交换机 B 口 → 机顶盒
+交换机 C 口 → 抓包设备 / Docker 宿主机
+
+推荐配置：
+源端口：B 口（机顶盒端口）
+目标端口：C 口（抓包设备）
+镜像方向：Both / 双向</pre>
+          <p>A 口也可以镜像到 C，但优先推荐镜像 B 口，便于观察机顶盒实际收到的 IPTV 流量。</p>
+        </article>
+        <article class="notice">
+          <h3>无管理型交换机</h3>
+          <pre>光猫 IPTV 口
+      ↓
+OpenWrt / iStoreOS
+      ↓
+机顶盒</pre>
+          <p>前提是 IPTV 流量真实经过这台设备，并在本页选择对应 IPTV 接口抓包。</p>
+          <p class="muted">不可用场景：光猫 IPTV 口直接接机顶盒，而 NAS / Docker 只在普通 LAN 中。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>1. 抓包参数</h2>
+        <span id="runtimeBadge" class="chip neutral">检查中</span>
+      </div>
+      <div class="form-grid">
+        <label>
+          抓包网卡
+          <select id="interface"></select>
+        </label>
+        <label>
+          rtp2http 地址
+          <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
+        </label>
+        <label>
+          rtp2http 端口
+          <input id="httpPort" type="number" min="1" max="65535" value="8686">
+        </label>
+        <label>
+          播放路径
+          <select id="pathMode">
+            <option value="rtp">/rtp/</option>
+            <option value="udp">/udp/</option>
+          </select>
+        </label>
+        <label>
+          抓包时长（秒）
+          <input id="duration" type="number" min="0" value="30">
+          <small>0 表示手动停止</small>
+        </label>
+      </div>
+      <div class="button-row">
+        <button id="startBtn" class="primary">开始抓包</button>
+        <button id="stopBtn" class="danger" disabled>停止抓包</button>
+        <button id="resetBtn" class="secondary">重置候选流</button>
+        <button id="saveSettingsBtn" class="secondary">保存默认设置</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>2. 抓包状态</h2>
+        <span id="statusChip" class="chip neutral">等待开始</span>
+      </div>
+      <div id="statusPanel" class="status-panel"></div>
+      <div class="metrics-grid">
+        <div class="metric"><span>发现流</span><strong id="streamsFound">0</strong></div>
+        <div class="metric"><span>有效候选</span><strong id="eligibleStreams">0</strong></div>
+        <div class="metric"><span>包计数</span><strong id="packetCount">0</strong></div>
+        <div class="metric"><span>运行秒数</span><strong id="elapsed">0</strong></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>3. 候选流、频道编辑与 4K 检测</h2>
+        <span class="muted">检测分辨率时，请保持机顶盒仍在播放对应频道；未成功检测的流不会进入 4K/普通汇总分组。</span>
+      </div>
+      <div class="toolbar">
+        <button id="saveChannelsBtn" class="secondary">保存频道草稿</button>
+        <button id="autoClassifyBtn" class="secondary">按名称自动分类</button>
+        <select id="batchCategory">
+          <option value="央视频道">央视频道</option>
+          <option value="卫视频道">卫视频道</option>
+          <option value="其它频道">其它频道</option>
+        </select>
+        <button id="applyBatchCategoryBtn" class="secondary">应用到勾选项</button>
+        <button id="probeSelectedBtn" class="primary">检测勾选流</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAllStreams"></th>
+              <th>组播地址</th>
+              <th>包数</th>
+              <th>状态</th>
+              <th>频道名称</th>
+              <th>分类</th>
+              <th>流信息 / 清晰度</th>
+              <th>检测</th>
+              <th>预览地址</th>
+            </tr>
+          </thead>
+          <tbody id="streamsTableBody">
+            <tr><td colspan="9" class="empty">暂无候选流</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>4. 导出结果</h2>
+        <span class="muted">原分类保留；同时额外复制到“4K高清”与“普通频道”两个清晰度分组。</span>
+      </div>
+      <div class="button-row">
+        <button id="exportBtn" class="primary">生成 m3u / txt / csv</button>
+        <a id="downloadM3u" class="download disabled" href="#">下载 M3U</a>
+        <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
+        <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
+      </div>
+      <div id="exportResult" class="result-box muted">尚未生成导出文件。</div>
+    </section>
+  </main>
+
+  <aside id="logsDrawer" class="logs-drawer" aria-hidden="true">
+    <div class="logs-header">
+      <div>
+        <div class="eyebrow">实时日志</div>
+        <h2>{{ app_name }} v{{ app_version }}</h2>
+      </div>
+      <button id="closeLogsBtn" class="secondary">关闭</button>
+    </div>
+    <div class="logs-actions">
+      <button id="clearLogMemoryBtn" class="secondary">清空面板缓存</button>
+      <a class="download" href="/api/logs/download">下载完整日志</a>
+    </div>
+    <pre id="logsOutput" class="logs-output"></pre>
+  </aside>
+  <div id="drawerMask" class="drawer-mask" hidden></div>
+
+  <footer class="footer">
+    <span>{{ app_name }} v{{ app_version }}</span>
+    <span>适用：OpenWrt / iStoreOS / 飞牛 NAS / Linux Docker</span>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

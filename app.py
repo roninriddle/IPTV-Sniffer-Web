@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""IPTV Sniffer Web v0.5 application entrypoint."""
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
+from waitress import serve
+
+from config import (
+    ALLOWED_DOWNLOADS,
+    APP_DESCRIPTION,
+    APP_NAME,
+    APP_VERSION,
+    CHANNELS_FILE,
+    DATA_DIR,
+    LOG_FILE,
+    LOG_MEMORY_LIMIT,
+    OUTPUT_DIR,
+    SETTINGS_FILE,
+    WAITRESS_THREADS,
+    WEB_HOST,
+    WEB_PORT,
+)
+from services.capture_service import CaptureService
+from services.export_service import ExportService
+from services.log_service import AppLogger
+from services.probe_service import ProbeService
+from services.storage_service import ChannelStore, SettingsStore
+from utils import classify_channel_name
+
+app = Flask(__name__)
+logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
+settings_store = SettingsStore(SETTINGS_FILE)
+channel_store = ChannelStore(CHANNELS_FILE)
+capture_service = CaptureService(logger)
+export_service = ExportService(OUTPUT_DIR)
+probe_service = ProbeService(logger)
+STARTED_AT = time.time()
+
+
+def api_success(data: Any | None = None, **extra: Any):
+    payload = {"success": True, "timestamp": int(time.time()), "data": data if data is not None else {}}
+    payload.update(extra)
+    return jsonify(payload)
+
+
+def api_error(message: str, status_code: int = 400, **extra: Any):
+    payload = {"success": False, "timestamp": int(time.time()), "error": str(message)}
+    payload.update(extra)
+    return jsonify(payload), status_code
+
+
+def merge_streams_with_channels() -> list[dict[str, Any]]:
+    streams = capture_service.streams()
+    named = channel_store.load()
+    settings = settings_store.load()
+    payload: list[dict[str, Any]] = []
+    for stream in streams:
+        channel = named.get(stream["key"], {})
+        item = dict(stream)
+        item["name"] = channel.get("name", "")
+        item["category"] = channel.get("category", classify_channel_name(item["name"]))
+        item.update(probe_service.merge_probe_data(stream["key"], channel))
+        item["preview_url"] = export_service.make_http_url(
+            str(settings.get("http_host", "")),
+            int(settings.get("http_port", 8686)),
+            str(settings.get("path_mode", "rtp")),
+            str(item["host"]),
+            int(item["port"]),
+        ) if settings.get("http_host") else ""
+        payload.append(item)
+    return payload
+
+
+@app.get("/")
+def index():
+    return render_template(
+        "index.html",
+        app_name=APP_NAME,
+        app_version=APP_VERSION,
+        app_description=APP_DESCRIPTION,
+    )
+
+
+@app.get("/api/version")
+def api_version():
+    return api_success({"name": APP_NAME, "version": APP_VERSION, "description": APP_DESCRIPTION})
+
+
+@app.get("/api/health")
+def api_health():
+    capture_runtime = capture_service.runtime_check()
+    probe_runtime = probe_service.runtime_check()
+    all_ok = capture_runtime.get("ok") and probe_runtime.get("ok")
+    status_code = 200 if all_ok else 503
+    payload = {
+        "status": "ok" if all_ok else "degraded",
+        "version": APP_VERSION,
+        "uptime_seconds": int(time.time() - STARTED_AT),
+        "runtime": capture_runtime,
+        "probe_runtime": probe_runtime,
+    }
+    response = api_success(payload)
+    response.status_code = status_code
+    return response
+
+
+@app.get("/api/metrics")
+def api_metrics():
+    data = {
+        "version": APP_VERSION,
+        "uptime_seconds": int(time.time() - STARTED_AT),
+        "capture": capture_service.metrics(),
+        "probe_runtime": probe_service.runtime_check(),
+        "logs": logger.stats(),
+        "saved_channels": len(channel_store.load()),
+        "output_files": {
+            name: (OUTPUT_DIR / name).exists()
+            for name in sorted(ALLOWED_DOWNLOADS)
+        },
+    }
+    return api_success(data)
+
+
+@app.get("/api/interfaces")
+def api_interfaces():
+    try:
+        return api_success({"interfaces": capture_service.list_interfaces()})
+    except Exception as exc:
+        return api_error(str(exc), 500)
+
+
+@app.get("/api/settings")
+def api_settings_get():
+    return api_success(settings_store.load())
+
+
+@app.post("/api/settings")
+def api_settings_save():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    saved = settings_store.save(data)
+    logger.info("已保存网页默认设置")
+    return api_success(saved)
+
+
+@app.get("/api/status")
+def api_status():
+    return api_success(capture_service.status())
+
+
+@app.post("/api/capture/start")
+def api_capture_start():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    try:
+        settings_store.save(data)
+        status = capture_service.start(data)
+        return api_success(status)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except RuntimeError as exc:
+        return api_error(str(exc), 409)
+    except Exception as exc:
+        logger.error(f"启动抓包失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/capture/stop")
+def api_capture_stop():
+    try:
+        return api_success(capture_service.stop())
+    except Exception as exc:
+        logger.error(f"停止抓包失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/capture/reset")
+def api_capture_reset():
+    try:
+        return api_success(capture_service.reset())
+    except RuntimeError as exc:
+        return api_error(str(exc), 409)
+    except Exception as exc:
+        logger.error(f"重置抓包状态失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.get("/api/streams")
+def api_streams():
+    return api_success({"streams": merge_streams_with_channels()})
+
+
+@app.get("/api/channels")
+def api_channels():
+    return api_success({"channels": channel_store.list()})
+
+
+@app.post("/api/channels/save")
+def api_channels_save():
+    data = request.get_json(silent=True) or {}
+    rows = data.get("channels", []) if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        return api_error("channels 必须是数组")
+    result = channel_store.save_rows(rows)
+    logger.info(f"已保存频道草稿：新增或更新 {result['saved']} 条，删除 {result['deleted']} 条")
+    return api_success(result)
+
+
+@app.post("/api/channels/auto-classify")
+def api_channels_auto_classify():
+    rows = merge_streams_with_channels()
+    for row in rows:
+        row["category"] = classify_channel_name(str(row.get("name", "")))
+    result = channel_store.save_rows(rows)
+    logger.info("已按频道名称自动更新频道分类")
+    return api_success({"store": result, "streams": merge_streams_with_channels()})
+
+
+@app.post("/api/probe")
+def api_probe_one():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    key = str(data.get("key", "")).strip()
+    host = str(data.get("host", "")).strip()
+    try:
+        port = int(data.get("port"))
+    except (TypeError, ValueError):
+        return api_error("端口格式不正确")
+    settings = settings_store.load()
+    path_mode = str(data.get("path_mode") or settings.get("path_mode", "rtp"))
+    try:
+        result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode)
+        stored = channel_store.get(result["key"]) or {
+            "key": result["key"],
+            "host": host,
+            "port": port,
+            "name": str(data.get("name", "")).strip(),
+            "category": str(data.get("category", "其它频道")).strip() or "其它频道",
+        }
+        stored.update(result)
+        # 仅当已有频道名称时持久化到草稿；未命名的流保留在内存缓存中。
+        if str(stored.get("name", "")).strip():
+            channel_store.save_rows([stored])
+        return api_success(result)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except RuntimeError as exc:
+        return api_error(str(exc), 409)
+    except Exception as exc:
+        logger.error(f"流信息检测失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/probe/batch")
+def api_probe_batch():
+    data = request.get_json(silent=True) or {}
+    rows = data.get("channels", []) if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        return api_error("channels 必须是数组")
+    settings = settings_store.load()
+    path_mode = str(data.get("path_mode") or settings.get("path_mode", "rtp")) if isinstance(data, dict) else str(settings.get("path_mode", "rtp"))
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key", "")).strip()
+        host = str(row.get("host", "")).strip()
+        try:
+            port = int(row.get("port"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode)
+        except Exception as exc:
+            result = {
+                "key": key or f"{host}:{port}",
+                "probe_status": "failed",
+                "probe_message": str(exc),
+                "codec_name": "",
+                "width": None,
+                "height": None,
+                "frame_rate": "",
+                "resolution_label": "未识别",
+                "quality_group": "未识别",
+                "probed_at": int(time.time()),
+            }
+            logger.warning(f"批量检测跳过失败项：{result['key']}，{exc}")
+        results.append(result)
+        row.update(result)
+    named_rows = [row for row in rows if isinstance(row, dict) and str(row.get("name", "")).strip()]
+    if named_rows:
+        channel_store.save_rows(named_rows)
+    return api_success({"results": results, "count": len(results)})
+
+
+@app.post("/api/export")
+def api_export():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    rows = data.get("channels")
+    if rows is None:
+        rows = merge_streams_with_channels()
+    if not isinstance(rows, list):
+        return api_error("channels 必须是数组")
+    settings = settings_store.load()
+    try:
+        result = export_service.export(rows, settings)
+        channel_store.save_rows(rows)
+        logger.info(f"导出完成：共生成 {result['count']} 个频道，文件为 channels.m3u / channels.txt / channels.csv")
+        return api_success(result)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:
+        logger.error(f"导出失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.get("/api/download/<path:filename>")
+def api_download(filename: str):
+    if filename not in ALLOWED_DOWNLOADS:
+        return api_error("不允许下载该文件", 404)
+    target = OUTPUT_DIR / filename
+    if not target.exists():
+        return api_error("文件尚未生成", 404)
+    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+
+
+@app.get("/api/logs")
+def api_logs():
+    try:
+        after_id = int(request.args.get("after_id", "0"))
+        limit = int(request.args.get("limit", "300"))
+    except ValueError:
+        return api_error("日志查询参数不正确")
+    limit = max(1, min(limit, 600))
+    return api_success(logger.read(after_id=after_id, limit=limit))
+
+
+@app.post("/api/logs/clear-memory")
+def api_logs_clear_memory():
+    logger.clear_memory()
+    logger.info("实时日志面板缓存已清空；磁盘日志文件保留")
+    return api_success({"cleared": True})
+
+
+@app.get("/api/logs/download")
+def api_logs_download():
+    if not LOG_FILE.exists():
+        LOG_FILE.write_text("", encoding="utf-8")
+    return send_file(LOG_FILE, as_attachment=True, download_name="iptv-sniffer-web.log")
+
+
+def boot() -> None:
+    logger.info(f"应用启动：{APP_NAME} v{APP_VERSION}")
+    capture_service.validate_runtime()
+    probe_service.validate_runtime()
+    logger.info(f"数据目录：{DATA_DIR}")
+    logger.info(f"输出目录：{OUTPUT_DIR}")
+    serve(app, host=WEB_HOST, port=WEB_PORT, threads=WAITRESS_THREADS)
+
+
+if __name__ == "__main__":
+    boot()

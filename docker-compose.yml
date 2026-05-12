@@ -1,0 +1,28 @@
+services:
+  iptv-sniffer-web:
+    build: .
+    image: iptv-sniffer-web:0.5
+    container_name: iptv-sniffer-web
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      TZ: Asia/Singapore
+      DATA_DIR: /app/data
+      OUTPUT_DIR: /app/output
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8787
+      WAITRESS_THREADS: 6
+      RTP2HTTP_PORT: 8686
+      CAPTURE_SECONDS: 30
+      MAX_TIMED_CAPTURE_SECONDS: 3600
+      MIN_PACKET_COUNT: 3
+      PROBE_TIMEOUT_SECONDS: 10
+      PROBE_ANALYZE_DURATION_US: 8000000
+      PROBE_SIZE_BYTES: 8000000
+      PROBE_BUFFER_SIZE: 131072
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+    restart: unless-stopped
