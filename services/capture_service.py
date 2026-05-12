@@ -22,7 +22,7 @@ from config import (
 )
 from models import StreamRecord
 from services.log_service import AppLogger
-from utils import valid_ip_or_host, valid_ipv4_multicast
+from utils import is_probable_iptv_stream, valid_ip_or_host, valid_ipv4_multicast
 
 # Typical tcpdump lines:
 # IP 192.168.1.20.55555 > 239.1.1.1.5140: UDP, length 1316
@@ -330,7 +330,11 @@ class CaptureService:
             payload["elapsed"] = max(0, elapsed)
             payload["remaining"] = max(0, duration - elapsed) if duration > 0 and payload["state"] == "running" else None
             payload["streams_found"] = len(self._streams)
-            payload["eligible_streams"] = sum(1 for item in self._streams.values() if item.packets >= MIN_PACKET_COUNT)
+            payload["eligible_streams"] = sum(
+                1
+                for item in self._streams.values()
+                if is_probable_iptv_stream(item.host, item.port, item.packets, MIN_PACKET_COUNT)
+            )
             payload["min_packet_count"] = MIN_PACKET_COUNT
             return payload
 
@@ -339,7 +343,12 @@ class CaptureService:
             records = [record.to_dict() for record in self._streams.values()]
         records.sort(key=lambda item: (-int(item["packets"]), item["host"], int(item["port"])))
         for item in records:
-            item["eligible"] = int(item["packets"]) >= MIN_PACKET_COUNT
+            item["eligible"] = is_probable_iptv_stream(
+                str(item["host"]),
+                int(item["port"]),
+                int(item["packets"]),
+                MIN_PACKET_COUNT,
+            )
         return records
 
     def metrics(self) -> dict[str, Any]:

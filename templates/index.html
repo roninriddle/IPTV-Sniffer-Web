@@ -149,7 +149,8 @@ OpenWrt / iStoreOS
       </div>
       <div class="button-row">
         <button id="exportBtn" class="primary">生成 m3u / txt / csv</button>
-        <a id="downloadM3u" class="download disabled" href="#">下载 M3U</a>
+        <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
+        <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
         <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
         <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
       </div>
@@ -172,6 +173,21 @@ OpenWrt / iStoreOS
     <pre id="logsOutput" class="logs-output"></pre>
   </aside>
   <div id="drawerMask" class="drawer-mask" hidden></div>
+
+  <div id="previewModal" class="preview-modal" hidden>
+    <div class="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <div class="preview-header">
+        <div>
+          <div class="eyebrow">实时预览</div>
+          <h2 id="previewTitle">频道预览</h2>
+        </div>
+        <button id="closePreviewBtn" class="secondary">关闭</button>
+      </div>
+      <video id="previewVideo" controls autoplay muted playsinline></video>
+      <div id="previewStatus" class="preview-status muted">等待播放</div>
+      <a id="previewExternalLink" class="preview-source" href="#" target="_blank" rel="noreferrer"></a>
+    </div>
+  </div>
 
   <footer class="footer">
     <span>{{ app_name }} v{{ app_version }}</span>

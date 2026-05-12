@@ -7,6 +7,21 @@ import ipaddress
 import re
 from typing import Any
 
+NOISE_MULTICAST_HOSTS = {
+    "224.0.0.1",      # all hosts
+    "224.0.0.2",      # all routers
+    "224.0.0.22",     # IGMP
+    "224.0.0.251",    # mDNS
+    "224.0.0.252",    # LLMNR
+    "239.255.255.250",  # SSDP
+}
+NOISE_MULTICAST_PORTS = {
+    1900,  # SSDP
+    3702,  # WS-Discovery
+    5353,  # mDNS
+    5355,  # LLMNR
+}
+
 
 def valid_ip_or_host(value: str) -> bool:
     value = value.strip()
@@ -25,6 +40,30 @@ def valid_ipv4_multicast(value: str) -> bool:
         return ip.version == 4 and ip.is_multicast
     except ValueError:
         return False
+
+
+def stream_filter_reason(host: str, port: int, packets: int, min_packets: int) -> str:
+    try:
+        ip = ipaddress.ip_address(host)
+        port = int(port)
+        packets = int(packets)
+    except (TypeError, ValueError):
+        return "地址、端口或包数无效"
+    if ip.version != 4 or not ip.is_multicast:
+        return "不是 IPv4 组播地址"
+    if str(ip) in NOISE_MULTICAST_HOSTS:
+        return "系统服务发现组播"
+    if ip in ipaddress.ip_network("224.0.0.0/24"):
+        return "本地链路控制组播"
+    if port in NOISE_MULTICAST_PORTS:
+        return "系统服务发现端口"
+    if packets < min_packets:
+        return f"包数不足 {min_packets}"
+    return ""
+
+
+def is_probable_iptv_stream(host: str, port: int, packets: int, min_packets: int) -> bool:
+    return not stream_filter_reason(host, port, packets, min_packets)
 
 
 def natural_key(value: str) -> list[Any]:

@@ -47,6 +47,6 @@ DOCKERHUB_TOKEN
 Then push the tag:
 
 ```bash
-git tag v0.5
-git push origin v0.5
+git tag v0.5.1
+git push origin v0.5.1
 ```

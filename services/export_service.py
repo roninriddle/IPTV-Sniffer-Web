@@ -107,11 +107,13 @@ class ExportService:
         path_mode = str(settings.get("path_mode", "rtp")).strip().lower()
         if path_mode not in {"rtp", "udp"}:
             path_mode = "rtp"
-        m3u_path = self.output_dir / "channels.m3u"
+        direct_m3u_path = self.output_dir / "channels-direct.m3u"
+        source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
         txt_path = self.output_dir / "channels.txt"
         csv_path = self.output_dir / "channels.csv"
         quality_groups = self._quality_groups(channels)
-        self._write_m3u(channels, quality_groups, m3u_path, http_host, http_port, path_mode)
+        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct")
+        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source")
         self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode)
         self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode)
         return {
@@ -119,7 +121,8 @@ class ExportService:
             "quality_group_counts": {name: len(quality_groups.get(name, [])) for name in QUALITY_GROUP_OPTIONS},
             "unclassified_resolution_count": sum(1 for channel in channels if channel.quality_group not in QUALITY_GROUP_OPTIONS),
             "files": {
-                "m3u": m3u_path.name,
+                "direct_m3u": direct_m3u_path.name,
+                "source_m3u": source_m3u_path.name,
                 "txt": txt_path.name,
                 "csv": csv_path.name,
             },
@@ -142,19 +145,32 @@ class ExportService:
         http_host: str,
         http_port: int,
         path_mode: str,
+        url_mode: str,
     ) -> None:
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write("#EXTM3U\n")
             for channel in channels:
-                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode)
+                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode)
             for group_name in QUALITY_GROUP_OPTIONS:
                 for channel in quality_groups.get(group_name, []):
-                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode)
+                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode)
 
-    def _write_m3u_item(self, handle, channel: ChannelRecord, group: str, http_host: str, http_port: int, path_mode: str) -> None:
+    def _write_m3u_item(
+        self,
+        handle,
+        channel: ChannelRecord,
+        group: str,
+        http_host: str,
+        http_port: int,
+        path_mode: str,
+        url_mode: str,
+    ) -> None:
         safe_group = group.replace('"', "'")
         tvg_name = channel.name.replace('"', "'")
-        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port)
+        if url_mode == "source":
+            url = self.make_source_url(path_mode, channel.host, channel.port)
+        else:
+            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port)
         handle.write(f'#EXTINF:-1 tvg-name="{tvg_name}" group-title="{safe_group}",{channel.name}\n')
         handle.write(f"{url}\n")
 

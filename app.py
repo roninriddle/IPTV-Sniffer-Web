@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""IPTV Sniffer Web v0.5 application entrypoint."""
+"""IPTV Sniffer Web v0.5.1 application entrypoint."""
 from __future__ import annotations
 
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
-from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory, stream_with_context
 from waitress import serve
 
 from config import (
@@ -19,6 +21,7 @@ from config import (
     DATA_DIR,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
+    MIN_PACKET_COUNT,
     OUTPUT_DIR,
     SETTINGS_FILE,
     WAITRESS_THREADS,
@@ -30,7 +33,7 @@ from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
 from services.storage_service import ChannelStore, SettingsStore
-from utils import classify_channel_name
+from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
 logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
@@ -61,7 +64,16 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for stream in streams:
         channel = named.get(stream["key"], {})
+        filter_reason = stream_filter_reason(
+            str(stream.get("host", "")),
+            int(stream.get("port", 0)),
+            int(stream.get("packets", 0)),
+            MIN_PACKET_COUNT,
+        )
+        if filter_reason and not str(channel.get("name", "")).strip():
+            continue
         item = dict(stream)
+        item["filter_reason"] = filter_reason
         item["name"] = channel.get("name", "")
         item["category"] = channel.get("category", classify_channel_name(item["name"]))
         item.update(probe_service.merge_probe_data(stream["key"], channel))
@@ -72,6 +84,10 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             str(item["host"]),
             int(item["port"]),
         ) if settings.get("http_host") else ""
+        item["preview_stream_url"] = (
+            f"/api/preview/{item['host']}/{int(item['port'])}?path_mode={settings.get('path_mode', 'rtp')}"
+            if settings.get("http_host") else ""
+        )
         payload.append(item)
     return payload
 
@@ -315,7 +331,11 @@ def api_export():
     try:
         result = export_service.export(rows, settings)
         channel_store.save_rows(rows)
-        logger.info(f"导出完成：共生成 {result['count']} 个频道，文件为 channels.m3u / channels.txt / channels.csv")
+        logger.info(
+            "导出完成：共生成 "
+            f"{result['count']} 个频道，文件为 channels-direct.m3u / "
+            "channels-rtp2httpd-source.m3u / channels.txt / channels.csv"
+        )
         return api_success(result)
     except ValueError as exc:
         return api_error(str(exc), 400)
@@ -332,6 +352,45 @@ def api_download(filename: str):
     if not target.exists():
         return api_error("文件尚未生成", 404)
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+
+
+@app.get("/api/preview/<host>/<int:port>")
+def api_preview(host: str, port: int):
+    settings = settings_store.load()
+    http_host = str(settings.get("http_host", "")).strip()
+    try:
+        http_port = int(settings.get("http_port", 8686))
+    except (TypeError, ValueError):
+        return api_error("rtp2http 端口配置不正确", 400)
+    path_mode = str(request.args.get("path_mode") or settings.get("path_mode", "rtp")).strip().lower()
+    if not valid_ipv4_multicast(host):
+        return api_error("预览地址必须是 IPv4 组播地址", 400)
+    if not 1 <= port <= 65535:
+        return api_error("预览端口必须位于 1-65535", 400)
+    if not valid_ip_or_host(http_host):
+        return api_error("rtp2http 地址尚未正确配置", 400)
+    if path_mode not in {"rtp", "udp"}:
+        return api_error("路径模式只能是 rtp 或 udp", 400)
+    source_url = export_service.make_http_url(http_host, http_port, path_mode, host, port)
+    try:
+        upstream = urlopen(Request(source_url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"}), timeout=10)
+    except (OSError, URLError) as exc:
+        logger.warning(f"打开预览流失败：{source_url}，{exc}")
+        return api_error(f"无法打开预览流：{exc}", 502)
+
+    def generate():
+        with upstream:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
+    }
+    return Response(stream_with_context(generate()), headers=headers, mimetype="video/MP2T", direct_passthrough=True)
 
 
 @app.get("/api/logs")

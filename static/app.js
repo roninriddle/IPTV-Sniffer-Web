@@ -7,6 +7,8 @@ const state = {
   logPoller: null,
   streams: [],
   probingKeys: new Set(),
+  previewPlayer: null,
+  mpegtsLoader: null,
 };
 
 async function requestJson(url, options = {}) {
@@ -191,6 +193,19 @@ function streamInfoHtml(stream) {
   return `<div class="probe-meta">${probeBadge(stream)}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${message}</div>`;
 }
 
+function previewHtml(stream) {
+  if (!stream.preview_url) return '<span class="muted">未设置 rtp2http 地址</span>';
+  const title = stream.name || stream.key;
+  const streamUrl = stream.preview_stream_url || stream.preview_url;
+  return `<div class="preview-cell">
+    <button class="secondary preview-play-btn"
+      data-stream-url="${escapeHtml(streamUrl)}"
+      data-source-url="${escapeHtml(stream.preview_url)}"
+      data-title="${escapeHtml(title)}">播放预览</button>
+    <a class="preview-link" href="${escapeHtml(stream.preview_url)}" target="_blank" rel="noreferrer">${escapeHtml(stream.preview_url)}</a>
+  </div>`;
+}
+
 function renderStreams(streams) {
   const currentChecks = new Map([...document.querySelectorAll("#streamsTableBody tr[data-key]")].map((row) => [row.dataset.key, Boolean(row.querySelector(".stream-check")?.checked)]));
   state.streams = preserveRowEdits(streams);
@@ -200,7 +215,6 @@ function renderStreams(streams) {
     return;
   }
   body.innerHTML = state.streams.map((stream) => {
-    const preview = stream.preview_url ? `<a class="preview-link" href="${escapeHtml(stream.preview_url)}" target="_blank" rel="noreferrer">${escapeHtml(stream.preview_url)}</a>` : '<span class="muted">未设置 rtp2http 地址</span>';
     const candidateBadge = stream.eligible ? '<span class="badge ok">有效候选</span>' : '<span class="badge wait">包数偏少</span>';
     const checked = currentChecks.get(stream.key) ? "checked" : "";
     const probing = state.probingKeys.has(stream.key);
@@ -231,9 +245,93 @@ function renderStreams(streams) {
       </td>
       <td>${streamInfoHtml(stream)}</td>
       <td><button class="secondary probe-one-btn" data-key="${escapeHtml(stream.key)}" ${probing ? "disabled" : ""}>${probing ? "检测中" : "检测流信息"}</button></td>
-      <td>${preview}</td>
+      <td>${previewHtml(stream)}</td>
     </tr>`;
   }).join("");
+}
+
+function loadMpegts() {
+  if (window.mpegts) return Promise.resolve(true);
+  if (state.mpegtsLoader) return state.mpegtsLoader;
+  state.mpegtsLoader = new Promise((resolve) => {
+    const script = document.createElement("script");
+    const timer = setTimeout(() => resolve(false), 4000);
+    script.src = "https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js";
+    script.async = true;
+    script.onload = () => {
+      clearTimeout(timer);
+      resolve(Boolean(window.mpegts));
+    };
+    script.onerror = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    document.head.appendChild(script);
+  });
+  return state.mpegtsLoader;
+}
+
+function stopPreview() {
+  const video = $("previewVideo");
+  if (state.previewPlayer) {
+    try {
+      state.previewPlayer.pause();
+      state.previewPlayer.unload();
+      state.previewPlayer.detachMediaElement();
+      state.previewPlayer.destroy();
+    } catch (_) {}
+    state.previewPlayer = null;
+  }
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+}
+
+async function openPreview(streamUrl, sourceUrl, title) {
+  $("previewTitle").textContent = title || "频道预览";
+  $("previewStatus").textContent = "正在连接预览流...";
+  $("previewExternalLink").href = sourceUrl;
+  $("previewExternalLink").textContent = sourceUrl;
+  $("previewModal").hidden = false;
+  stopPreview();
+
+  const video = $("previewVideo");
+  const hasMpegts = await loadMpegts();
+  if (hasMpegts && window.mpegts?.isSupported()) {
+    try {
+      const player = window.mpegts.createPlayer({
+        type: "mpegts",
+        isLive: true,
+        url: streamUrl,
+      }, {
+        enableWorker: true,
+        lazyLoad: false,
+        liveBufferLatencyChasing: true,
+      });
+      state.previewPlayer = player;
+      player.attachMediaElement(video);
+      player.load();
+      await video.play();
+      $("previewStatus").textContent = "正在播放实时预览";
+      return;
+    } catch (err) {
+      stopPreview();
+      $("previewStatus").textContent = `MPEG-TS 播放器启动失败，尝试浏览器原生播放：${err.message}`;
+    }
+  }
+
+  video.src = streamUrl;
+  try {
+    await video.play();
+    $("previewStatus").textContent = "正在使用浏览器原生播放器预览";
+  } catch (err) {
+    $("previewStatus").textContent = `浏览器无法直接播放该流：${err.message}`;
+  }
+}
+
+function closePreview() {
+  stopPreview();
+  $("previewModal").hidden = true;
 }
 
 async function refreshStatusAndStreams() {
@@ -284,7 +382,8 @@ function closeLogs() {
 
 function showExportDownloads(files) {
   const map = {
-    m3u: $("downloadM3u"),
+    direct_m3u: $("downloadDirectM3u"),
+    source_m3u: $("downloadSourceM3u"),
     txt: $("downloadTxt"),
     csv: $("downloadCsv"),
   };
@@ -414,22 +513,32 @@ $("applyBatchCategoryBtn").addEventListener("click", () => {
 });
 $("probeSelectedBtn").addEventListener("click", probeBatch);
 $("streamsTableBody").addEventListener("click", (event) => {
-  const button = event.target.closest(".probe-one-btn");
-  if (!button) return;
-  const row = button.closest("tr[data-key]");
-  if (row) probeOneByRow(row);
+  const probeButton = event.target.closest(".probe-one-btn");
+  if (probeButton) {
+    const row = probeButton.closest("tr[data-key]");
+    if (row) probeOneByRow(row);
+    return;
+  }
+  const previewButton = event.target.closest(".preview-play-btn");
+  if (previewButton) {
+    openPreview(previewButton.dataset.streamUrl, previewButton.dataset.sourceUrl, previewButton.dataset.title);
+  }
 });
 $("exportBtn").addEventListener("click", async () => {
   try {
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
     showExportDownloads(data.files);
     $("exportResult").className = "result-box";
-    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
+    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；已生成直连 M3U、rtp2httpd 源地址 M3U、TXT、CSV；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
   } catch (err) { alert(err.message); }
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
 $("drawerMask").addEventListener("click", closeLogs);
+$("closePreviewBtn").addEventListener("click", closePreview);
+$("previewModal").addEventListener("click", (event) => {
+  if (event.target.id === "previewModal") closePreview();
+});
 $("clearLogMemoryBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/logs/clear-memory", {method: "POST", body: "{}"});

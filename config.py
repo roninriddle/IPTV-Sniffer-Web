@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.5"
+APP_VERSION = "0.5.1"
 APP_DESCRIPTION = "IPTV 组播频道抓包、整理与 rtp2http 播放列表生成工具"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,7 +35,12 @@ PROBE_SIZE_BYTES = int(os.environ.get("PROBE_SIZE_BYTES", "8000000"))
 PROBE_BUFFER_SIZE = int(os.environ.get("PROBE_BUFFER_SIZE", "131072"))
 
 CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "udp and dst net 224.0.0.0/4")
-ALLOWED_DOWNLOADS = {"channels.m3u", "channels.txt", "channels.csv"}
+ALLOWED_DOWNLOADS = {
+    "channels-direct.m3u",
+    "channels-rtp2httpd-source.m3u",
+    "channels.txt",
+    "channels.csv",
+}
 
 CATEGORY_OPTIONS = ["央视频道", "卫视频道", "其它频道"]
 CATEGORY_ORDER = {name: index for index, name in enumerate(CATEGORY_OPTIONS, start=1)}
