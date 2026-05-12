@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 APP_DESCRIPTION = "IPTV 组播频道抓包、整理与 rtp2http 播放列表生成工具"
 
 BASE_DIR = Path(__file__).resolve().parent

@@ -42,13 +42,12 @@ def valid_ipv4_multicast(value: str) -> bool:
         return False
 
 
-def stream_filter_reason(host: str, port: int, packets: int, min_packets: int) -> str:
+def stream_static_filter_reason(host: str, port: int) -> str:
     try:
         ip = ipaddress.ip_address(host)
         port = int(port)
-        packets = int(packets)
     except (TypeError, ValueError):
-        return "地址、端口或包数无效"
+        return "地址或端口无效"
     if ip.version != 4 or not ip.is_multicast:
         return "不是 IPv4 组播地址"
     if str(ip) in NOISE_MULTICAST_HOSTS:
@@ -57,6 +56,17 @@ def stream_filter_reason(host: str, port: int, packets: int, min_packets: int) -
         return "本地链路控制组播"
     if port in NOISE_MULTICAST_PORTS:
         return "系统服务发现端口"
+    return ""
+
+
+def stream_filter_reason(host: str, port: int, packets: int, min_packets: int) -> str:
+    static_reason = stream_static_filter_reason(host, port)
+    if static_reason:
+        return static_reason
+    try:
+        packets = int(packets)
+    except (TypeError, ValueError):
+        return "包数无效"
     if packets < min_packets:
         return f"包数不足 {min_packets}"
     return ""

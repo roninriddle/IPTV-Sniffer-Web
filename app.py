@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""IPTV Sniffer Web v0.5.1 application entrypoint."""
+"""IPTV Sniffer Web v0.5.2 application entrypoint."""
 from __future__ import annotations
 
 import time
@@ -43,6 +43,7 @@ capture_service = CaptureService(logger)
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
 STARTED_AT = time.time()
+preview_failures: dict[str, str] = {}
 
 
 def api_success(data: Any | None = None, **extra: Any):
@@ -55,6 +56,13 @@ def api_error(message: str, status_code: int = 400, **extra: Any):
     payload = {"success": False, "timestamp": int(time.time()), "error": str(message)}
     payload.update(extra)
     return jsonify(payload), status_code
+
+
+def remember_preview_failure(key: str, message: str) -> None:
+    preview_failures[key] = message
+    cached = probe_service.get_cached(key) or {}
+    if cached.get("probe_status") not in {"ok", "partial"}:
+        probe_service.remember_failure(key, message)
 
 
 def merge_streams_with_channels() -> list[dict[str, Any]]:
@@ -77,6 +85,18 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         item["name"] = channel.get("name", "")
         item["category"] = channel.get("category", classify_channel_name(item["name"]))
         item.update(probe_service.merge_probe_data(stream["key"], channel))
+        preview_failure = preview_failures.get(stream["key"], "")
+        if (
+            not str(item.get("name", "")).strip()
+            and (
+                preview_failure
+                or str(item.get("probe_status", "")) == "failed"
+            )
+        ):
+            continue
+        if preview_failure:
+            item["preview_failed"] = True
+            item["preview_failure"] = preview_failure
         item["preview_url"] = export_service.make_http_url(
             str(settings.get("http_host", "")),
             int(settings.get("http_port", 8686)),
@@ -376,6 +396,7 @@ def api_preview(host: str, port: int):
         upstream = urlopen(Request(source_url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"}), timeout=10)
     except (OSError, URLError) as exc:
         logger.warning(f"打开预览流失败：{source_url}，{exc}")
+        remember_preview_failure(f"{host}:{port}", f"预览失败：{exc}")
         return api_error(f"无法打开预览流：{exc}", 502)
 
     def generate():

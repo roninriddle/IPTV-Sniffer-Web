@@ -22,7 +22,7 @@ from config import (
 )
 from models import StreamRecord
 from services.log_service import AppLogger
-from utils import is_probable_iptv_stream, valid_ip_or_host, valid_ipv4_multicast
+from utils import is_probable_iptv_stream, stream_static_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 # Typical tcpdump lines:
 # IP 192.168.1.20.55555 > 239.1.1.1.5140: UDP, length 1316
@@ -229,6 +229,8 @@ class CaptureService:
         except ValueError:
             return
         if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
+            return
+        if stream_static_filter_reason(host, port):
             return
         now = time.time()
         key = f"{host}:{port}"

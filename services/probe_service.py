@@ -67,6 +67,11 @@ class ProbeService:
         merged.update({k: v for k, v in cached.items() if v not in (None, "") or k in {"width", "height"}})
         return merged
 
+    def remember_failure(self, key: str, message: str) -> dict[str, Any]:
+        result = self._build_failure(key, message, time.time())
+        self._remember(key, result)
+        return result
+
     @staticmethod
     def _input_url(path_mode: str, host: str, port: int) -> str:
         scheme = "rtp" if path_mode == "rtp" else "udp"
