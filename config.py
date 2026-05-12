@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.5.3"
-APP_DESCRIPTION = "IPTV 组播频道抓包、整理与 rtp2httpd 播放列表生成工具"
+APP_VERSION = "0.6"
+APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR / "data"))).resolve()
@@ -16,6 +16,8 @@ OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(BASE_DIR / "output"))).resolv
 LOG_FILE = Path(os.environ.get("LOG_FILE", str(DATA_DIR / "app.log"))).resolve()
 SETTINGS_FILE = DATA_DIR / "settings.json"
 CHANNELS_FILE = DATA_DIR / "channels.json"
+FCC_FILE = DATA_DIR / "fcc.json"
+STB_TOKEN_FILE = DATA_DIR / "playlist_token.json"
 
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8787"))
@@ -34,10 +36,11 @@ PROBE_ANALYZE_DURATION_US = int(os.environ.get("PROBE_ANALYZE_DURATION_US", "800
 PROBE_SIZE_BYTES = int(os.environ.get("PROBE_SIZE_BYTES", "8000000"))
 PROBE_BUFFER_SIZE = int(os.environ.get("PROBE_BUFFER_SIZE", "131072"))
 
-CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "udp and dst net 224.0.0.0/4")
+CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "(udp and dst net 224.0.0.0/4) or tcp")
 ALLOWED_DOWNLOADS = {
     "channels-direct.m3u",
     "channels-rtp2httpd-source.m3u",
+    "channels-zz.json",
     "channels.txt",
     "channels.csv",
 }

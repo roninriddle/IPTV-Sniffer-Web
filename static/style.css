@@ -29,11 +29,12 @@ body {
   color: #fff;
 }
 .topbar h1 { margin: 6px 0 0; font-size: clamp(20px, 2vw, 28px); font-weight: 700; }
+.top-subtitle { margin: 6px 0 0; color: rgba(255, 255, 255, .82); line-height: 1.45; }
 .eyebrow { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; opacity: .9; }
 .version { margin-left: 8px; font-weight: 700; }
 .top-actions, .button-row, .toolbar, .logs-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .app-shell { transition: margin-left .18s ease; }
-.layout { width: min(1360px, calc(100% - 24px)); margin: 14px auto 28px; display: grid; gap: 12px; }
+.layout { width: min(1180px, calc(100% - 24px)); margin: 14px auto 28px; display: grid; gap: 12px; }
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -47,6 +48,7 @@ body {
 .grid { display: grid; gap: 12px; }
 .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .notice { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fafbfd; }
+.notice.compact pre { max-height: 118px; }
 .notice h3 { margin: 0 0 8px; font-size: 16px; }
 .notice pre {
   overflow-x: auto;
@@ -87,24 +89,25 @@ button:disabled, .download.disabled { opacity: .45; cursor: not-allowed; pointer
 .chip.warning { color: var(--warning); background: #fff2d7; }
 .chip.danger { color: var(--danger); background: #fde8ea; }
 .status-panel { padding: 10px; border: 1px solid var(--line); border-radius: 8px; line-height: 1.55; background: #fafbfd; margin-bottom: 12px; }
-.metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.metrics-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .metric { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fafbfd; display: grid; gap: 4px; }
 .metric span { color: var(--muted); }
 .metric strong { font-size: 22px; }
+.insight-panel { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fafbfd; line-height: 1.5; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; max-width: 100%; }
-table { width: 100%; border-collapse: collapse; min-width: 1400px; table-layout: fixed; }
+table { width: 100%; border-collapse: collapse; min-width: 1260px; table-layout: fixed; }
 th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: middle; }
 th { background: #f7f9fb; font-size: 13px; }
 th:nth-child(1), td:nth-child(1) { width: 48px; }
-th:nth-child(2), td:nth-child(2) { width: 200px; }
+th:nth-child(2), td:nth-child(2) { width: 180px; }
 th:nth-child(3), td:nth-child(3) { width: 72px; }
 th:nth-child(4), td:nth-child(4) { width: 90px; }
 th:nth-child(5), td:nth-child(5) { width: 96px; }
-th:nth-child(6), td:nth-child(6) { width: 190px; }
+th:nth-child(6), td:nth-child(6) { width: 170px; }
 th:nth-child(7), td:nth-child(7) { width: 110px; }
-th:nth-child(8), td:nth-child(8) { width: 260px; }
+th:nth-child(8), td:nth-child(8) { width: 238px; }
 th:nth-child(9), td:nth-child(9) { width: 128px; }
-th:nth-child(10), td:nth-child(10) { width: 326px; }
+th:nth-child(10), td:nth-child(10) { width: 300px; }
 tr:last-child td { border-bottom: 0; }
 td.empty { color: var(--muted); text-align: center; padding: 20px; }
 td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
@@ -252,15 +255,16 @@ body.logs-open .footer {
   font-size: 12px;
   white-space: pre-wrap;
 }
-.footer { width: min(1360px, calc(100% - 24px)); margin: 0 auto 24px; display: flex; justify-content: space-between; gap: 12px; color: var(--muted); flex-wrap: wrap; transition: margin-left .18s ease; }
+.footer { width: min(1180px, calc(100% - 24px)); margin: 0 auto 24px; display: flex; justify-content: space-between; gap: 12px; color: var(--muted); flex-wrap: wrap; transition: margin-left .18s ease; }
 @media (max-width: 1100px) {
   .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .topbar { flex-direction: column; }
   .grid.two, .form-grid, .metrics-grid { grid-template-columns: 1fr; }
-  .layout { width: min(100% - 16px, 1360px); }
+  .layout { width: min(100% - 16px, 1180px); }
+  .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   body.logs-open .topbar,
   body.logs-open .app-shell,
   body.logs-open .footer {

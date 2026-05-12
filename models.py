@@ -41,6 +41,8 @@ class ChannelRecord:
     frame_rate: str = ""
     resolution_label: str = "未识别"
     quality_group: str = "未识别"
+    fcc_ip: str = ""
+    fcc_port: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

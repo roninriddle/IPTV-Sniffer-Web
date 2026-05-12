@@ -1,22 +1,22 @@
 # Push to GitHub
 
-This repository has been initialized on branch `main` with the first release commit:
+This repository is published on branch `main` with tagged releases.
 
 ```text
-Release IPTV Sniffer Web v0.5
+Release IPTV Sniffer Web v0.6
 ```
 
 ## Push to the target repository
 
 ```bash
-git remote add origin https://github.com/roninriddle/-IPTV-Sniffer-Web.git
+git remote add origin https://github.com/roninriddle/IPTV-Sniffer-Web.git
 git push -u origin main
 ```
 
 If `origin` already exists:
 
 ```bash
-git remote set-url origin https://github.com/roninriddle/-IPTV-Sniffer-Web.git
+git remote set-url origin https://github.com/roninriddle/IPTV-Sniffer-Web.git
 git push -u origin main
 ```
 
@@ -25,7 +25,7 @@ git push -u origin main
 Use this only when you intentionally want to preserve and merge the existing remote history:
 
 ```bash
-git remote add origin https://github.com/roninriddle/-IPTV-Sniffer-Web.git
+git remote add origin https://github.com/roninriddle/IPTV-Sniffer-Web.git
 git fetch origin
 git merge origin/main --allow-unrelated-histories
 git push -u origin main
@@ -47,6 +47,6 @@ DOCKERHUB_TOKEN
 Then push the tag:
 
 ```bash
-git tag v0.5.3
-git push origin v0.5.3
+git tag v0.6
+git push origin v0.6
 ```

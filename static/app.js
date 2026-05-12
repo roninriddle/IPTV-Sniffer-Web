@@ -70,6 +70,27 @@ async function loadHealth() {
   }
 }
 
+function maskToken(value) {
+  const token = String(value || "");
+  if (!token) return "-";
+  if (token.length <= 12) return `${token.slice(0, 4)}...`;
+  return `${token.slice(0, 6)}...${token.slice(-6)}`;
+}
+
+function renderMetrics(metrics, tokenData) {
+  $("fccRecords").textContent = metrics.fcc_records ?? 0;
+  $("stbTokens").textContent = metrics.stb_tokens ?? 0;
+  const latest = tokenData?.latest;
+  if (latest) {
+    const endpoint = latest.dip && latest.dport ? `${latest.dip}:${latest.dport}` : "-";
+    $("snifferInsight").innerHTML = `channelAcquire：<span class="mono">${escapeHtml(endpoint)}</span>，UserToken：<span class="mono">${escapeHtml(maskToken(latest.token))}</span>；FCC 记录：${escapeHtml(metrics.fcc_records ?? 0)} 条。`;
+  } else if ((metrics.fcc_records ?? 0) > 0) {
+    $("snifferInsight").textContent = `已发现 FCC 记录 ${metrics.fcc_records} 条，尚未捕获 channelAcquire UserToken。`;
+  } else {
+    $("snifferInsight").textContent = "尚未发现 FCC 或 channelAcquire 令牌。";
+  }
+}
+
 async function loadInterfaces() {
   const data = await requestJson("/api/interfaces");
   const select = $("interface");
@@ -136,6 +157,8 @@ function rowProbePayload(row) {
     resolution_label: row.dataset.resolutionLabel || "未识别",
     quality_group: row.dataset.qualityGroup || "未识别",
     probed_at: row.dataset.probedAt ? Number(row.dataset.probedAt) : null,
+    fcc_ip: row.dataset.fccIp || "",
+    fcc_port: row.dataset.fccPort ? Number(row.dataset.fccPort) : null,
   };
 }
 
@@ -169,6 +192,8 @@ function preserveRowEdits(streams) {
       resolution_label: stream.resolution_label || draft.resolution_label,
       quality_group: stream.quality_group || draft.quality_group,
       probed_at: stream.probed_at ?? draft.probed_at,
+      fcc_ip: stream.fcc_ip || draft.fcc_ip,
+      fcc_port: stream.fcc_port ?? draft.fcc_port,
     };
   });
 }
@@ -187,8 +212,9 @@ function streamInfoHtml(stream) {
   const codec = stream.codec_name ? escapeHtml(stream.codec_name) : "-";
   const resolution = stream.width && stream.height ? `${escapeHtml(stream.width)}×${escapeHtml(stream.height)}` : escapeHtml(stream.resolution_label || "未识别");
   const fps = stream.frame_rate ? escapeHtml(stream.frame_rate) : "-";
+  const fcc = stream.fcc_ip && stream.fcc_port ? `<span>FCC：${escapeHtml(stream.fcc_ip)}:${escapeHtml(stream.fcc_port)}</span>` : "";
   const message = stream.probe_message ? `<div class="probe-note">${escapeHtml(stream.probe_message)}</div>` : "";
-  return `<div class="probe-meta">${probeBadge(stream)}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${message}</div>`;
+  return `<div class="probe-meta">${probeBadge(stream)}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
 }
 
 function previewHtml(stream) {
@@ -238,7 +264,9 @@ function renderStreams(streams) {
         data-frame-rate="${escapeHtml(stream.frame_rate || "")}"
         data-resolution-label="${escapeHtml(stream.resolution_label || "未识别")}"
         data-quality-group="${escapeHtml(stream.quality_group || "未识别")}"
-        data-probed-at="${escapeHtml(stream.probed_at ?? "")}">
+        data-probed-at="${escapeHtml(stream.probed_at ?? "")}"
+        data-fcc-ip="${escapeHtml(stream.fcc_ip || "")}"
+        data-fcc-port="${escapeHtml(stream.fcc_port ?? "")}">
       <td><input type="checkbox" class="stream-check" ${checked}></td>
       <td><code>${escapeHtml(stream.key)}</code></td>
       <td>${escapeHtml(stream.packets)}</td>
@@ -294,11 +322,14 @@ function closeSnapshot() {
 }
 
 async function refreshStatusAndStreams() {
-  const [status, streams] = await Promise.all([
+  const [status, streams, metrics, tokenData] = await Promise.all([
     requestJson("/api/status"),
     requestJson("/api/streams"),
+    requestJson("/api/metrics"),
+    requestJson("/api/stb-token"),
   ]);
   renderStatus(status);
+  renderMetrics(metrics, tokenData);
   renderStreams(streams.streams || []);
 }
 
@@ -345,6 +376,7 @@ function showExportDownloads(files) {
   const map = {
     direct_m3u: $("downloadDirectM3u"),
     source_m3u: $("downloadSourceM3u"),
+    zz_json: $("downloadZzJson"),
     txt: $("downloadTxt"),
     csv: $("downloadCsv"),
   };
@@ -501,7 +533,7 @@ $("exportBtn").addEventListener("click", async () => {
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
     showExportDownloads(data.files);
     $("exportResult").className = "result-box";
-    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；已生成直连 M3U、rtp2httpd 源地址 M3U、TXT、CSV；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
+    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；已生成直连 M3U、rtp2httpd 源地址 M3U、ZZ JSON、TXT、CSV；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
   } catch (err) { alert(err.message); }
 });
 $("logsBtn").addEventListener("click", openLogs);

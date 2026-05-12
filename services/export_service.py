@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +21,27 @@ class ExportService:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def make_http_url(http_host: str, http_port: int, path_mode: str, host: str, port: int) -> str:
-        return f"http://{http_host}:{http_port}/{path_mode}/{host}:{port}"
+    def make_http_url(
+        http_host: str,
+        http_port: int,
+        path_mode: str,
+        host: str,
+        port: int,
+        fcc_ip: str = "",
+        fcc_port: int | None = None,
+    ) -> str:
+        url = f"http://{http_host}:{http_port}/{path_mode}/{host}:{port}"
+        if fcc_ip and fcc_port:
+            url += f"?fcc={fcc_ip}:{int(fcc_port)}"
+        return url
 
     @staticmethod
-    def make_source_url(path_mode: str, host: str, port: int) -> str:
+    def make_source_url(path_mode: str, host: str, port: int, fcc_ip: str = "", fcc_port: int | None = None) -> str:
         scheme = "rtp" if path_mode == "rtp" else "udp"
-        return f"{scheme}://{host}:{port}"
+        url = f"{scheme}://{host}:{port}"
+        if fcc_ip and fcc_port:
+            url += f"?fcc={fcc_ip}:{int(fcc_port)}"
+        return url
 
     def _normalize_channels(self, rows: list[dict[str, Any]]) -> list[ChannelRecord]:
         channels: list[ChannelRecord] = []
@@ -67,6 +82,8 @@ class ExportService:
                 frame_rate=str(row.get("frame_rate", "")),
                 resolution_label=str(row.get("resolution_label", "未识别")),
                 quality_group=quality_group,
+                fcc_ip=str(row.get("fcc_ip", "") or "").strip(),
+                fcc_port=self._safe_int(row.get("fcc_port")),
             ))
             seen_keys.add(key)
         channels.sort(key=self._channel_sort_key)
@@ -109,11 +126,13 @@ class ExportService:
             path_mode = "rtp"
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
+        zz_json_path = self.output_dir / "channels-zz.json"
         txt_path = self.output_dir / "channels.txt"
         csv_path = self.output_dir / "channels.csv"
         quality_groups = self._quality_groups(channels)
         self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct")
         self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source")
+        self._write_zz_json(channels, zz_json_path, path_mode)
         self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode)
         self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode)
         return {
@@ -123,6 +142,7 @@ class ExportService:
             "files": {
                 "direct_m3u": direct_m3u_path.name,
                 "source_m3u": source_m3u_path.name,
+                "zz_json": zz_json_path.name,
                 "txt": txt_path.name,
                 "csv": csv_path.name,
             },
@@ -168,9 +188,9 @@ class ExportService:
         safe_group = group.replace('"', "'")
         tvg_name = channel.name.replace('"', "'")
         if url_mode == "source":
-            url = self.make_source_url(path_mode, channel.host, channel.port)
+            url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
         else:
-            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port)
+            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
         handle.write(f'#EXTINF:-1 tvg-name="{tvg_name}" group-title="{safe_group}",{channel.name}\n')
         handle.write(f"{url}\n")
 
@@ -201,7 +221,7 @@ class ExportService:
                 first_group = False
                 handle.write(f"{category},#genre#\n")
                 for channel in group_channels:
-                    url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port)
+                    url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
                     handle.write(f"{channel.name},{url}\n")
 
     def _write_csv(
@@ -223,6 +243,8 @@ class ExportService:
                 "分辨率",
                 "编码",
                 "帧率",
+                "FCC服务器IP",
+                "FCC服务器端口",
                 "源地址",
                 "播放地址",
                 "组播IP",
@@ -236,8 +258,8 @@ class ExportService:
                     self._write_csv_row(writer, channel, group_name, http_host, http_port, path_mode)
 
     def _write_csv_row(self, writer: csv.writer, channel: ChannelRecord, display_group: str, http_host: str, http_port: int, path_mode: str) -> None:
-        source = self.make_source_url(path_mode, channel.host, channel.port)
-        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port)
+        source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
         resolution = f"{channel.width}x{channel.height}" if channel.width and channel.height else channel.resolution_label
         writer.writerow([
             display_group,
@@ -247,9 +269,43 @@ class ExportService:
             resolution,
             channel.codec_name,
             channel.frame_rate,
+            channel.fcc_ip,
+            channel.fcc_port or "",
             source,
             url,
             channel.host,
             channel.port,
             channel.packets,
         ])
+
+    def _write_zz_json(self, channels: list[ChannelRecord], target: Path, path_mode: str) -> None:
+        payload: dict[str, Any] = {}
+        for index, channel in enumerate(channels, start=1):
+            source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+            definition = channel.resolution_label if channel.resolution_label != "未识别" else ""
+            payload[channel.name] = {
+                "chno": index,
+                "tvg_id": channel.name,
+                "tvg_name": channel.name,
+                "group_title": channel.category,
+                "definition": definition,
+                "flag": [] if channel.probe_status != "failed" else ["probe_failed"],
+                "live": {
+                    "local-multicast": {
+                        "type": "rtp" if path_mode == "rtp" else "udp",
+                        "addr": source,
+                    },
+                },
+                "timeshift": {},
+                "sniffer": {
+                    "key": channel.key,
+                    "packets": channel.packets,
+                    "codec": channel.codec_name,
+                    "width": channel.width,
+                    "height": channel.height,
+                    "fcc": f"{channel.fcc_ip}:{channel.fcc_port}" if channel.fcc_ip and channel.fcc_port else "",
+                },
+            }
+        with target.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")

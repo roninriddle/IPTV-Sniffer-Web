@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""IPTV Sniffer Web v0.5.3 application entrypoint."""
+"""IPTV Sniffer Web v0.6 application entrypoint."""
 from __future__ import annotations
 
 import time
@@ -19,11 +19,13 @@ from config import (
     APP_VERSION,
     CHANNELS_FILE,
     DATA_DIR,
+    FCC_FILE,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
     MIN_PACKET_COUNT,
     OUTPUT_DIR,
     SETTINGS_FILE,
+    STB_TOKEN_FILE,
     WAITRESS_THREADS,
     WEB_HOST,
     WEB_PORT,
@@ -32,14 +34,16 @@ from services.capture_service import CaptureService
 from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
-from services.storage_service import ChannelStore, SettingsStore
+from services.storage_service import ChannelStore, FccStore, SettingsStore, StbTokenStore
 from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
 logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
 settings_store = SettingsStore(SETTINGS_FILE)
 channel_store = ChannelStore(CHANNELS_FILE)
-capture_service = CaptureService(logger)
+fcc_store = FccStore(FCC_FILE)
+token_store = StbTokenStore(STB_TOKEN_FILE)
+capture_service = CaptureService(logger, fcc_store, token_store)
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
 STARTED_AT = time.time()
@@ -68,6 +72,7 @@ def remember_preview_failure(key: str, message: str) -> None:
 def merge_streams_with_channels() -> list[dict[str, Any]]:
     streams = capture_service.streams()
     named = channel_store.load()
+    fcc_records = fcc_store.load()
     settings = settings_store.load()
     payload: list[dict[str, Any]] = []
     for stream in streams:
@@ -85,6 +90,11 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         item["name"] = channel.get("name", "")
         item["category"] = channel.get("category", classify_channel_name(item["name"]))
         item.update(probe_service.merge_probe_data(stream["key"], channel))
+        fcc = dict(fcc_records.get(stream["key"], {}))
+        if channel.get("fcc_ip"):
+            fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
+        item["fcc_ip"] = str(fcc.get("fcc_ip", ""))
+        item["fcc_port"] = fcc.get("fcc_port")
         preview_failure = preview_failures.get(stream["key"], "")
         if (
             not str(item.get("name", "")).strip()
@@ -103,9 +113,11 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             str(settings.get("path_mode", "rtp")),
             str(item["host"]),
             int(item["port"]),
+            item["fcc_ip"],
+            item["fcc_port"],
         ) if settings.get("http_host") else ""
         item["snapshot_url"] = (
-            f"{item['preview_url']}?snapshot=1"
+            f"{item['preview_url']}{'&' if '?' in item['preview_url'] else '?'}snapshot=1"
             if settings.get("http_host") else ""
         )
         item["player_url"] = (
@@ -158,6 +170,8 @@ def api_metrics():
         "probe_runtime": probe_service.runtime_check(),
         "logs": logger.stats(),
         "saved_channels": len(channel_store.load()),
+        "fcc_records": len(fcc_store.load()),
+        "stb_tokens": len(token_store.load().get("history") or []),
         "output_files": {
             name: (OUTPUT_DIR / name).exists()
             for name in sorted(ALLOWED_DOWNLOADS)
@@ -240,6 +254,17 @@ def api_streams():
 @app.get("/api/channels")
 def api_channels():
     return api_success({"channels": channel_store.list()})
+
+
+@app.get("/api/fcc")
+def api_fcc():
+    return api_success({"records": list(fcc_store.load().values()), "file": str(FCC_FILE)})
+
+
+@app.get("/api/stb-token")
+def api_stb_token():
+    data = token_store.load()
+    return api_success({"latest": data.get("latest"), "count": len(data.get("history") or []), "file": str(STB_TOKEN_FILE)})
 
 
 @app.post("/api/channels/save")
@@ -358,7 +383,7 @@ def api_export():
         logger.info(
             "导出完成：共生成 "
             f"{result['count']} 个频道，文件为 channels-direct.m3u / "
-            "channels-rtp2httpd-source.m3u / channels.txt / channels.csv"
+            "channels-rtp2httpd-source.m3u / channels-zz.json / channels.txt / channels.csv"
         )
         return api_success(result)
     except ValueError as exc:

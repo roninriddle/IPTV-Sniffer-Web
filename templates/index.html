@@ -10,7 +10,8 @@
   <header class="topbar">
     <div>
       <div class="eyebrow">{{ app_name }} <span class="version">v{{ app_version }}</span></div>
-      <h1>{{ app_description }}</h1>
+      <h1>统一 IPTV 嗅探工作台</h1>
+      <p class="top-subtitle">{{ app_description }}</p>
     </div>
     <div class="top-actions">
       <button id="refreshInterfacesBtn" class="secondary">刷新接口</button>
@@ -37,12 +38,12 @@
   <main class="layout">
     <section class="card hero-card">
       <div class="section-title">
-        <h2>使用前必读</h2>
-        <span class="chip warning">宿主机必须能看到 IPTV 流量</span>
+        <h2>运行拓扑</h2>
+        <span class="chip warning">宿主机必须能看到机顶盒 IPTV 流量</span>
       </div>
-      <p>本工具适合 OpenWrt、iStoreOS、飞牛 NAS 或其它 Linux Docker 宿主机。容器只能抓取宿主机实际可见的组播流量。</p>
+      <p>0.6 将组播候选、FCC 快速换台字段、channelAcquire 令牌记录、截图预览和多格式导出集中在同一页面。容器只能抓取宿主机实际可见的流量。</p>
       <div class="grid two">
-        <article class="notice">
+        <article class="notice compact">
           <h3>推荐：管理型交换机镜像口</h3>
           <pre>光猫 IPTV 口 → 交换机 A 口
 交换机 B 口 → 机顶盒
@@ -54,7 +55,7 @@
 镜像方向：Both / 双向</pre>
           <p>A 口也可以镜像到 C，但优先推荐镜像 B 口，便于观察机顶盒实际收到的 IPTV 流量。</p>
         </article>
-        <article class="notice">
+        <article class="notice compact">
           <h3>无管理型交换机</h3>
           <pre>光猫 IPTV 口
       ↓
@@ -69,7 +70,7 @@ OpenWrt / iStoreOS
 
     <section class="card">
       <div class="section-title">
-        <h2>1. 抓包参数</h2>
+        <h2>1. 嗅探参数</h2>
         <span id="runtimeBadge" class="chip neutral">检查中</span>
       </div>
       <div class="form-grid">
@@ -93,14 +94,14 @@ OpenWrt / iStoreOS
           </select>
         </label>
         <label>
-          抓包时长（秒）
+          嗅探时长（秒）
           <input id="duration" type="number" min="0" value="30">
           <small>0 表示手动停止</small>
         </label>
       </div>
       <div class="button-row">
-        <button id="startBtn" class="primary">开始抓包</button>
-        <button id="stopBtn" class="danger" disabled>停止抓包</button>
+        <button id="startBtn" class="primary">开始嗅探</button>
+        <button id="stopBtn" class="danger" disabled>停止嗅探</button>
         <button id="resetBtn" class="secondary">重置候选流</button>
         <button id="saveSettingsBtn" class="secondary">保存默认设置</button>
       </div>
@@ -108,22 +109,25 @@ OpenWrt / iStoreOS
 
     <section class="card">
       <div class="section-title">
-        <h2>2. 抓包状态</h2>
+        <h2>2. 实时状态</h2>
         <span id="statusChip" class="chip neutral">等待开始</span>
       </div>
       <div id="statusPanel" class="status-panel"></div>
       <div class="metrics-grid">
         <div class="metric"><span>发现流</span><strong id="streamsFound">0</strong></div>
         <div class="metric"><span>有效候选</span><strong id="eligibleStreams">0</strong></div>
+        <div class="metric"><span>FCC 记录</span><strong id="fccRecords">0</strong></div>
+        <div class="metric"><span>令牌记录</span><strong id="stbTokens">0</strong></div>
         <div class="metric"><span>包计数</span><strong id="packetCount">0</strong></div>
         <div class="metric"><span>运行秒数</span><strong id="elapsed">0</strong></div>
       </div>
+      <div id="snifferInsight" class="insight-panel muted">尚未发现 FCC 或 channelAcquire 令牌。</div>
     </section>
 
     <section class="card">
       <div class="section-title">
-        <h2>3. 候选流、频道编辑与 4K 检测</h2>
-        <span class="muted">检测分辨率时，请保持机顶盒仍在播放对应频道；未成功检测的流不会进入 4K/普通汇总分组。</span>
+        <h2>3. 有效候选与频道整理</h2>
+        <span class="muted">低包数、系统发现端口、503/失败且未命名的流会自动折叠；截图来自 rtp2httpd snapshot。</span>
       </div>
       <div class="toolbar">
         <button id="saveChannelsBtn" class="secondary">保存频道草稿</button>
@@ -165,13 +169,14 @@ OpenWrt / iStoreOS
         <span class="muted">原分类保留；同时额外复制到“4K高清”与“普通频道”两个清晰度分组。</span>
       </div>
       <div class="button-row">
-        <button id="exportBtn" class="primary">生成 m3u / txt / csv</button>
+        <button id="exportBtn" class="primary">生成播放列表</button>
         <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
         <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
+        <a id="downloadZzJson" class="download disabled" href="#">下载 ZZ JSON</a>
         <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
         <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
       </div>
-      <div id="exportResult" class="result-box muted">尚未生成导出文件。</div>
+      <div id="exportResult" class="result-box muted">尚未生成导出文件。源地址 M3U 可作为 rtp2httpd external-m3u；ZZ JSON 保留 live/source 结构，便于后续二次转换。</div>
     </section>
   </main>
   </div>

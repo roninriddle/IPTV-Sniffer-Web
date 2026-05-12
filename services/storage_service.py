@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from config import CATEGORY_OPTIONS, DEFAULT_SETTINGS
-from utils import classify_channel_name, stream_key
+from utils import classify_channel_name, stream_key, valid_ip_or_host
 
 
 def _safe_load_json(path: Path, default: Any) -> Any:
@@ -113,9 +113,102 @@ class ChannelStore:
                     "frame_rate": str(row.get("frame_rate", data.get(key, {}).get("frame_rate", ""))),
                     "resolution_label": str(row.get("resolution_label", data.get(key, {}).get("resolution_label", "未识别"))),
                     "quality_group": str(row.get("quality_group", data.get(key, {}).get("quality_group", "未识别"))),
+                    "fcc_ip": str(row.get("fcc_ip") or data.get(key, {}).get("fcc_ip", "")),
+                    "fcc_port": self._safe_port(row.get("fcc_port") or data.get(key, {}).get("fcc_port")),
                     "probed_at": row.get("probed_at", data.get(key, {}).get("probed_at")),
                     "updated_at": row.get("updated_at"),
                 }
                 saved += 1
             _atomic_dump_json(self.path, data)
             return {"saved": saved, "deleted": deleted, "total": len(data)}
+
+    @staticmethod
+    def _safe_port(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            return None
+        return port if 1 <= port <= 65535 else None
+
+
+class FccStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.RLock()
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            return data if isinstance(data, dict) else {}
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        return self.load().get(key)
+
+    def save_record(self, record: dict[str, Any]) -> bool:
+        key = str(record.get("key", "")).strip()
+        fcc_ip = str(record.get("fcc_ip", "")).strip()
+        try:
+            fcc_port = int(record.get("fcc_port"))
+        except (TypeError, ValueError):
+            return False
+        if not key or not valid_ip_or_host(fcc_ip) or not 1 <= fcc_port <= 65535:
+            return False
+        with self._lock:
+            data = self.load()
+            current = data.get(key, {})
+            payload = {
+                "key": key,
+                "host": str(record.get("host", current.get("host", ""))).strip(),
+                "port": ChannelStore._safe_port(record.get("port", current.get("port"))),
+                "fcc_ip": fcc_ip,
+                "fcc_port": fcc_port,
+                "source_url": str(record.get("source_url", current.get("source_url", ""))).strip(),
+                "raw_field": str(record.get("raw_field", current.get("raw_field", ""))).strip(),
+                "first_seen": current.get("first_seen") or record.get("discovered_at"),
+                "last_seen": record.get("discovered_at"),
+            }
+            data[key] = payload
+            _atomic_dump_json(self.path, data)
+            return True
+
+
+class StbTokenStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.RLock()
+
+    def load(self) -> dict[str, Any]:
+        with self._lock:
+            data = _safe_load_json(self.path, {"latest": None, "history": []})
+            if not isinstance(data, dict):
+                return {"latest": None, "history": []}
+            history = data.get("history")
+            if not isinstance(history, list):
+                history = []
+            return {"latest": data.get("latest"), "history": history[-100:]}
+
+    def save_token(self, record: dict[str, Any]) -> bool:
+        token = str(record.get("token", "")).strip()
+        if not token:
+            return False
+        with self._lock:
+            data = self.load()
+            latest = data.get("latest") or {}
+            if latest.get("token") == token and latest.get("dip") == record.get("dip"):
+                return False
+            payload = {
+                "token": token,
+                "sip": str(record.get("sip", "")).strip(),
+                "sport": ChannelStore._safe_port(record.get("sport")),
+                "dip": str(record.get("dip", "")).strip(),
+                "dport": ChannelStore._safe_port(record.get("dport")),
+                "path": str(record.get("path", "")).strip(),
+                "captured_at": record.get("captured_at"),
+            }
+            history = list(data.get("history") or [])
+            history.append(payload)
+            data = {"latest": payload, "history": history[-100:]}
+            _atomic_dump_json(self.path, data)
+            return True

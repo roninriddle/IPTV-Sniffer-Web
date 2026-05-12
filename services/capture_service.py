@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import asdict
 from typing import Any, Sequence
+from urllib.parse import unquote
 
 from config import (
     CAPTURE_FILTER,
@@ -22,6 +23,7 @@ from config import (
 )
 from models import StreamRecord
 from services.log_service import AppLogger
+from services.storage_service import FccStore, StbTokenStore
 from utils import is_probable_iptv_stream, stream_static_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 # Typical tcpdump lines:
@@ -29,6 +31,24 @@ from utils import is_probable_iptv_stream, stream_static_filter_reason, valid_ip
 # IP 10.0.0.2.49152 > 239.10.10.10.5000: UDP, length 1316
 DESTINATION_RE = re.compile(
     r">\s*(?P<host>(?:\d{1,3}\.){3}\d{1,3})\.(?P<port>\d+)\s*:\s*UDP",
+    re.IGNORECASE,
+)
+TCP_PEER_RE = re.compile(
+    r"IP\s+(?P<sip>(?:\d{1,3}\.){3}\d{1,3})\.(?P<sport>\d+)\s*>\s*"
+    r"(?P<dip>(?:\d{1,3}\.){3}\d{1,3})\.(?P<dport>\d+)\s*:",
+    re.IGNORECASE,
+)
+CHANNEL_ACQUIRE_RE = re.compile(r"POST\s+(?P<path>/bj_stb/V1/STB/channelAcquire[^\s]*)", re.IGNORECASE)
+STREAM_URL_RE = re.compile(
+    r"(?P<url>(?:igmp|rtp)://(?P<host>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)(?:\?[^\"'\s,;)<>{}]{0,1200})?)",
+    re.IGNORECASE,
+)
+FCC_IP_RE = re.compile(
+    r"(?:ChannelFCCIP\s*(?:=|:)\s*[\"']?|<ChannelFCCIP>\s*)(?P<ip>(?:\d{1,3}\.){3}\d{1,3})",
+    re.IGNORECASE,
+)
+FCC_PORT_RE = re.compile(
+    r"(?:ChannelFCCPort\s*(?:=|:)\s*[\"']?|<ChannelFCCPort>\s*)(?P<port>\d{1,5})",
     re.IGNORECASE,
 )
 
@@ -41,8 +61,15 @@ def _run_text(cmd: Sequence[str]) -> str:
 
 
 class CaptureService:
-    def __init__(self, logger: AppLogger) -> None:
+    def __init__(
+        self,
+        logger: AppLogger,
+        fcc_store: FccStore | None = None,
+        token_store: StbTokenStore | None = None,
+    ) -> None:
         self.logger = logger
+        self.fcc_store = fcc_store
+        self.token_store = token_store
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
         self._stdout_thread: threading.Thread | None = None
@@ -50,6 +77,11 @@ class CaptureService:
         self._watcher_thread: threading.Thread | None = None
         self._timer_thread: threading.Thread | None = None
         self._streams: dict[str, StreamRecord] = {}
+        self._fcc_buffer = ""
+        self._fcc_seen: set[str] = set()
+        self._http_buffer = ""
+        self._last_tcp_peer: dict[str, Any] = {}
+        self._token_seen: set[str] = set()
         self._runtime_check: dict[str, Any] = {"ok": False, "errors": ["尚未检查运行环境"]}
         self._state: dict[str, Any] = {
             "state": "idle",  # idle, running, stopped, error
@@ -166,7 +198,7 @@ class CaptureService:
                 "total_packets": 0,
             })
 
-        cmd = ["tcpdump", "-i", interface, "-n", "-l", "-q", CAPTURE_FILTER]
+        cmd = ["tcpdump", "-i", interface, "-n", "-l", "-s", "0", "-A", CAPTURE_FILTER]
         self.logger.info(
             f"开始抓包：接口={interface}，过滤条件={CAPTURE_FILTER}，rtp2httpd 地址前缀=http://{http_host}:{http_port}/{path_mode}/，时长={duration} 秒"
         )
@@ -220,6 +252,17 @@ class CaptureService:
                 self.logger.info(f"tcpdump: {clean}")
 
     def _consume_tcpdump_line(self, line: str) -> None:
+        self._consume_http_text(line)
+        self._consume_fcc_text(line)
+        peer_match = TCP_PEER_RE.search(line)
+        if peer_match:
+            with self._lock:
+                self._last_tcp_peer = {
+                    "sip": peer_match.group("sip"),
+                    "sport": int(peer_match.group("sport")),
+                    "dip": peer_match.group("dip"),
+                    "dport": int(peer_match.group("dport")),
+                }
         match = DESTINATION_RE.search(line)
         if not match:
             return
@@ -246,6 +289,81 @@ class CaptureService:
             else:
                 existing.packets += 1
                 existing.last_seen = now
+
+    def _consume_fcc_text(self, line: str) -> None:
+        if "ChannelFCC" not in line and "channelFCC" not in line and "rtp://" not in line and "igmp://" not in line:
+            if self._fcc_buffer:
+                self._fcc_buffer = (self._fcc_buffer + "\n" + line)[-16000:]
+            return
+        text = unquote(line)
+        with self._lock:
+            self._fcc_buffer = (self._fcc_buffer + "\n" + text)[-16000:]
+            buffer = self._fcc_buffer
+        for match in STREAM_URL_RE.finditer(buffer):
+            host = match.group("host")
+            try:
+                port = int(match.group("port"))
+            except ValueError:
+                continue
+            if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
+                continue
+            segment = buffer[max(0, match.start() - 1000): match.end() + 2400]
+            ip_match = FCC_IP_RE.search(segment)
+            port_match = FCC_PORT_RE.search(segment)
+            if not ip_match or not port_match:
+                continue
+            fcc_ip = ip_match.group("ip")
+            try:
+                fcc_port = int(port_match.group("port"))
+            except ValueError:
+                continue
+            if not valid_ip_or_host(fcc_ip) or not 1 <= fcc_port <= 65535:
+                continue
+            key = f"{host}:{port}"
+            seen_token = f"{key}|{fcc_ip}:{fcc_port}"
+            if seen_token in self._fcc_seen:
+                continue
+            self._fcc_seen.add(seen_token)
+            record = {
+                "key": key,
+                "host": host,
+                "port": port,
+                "fcc_ip": fcc_ip,
+                "fcc_port": fcc_port,
+                "source_url": match.group("url"),
+                "raw_field": f"ChannelFCCIP={fcc_ip}&ChannelFCCPort={fcc_port}",
+                "discovered_at": int(time.time()),
+            }
+            if self.fcc_store and self.fcc_store.save_record(record):
+                self.logger.info(f"发现 FCC 信息：{key} -> {fcc_ip}:{fcc_port}，已写入 fcc.json")
+
+    def _consume_http_text(self, line: str) -> None:
+        text = unquote(line)
+        if "\ufffd" in text:
+            return
+        with self._lock:
+            self._http_buffer = (self._http_buffer + "\n" + text)[-64000:]
+            buffer = self._http_buffer
+            peer = dict(self._last_tcp_peer)
+        if "channelAcquire" not in buffer or "UserToken" not in buffer:
+            return
+        path_match = CHANNEL_ACQUIRE_RE.search(buffer)
+        token_match = re.search(r'"UserToken"\s*:\s*"(?P<token>[^"]+)"', buffer)
+        if not path_match or not token_match:
+            return
+        token = token_match.group("token").strip()
+        if not token or token in self._token_seen:
+            return
+        self._token_seen.add(token)
+        record = {
+            "token": token,
+            "path": path_match.group("path"),
+            "captured_at": int(time.time()),
+            **peer,
+        }
+        if self.token_store and self.token_store.save_token(record):
+            dip = f"{peer.get('dip', '-') if peer else '-'}:{peer.get('dport', '-') if peer else '-'}"
+            self.logger.info(f"发现 channelAcquire UserToken，服务端={dip}，已写入 playlist_token.json")
 
     def _watch_process(self, proc: subprocess.Popen[str]) -> None:
         return_code = proc.wait()
