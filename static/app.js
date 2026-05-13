@@ -11,6 +11,7 @@ const state = {
   ignoredKeys: new Set(),
   logoAuto: true,
   epgAuto: true,
+  detectedEpgUrl: "",
 };
 
 async function requestJson(url, options = {}) {
@@ -38,7 +39,7 @@ function formatTime(seconds) {
 
 function formSettings() {
   const epgUrl = state.epgAuto
-    ? (state.epgSources[0]?.url || "")
+    ? (state.detectedEpgUrl || state.epgSources[0]?.url || "")
     : $("epgUrl").value.trim();
   const logoUrl = state.logoAuto
     ? (state.logoSources[0]?.url || "")
@@ -201,6 +202,31 @@ function setEpgMode(auto) {
   $("epgManualBtn").classList.toggle("active", !auto);
   $("epgPreset").hidden = auto;
   $("epgUrlLabel").hidden = auto;
+  const manageBtn = $("manageEpgSourcesBtn");
+  if (manageBtn) manageBtn.style.display = auto ? "none" : "";
+  if (auto) triggerEpgDetect();
+}
+
+async function triggerEpgDetect() {
+  const statusEl = $("epgDetectStatus");
+  if (statusEl) { statusEl.textContent = "检测中…"; statusEl.hidden = false; }
+  try {
+    await requestJson("/api/epg/detect-best", {method: "POST", body: "{}"});
+    const poll = async () => {
+      const d = await requestJson("/api/epg/detect-best");
+      if (!state.epgAuto) return;
+      if (d.status === "detecting") { setTimeout(poll, 1500); return; }
+      if (d.best_url) {
+        state.detectedEpgUrl = d.best_url;
+        if (statusEl) { statusEl.textContent = `已选：${d.best_name}（${d.best_channels} 频道）`; }
+      } else {
+        if (statusEl) { statusEl.textContent = "检测失败，将使用默认源"; }
+      }
+    };
+    poll();
+  } catch (_) {
+    if (statusEl) { statusEl.textContent = ""; statusEl.hidden = true; }
+  }
 }
 
 function setLogoMode(auto) {
@@ -209,6 +235,64 @@ function setLogoMode(auto) {
   $("logoManualBtn").classList.toggle("active", !auto);
   $("logoPreset").hidden = auto;
   $("logoUrlLabel").hidden = auto;
+  const manageBtn = $("manageLogoSourcesBtn");
+  if (manageBtn) manageBtn.style.display = auto ? "none" : "";
+}
+
+let _sourcesModalType = "epg";
+
+function openSourcesModal(type) {
+  _sourcesModalType = type;
+  $("sourcesModalTitle").textContent = type === "epg" ? "管理 EPG 来源" : "管理台标来源";
+  $("sourcesAddName").value = "";
+  $("sourcesAddUrl").value = "";
+  renderSourcesList();
+  $("sourcesModal").hidden = false;
+}
+
+function closeSourcesModal() {
+  $("sourcesModal").hidden = true;
+}
+
+async function renderSourcesList() {
+  const type = _sourcesModalType;
+  const sources = type === "epg" ? state.epgSources : state.logoSources;
+  const list = $("sourcesList");
+  if (!sources.length) {
+    list.innerHTML = `<div class="sources-empty">暂无来源</div>`;
+    return;
+  }
+  list.innerHTML = sources.map((s) => `
+    <div class="source-row" data-id="${escapeHtml(s.id)}" data-builtin="${s.builtin ? "1" : "0"}">
+      <span class="source-name">${escapeHtml(s.name)}</span>
+      <span class="source-url muted small">${escapeHtml(s.url)}</span>
+      ${s.builtin ? `<span class="chip neutral" style="font-size:11px">内置</span>` : `<button class="secondary xs-btn source-del-btn" type="button" data-id="${escapeHtml(s.id)}">删除</button>`}
+    </div>
+  `).join("");
+}
+
+async function addCustomSource() {
+  const name = $("sourcesAddName").value.trim();
+  const url = $("sourcesAddUrl").value.trim();
+  if (!name || !url) { alert("名称和地址不能为空"); return; }
+  try {
+    await requestJson("/api/sources/custom", {
+      method: "POST",
+      body: JSON.stringify({type: _sourcesModalType, name, url}),
+    });
+    $("sourcesAddName").value = "";
+    $("sourcesAddUrl").value = "";
+    await loadEpgSources();
+    renderSourcesList();
+  } catch (err) { alert(err.message); }
+}
+
+async function deleteCustomSource(id) {
+  try {
+    await requestJson(`/api/sources/custom/${_sourcesModalType}/${id}`, {method: "DELETE"});
+    await loadEpgSources();
+    renderSourcesList();
+  } catch (err) { alert(err.message); }
 }
 
 async function loadEpgSources() {
@@ -454,7 +538,16 @@ function tableHasEditingFocus() {
 
 function renderStreams(streams) {
   const currentChecks = new Map([...document.querySelectorAll("#streamsTableBody tr[data-key]")].map((row) => [row.dataset.key, Boolean(row.querySelector(".stream-check")?.checked)]));
-  const sorted = (streams || []).filter((s) => !state.ignoredKeys.has(s.key)).sort((a, b) => (b.first_seen || 0) - (a.first_seen || 0));
+  let filtered = (streams || []).filter((s) => !state.ignoredKeys.has(s.key));
+  if ($("filterBestPerIp").checked) {
+    const bestPerIp = new Map();
+    for (const s of filtered) {
+      const prev = bestPerIp.get(s.host);
+      if (!prev || (s.packets || 0) > (prev.packets || 0)) bestPerIp.set(s.host, s);
+    }
+    filtered = [...bestPerIp.values()];
+  }
+  const sorted = filtered.sort((a, b) => (b.first_seen || 0) - (a.first_seen || 0));
   state.streams = preserveRowEdits(sorted);
   const body = $("streamsTableBody");
   if (!state.streams.length) {
@@ -507,7 +600,51 @@ function renderStreams(streams) {
   }).join("");
 }
 
+let _hlsPlayer = null;
+let _hlsStreamKey = null;
+
+function startDirectStream(host, port) {
+  const video = $("previewVideo");
+  stopDirectStream();
+  _hlsStreamKey = `${host}:${port}`;
+  const hlsSrc = `/api/stream/${host}/${port}/hls/index.m3u8`;
+  video.hidden = false;
+  if (typeof Hls !== "undefined" && Hls.isSupported()) {
+    _hlsPlayer = new Hls({lowLatencyMode: true, backBufferLength: 10, maxBufferLength: 20});
+    _hlsPlayer.loadSource(hlsSrc);
+    _hlsPlayer.attachMedia(video);
+    _hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+    _hlsPlayer.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) $("previewStatus").textContent = `直接播放失败：${data.details}`;
+    });
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = hlsSrc;
+    video.play().catch(() => {});
+  } else {
+    video.hidden = true;
+    $("previewStatus").textContent = "当前浏览器不支持 HLS 播放";
+  }
+}
+
+function stopDirectStream() {
+  if (_hlsPlayer) {
+    _hlsPlayer.destroy();
+    _hlsPlayer = null;
+  }
+  const video = $("previewVideo");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  video.hidden = true;
+  if (_hlsStreamKey) {
+    const parts = _hlsStreamKey.split(":");
+    fetch(`/api/stream/${parts[0]}/${parts[1]}/hls`, {method: "DELETE"}).catch(() => {});
+    _hlsStreamKey = null;
+  }
+}
+
 function stopPreview() {
+  stopDirectStream();
   $("previewFrame").removeAttribute("src");
   $("previewFrame").hidden = true;
   $("previewSnapshot").removeAttribute("src");
@@ -522,11 +659,15 @@ function openPreview(streamUrl, playerUrl, title, snapshotUrl) {
   $("previewPlayerLink").hidden = !playerUrl;
   $("previewSnapshot").src = snapshotUrl || "";
   $("previewSnapshot").hidden = !snapshotUrl;
+  // Direct HLS stream (ffmpeg proxy)
+  const m = streamUrl.match(/\/\/([^/:]+):(\d+)/);
+  if (m) {
+    startDirectStream(m[1], Number(m[2]));
+    $("previewStatus").textContent = "直接播放加载中，请稍候（约 4 秒）…";
+  }
+  // rtp2httpd iframe fallback
   $("previewFrame").hidden = !playerUrl;
   if (playerUrl) $("previewFrame").src = playerUrl;
-  $("previewStatus").textContent = playerUrl
-    ? "已加载 rtp2httpd 内置播放器"
-    : "请在下方设置 rtp2httpd 地址后，可通过"播放预览"实时观看；截图为 ffmpeg 直接抓帧。";
   $("previewModal").hidden = false;
 }
 
@@ -566,13 +707,14 @@ async function refreshStatusAndStreams() {
   }
 }
 
-function startPolling() {
+function startPolling(fast = false) {
   if (state.poller) clearInterval(state.poller);
+  const ms = fast ? 1000 : 2000;
   state.poller = setInterval(async () => {
     try {
       await refreshStatusAndStreams();
     } catch (_) {}
-  }, 2000);
+  }, ms);
 }
 
 async function appendLogs() {
@@ -640,7 +782,8 @@ async function bootstrap() {
   await loadSettings();
   await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
-  startPolling();
+  const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
+  startPolling(initialState === "running");
 }
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
@@ -653,6 +796,7 @@ $("logoPreset").addEventListener("change", () => {
 });
 $("epgUrl").addEventListener("input", () => syncPresetFromUrl($("epgPreset"), $("epgUrl").value));
 $("logoUrl").addEventListener("input", () => syncPresetFromUrl($("logoPreset"), $("logoUrl").value));
+$("filterBestPerIp").addEventListener("change", () => renderStreams(state.streams));
 $("epgAutoBtn").addEventListener("click", () => setEpgMode(true));
 $("epgManualBtn").addEventListener("click", () => setEpgMode(false));
 $("logoAutoBtn").addEventListener("click", () => setLogoMode(true));
@@ -699,12 +843,14 @@ $("startBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/capture/start", {method: "POST", body: JSON.stringify(formSettings())});
     await refreshStatusAndStreams();
+    startPolling(true);
   } catch (err) { alert(err.message); }
 });
 $("stopBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/capture/stop", {method: "POST", body: "{}"});
     await refreshStatusAndStreams();
+    startPolling(false);
   } catch (err) { alert(err.message); }
 });
 $("resetBtn").addEventListener("click", async () => {
@@ -797,6 +943,17 @@ $("exportBtn").addEventListener("click", async () => {
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
+$("manageEpgSourcesBtn").addEventListener("click", () => openSourcesModal("epg"));
+$("manageLogoSourcesBtn").addEventListener("click", () => openSourcesModal("logo"));
+$("closeSourcesBtn").addEventListener("click", closeSourcesModal);
+$("sourcesModal").addEventListener("click", (event) => {
+  if (event.target.id === "sourcesModal") closeSourcesModal();
+});
+$("sourcesAddBtn").addEventListener("click", addCustomSource);
+$("sourcesList").addEventListener("click", (event) => {
+  const btn = event.target.closest(".source-del-btn");
+  if (btn) deleteCustomSource(btn.dataset.id);
+});
 $("closePreviewBtn").addEventListener("click", closePreview);
 $("previewModal").addEventListener("click", (event) => {
   if (event.target.id === "previewModal") closePreview();

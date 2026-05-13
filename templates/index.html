@@ -144,7 +144,11 @@ OpenWrt / iStoreOS
                     <button type="button" id="epgAutoBtn" class="mode-btn">自动</button><button type="button" id="epgManualBtn" class="mode-btn">手动</button>
                   </div>
                 </div>
-                <select id="epgPreset"></select>
+                <span id="epgDetectStatus" class="muted small" hidden></span>
+                <div class="source-select-row">
+                  <select id="epgPreset"></select>
+                  <button type="button" id="manageEpgSourcesBtn" class="secondary xs-btn" style="display:none">管理</button>
+                </div>
               </div>
               <label id="epgUrlLabel" class="wide-field">
                 XMLTV EPG 地址
@@ -157,7 +161,10 @@ OpenWrt / iStoreOS
                     <button type="button" id="logoAutoBtn" class="mode-btn">自动</button><button type="button" id="logoManualBtn" class="mode-btn">手动</button>
                   </div>
                 </div>
-                <select id="logoPreset"></select>
+                <div class="source-select-row">
+                  <select id="logoPreset"></select>
+                  <button type="button" id="manageLogoSourcesBtn" class="secondary xs-btn" style="display:none">管理</button>
+                </div>
               </div>
               <label id="logoUrlLabel" class="wide-field">
                 台标 M3U 地址
@@ -200,6 +207,10 @@ OpenWrt / iStoreOS
               <button id="saveChannelsBtn" class="secondary" type="button">保存频道草稿</button>
               <button id="autoClassifyBtn" class="secondary" type="button">按名称自动分类</button>
               <button id="deleteCheckedBtn" class="danger" type="button">删除勾选</button>
+              <label class="checkbox-label toolbar-check">
+                <input id="filterBestPerIp" type="checkbox">
+                同 IP 保留最多包
+              </label>
               <select id="batchCategory">
                 <option value="央视频道">央视频道</option>
                 <option value="卫视频道">卫视频道</option>
@@ -229,34 +240,34 @@ OpenWrt / iStoreOS
             </div>
           </section>
 
-          <section class=”card”>
-            <div class=”section-title”>
+          <section class="card">
+            <div class="section-title">
               <h2>导出结果</h2>
-              <span class=”muted”>原分类保留；同时额外复制到”4K高清”与”普通频道”两个清晰度分组。</span>
+              <span class="muted">原分类保留；同时额外复制到"4K高清"与"普通频道"两个清晰度分组。</span>
             </div>
-            <div class=”section-subtitle”>
+            <div class="section-subtitle">
               <h3>rtp2httpd 配置</h3>
-              <span class=”muted small”>仅导出 rtp2httpd 格式地址时需要填写</span>
+              <span class="muted small">仅导出 rtp2httpd 格式地址时需要填写</span>
             </div>
-            <div class=”form-grid”>
+            <div class="form-grid">
               <label>
                 rtp2httpd 地址
-                <input id=”httpHost” type=”text” placeholder=”例如 192.168.10.2”>
+                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
               </label>
               <label>
                 rtp2httpd 端口
-                <input id=”httpPort” type=”number” min=”1” max=”65535” value=”5140”>
+                <input id="httpPort" type="number" min="1" max="65535" value="5140">
               </label>
               <label>
                 播放路径
-                <select id=”pathMode”>
-                  <option value=”rtp”>/rtp/</option>
-                  <option value=”udp”>/udp/</option>
+                <select id="pathMode">
+                  <option value="rtp">/rtp/</option>
+                  <option value="udp">/udp/</option>
                 </select>
               </label>
             </div>
-            <div class=”button-row”>
-              <button id=”exportBtn” class=”primary” type=”button”>生成播放列表</button>
+            <div class="button-row">
+              <button id="exportBtn" class="primary" type="button">生成播放列表</button>
               <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
               <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
               <a id="downloadJson" class="download disabled" href="#">下载 JSON</a>
@@ -333,6 +344,21 @@ OpenWrt / iStoreOS
     </main>
   </div>
 
+  <div id="sourcesModal" class="preview-modal" hidden>
+    <div class="preview-dialog sources-dialog" role="dialog" aria-modal="true">
+      <div class="preview-header">
+        <div><h2 id="sourcesModalTitle">管理来源</h2></div>
+        <button id="closeSourcesBtn" class="secondary" type="button">关闭</button>
+      </div>
+      <div id="sourcesList" class="sources-list"></div>
+      <div class="sources-add-row">
+        <input id="sourcesAddName" type="text" placeholder="来源名称" style="flex:0 0 140px">
+        <input id="sourcesAddUrl" type="url" placeholder="https://..." style="flex:1 1 200px;min-width:0">
+        <button id="sourcesAddBtn" class="primary" type="button">添加</button>
+      </div>
+    </div>
+  </div>
+
   <div id="previewModal" class="preview-modal" hidden>
     <div class="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
       <div class="preview-header">
@@ -347,6 +373,7 @@ OpenWrt / iStoreOS
         <a id="previewDirectLink" class="download" href="#" target="_blank" rel="noreferrer">打开直连流</a>
       </div>
       <img id="previewSnapshot" class="preview-snapshot" alt="频道截图预览">
+      <video id="previewVideo" class="preview-frame" controls autoplay muted playsinline hidden></video>
       <iframe id="previewFrame" class="preview-frame" title="rtp2httpd 播放器预览"></iframe>
       <div id="previewStatus" class="preview-status muted">等待播放</div>
       <a id="previewExternalLink" class="preview-source" href="#" target="_blank" rel="noreferrer"></a>
@@ -363,6 +390,7 @@ OpenWrt / iStoreOS
     <span>适用：OpenWrt / iStoreOS / 飞牛 NAS / Linux Docker</span>
   </footer>
 
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

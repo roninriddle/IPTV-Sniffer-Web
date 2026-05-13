@@ -47,6 +47,7 @@ body {
   flex-wrap: wrap;
   align-items: center;
 }
+.toolbar-check { font-size: 13px; font-weight: 500; padding: 0 8px; min-height: 34px; }
 
 .layout {
   width: min(1040px, calc(100% - 32px));
@@ -247,9 +248,9 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 .preview-cell { display: grid; gap: 8px; align-items: start; }
 .preview-link { display: block; width: 100%; line-height: 1.45; overflow-wrap: anywhere; word-break: break-word; }
 .snapshot-thumb-btn {
-  width: 62px;
-  height: 38px;
-  min-height: 38px;
+  width: 96px;
+  height: 56px;
+  min-height: 56px;
   padding: 0;
   overflow: hidden;
   background: #08101f;
@@ -295,6 +296,25 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
   box-shadow: 0 24px 80px rgba(0, 0, 0, .35);
 }
 .snapshot-close { position: fixed; top: 18px; right: 18px; z-index: 41; background: #fff; }
+
+.sources-dialog { width: min(580px, 100%); }
+.sources-list { display: grid; gap: 6px; max-height: 320px; overflow-y: auto; }
+.sources-empty { color: var(--muted); text-align: center; padding: 14px; }
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.source-name { font-weight: 600; flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-url { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.source-row .source-del-btn { flex: 0 0 auto; margin-left: auto; }
+.sources-add-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--line); }
+.sources-add-row input { flex: 1 1 140px; min-width: 0; }
+.xs-btn { min-height: 28px; padding: 0 9px; font-size: 12px; }
 
 .logs-drawer {
   position: fixed;

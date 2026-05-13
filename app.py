@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import threading
 from pathlib import Path
@@ -38,6 +40,7 @@ from config import (
     OUTPUT_DIR,
     SETTINGS_FILE,
     STB_TOKEN_FILE,
+    CUSTOM_SOURCES_FILE,
     WAITRESS_THREADS,
     WEB_HOST,
     WEB_PORT,
@@ -48,7 +51,7 @@ from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
-from services.storage_service import ChannelStore, DiscoveryStore, FccStore, SettingsStore, StbTokenStore
+from services.storage_service import ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, SettingsStore, StbTokenStore
 from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
@@ -56,6 +59,7 @@ logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
 settings_store = SettingsStore(SETTINGS_FILE)
 channel_store = ChannelStore(CHANNELS_FILE)
 fcc_store = FccStore(FCC_FILE)
+custom_sources_store = CustomSourcesStore(CUSTOM_SOURCES_FILE)
 token_store = StbTokenStore(STB_TOKEN_FILE)
 discovery_store = DiscoveryStore(DISCOVERY_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
@@ -116,6 +120,100 @@ def _start_version_check_loop() -> None:
             _do_version_check()
             time.sleep(VERSION_CHECK_INTERVAL)
     threading.Thread(target=worker, daemon=True).start()
+_epg_detect_lock = threading.RLock()
+_epg_detect_state: dict[str, Any] = {"status": "idle", "best_url": "", "best_name": "", "best_channels": 0, "checked_at": None}
+
+# HLS stream proxy sessions
+_stream_sessions: dict[str, dict[str, Any]] = {}
+_stream_sessions_lock = threading.RLock()
+_STREAM_IDLE_TTL = 30
+
+
+def _stream_session_key(host: str, port: int) -> str:
+    return f"{host}:{port}"
+
+
+def _cleanup_stream_session(session: dict[str, Any]) -> None:
+    try:
+        proc = session.get("proc")
+        if proc and proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+    except Exception:
+        pass
+    shutil.rmtree(session.get("dir", ""), ignore_errors=True)
+
+
+def _get_or_start_hls_stream(host: str, port: int) -> dict[str, Any]:
+    key = _stream_session_key(host, port)
+    with _stream_sessions_lock:
+        session = _stream_sessions.get(key)
+        if session and session["proc"].poll() is None:
+            session["last_access"] = time.time()
+            return session
+        if session:
+            _cleanup_stream_session(session)
+        tmpdir = tempfile.mkdtemp(prefix="iptv_hls_")
+        playlist_path = os.path.join(tmpdir, "index.m3u8")
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "quiet",
+            "-i", f"udp://{host}:{port}?overrun_nonfatal=1&fifo_size=50000000",
+            "-c", "copy",
+            "-f", "hls",
+            "-hls_time", "2",
+            "-hls_list_size", "5",
+            "-hls_flags", "delete_segments+append_list",
+            "-hls_segment_filename", os.path.join(tmpdir, "seg%d.ts"),
+            playlist_path,
+        ]
+        proc = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
+        session = {"proc": proc, "dir": tmpdir, "playlist": playlist_path, "last_access": time.time()}
+        _stream_sessions[key] = session
+        return session
+
+
+def _stream_cleanup_worker() -> None:
+    while True:
+        time.sleep(10)
+        now = time.time()
+        with _stream_sessions_lock:
+            stale = [k for k, s in _stream_sessions.items() if now - s["last_access"] > _STREAM_IDLE_TTL or s["proc"].poll() is not None]
+            for k in stale:
+                _cleanup_stream_session(_stream_sessions.pop(k))
+
+
+threading.Thread(target=_stream_cleanup_worker, daemon=True).start()
+
+
+def _count_epg_channels(url: str, timeout: int = 20) -> int:
+    req = Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    with urlopen(req, timeout=timeout) as resp:
+        raw = resp.read(4 * 1024 * 1024)
+    if url.lower().endswith(".gz") or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return raw.count(b"<channel ")
+
+
+def _do_epg_detect_best(sources: list[dict[str, Any]]) -> None:
+    with _epg_detect_lock:
+        _epg_detect_state["status"] = "detecting"
+    results: list[tuple[int, str, str]] = []
+    for src in sources:
+        try:
+            count = _count_epg_channels(src["url"])
+            results.append((count, src["url"], src["name"]))
+            logger.info(f"EPG 源检测：{src['name']} → {count} 个频道")
+        except Exception as exc:
+            logger.warning(f"EPG 源检测失败：{src['name']}，{exc}")
+    with _epg_detect_lock:
+        if results:
+            best = max(results, key=lambda x: x[0])
+            _epg_detect_state.update({"status": "done", "best_url": best[1], "best_name": best[2], "best_channels": best[0], "checked_at": int(time.time())})
+            logger.info(f"EPG 最佳来源：{best[2]}（{best[0]} 频道）")
+        else:
+            _epg_detect_state.update({"status": "error", "checked_at": int(time.time())})
+
+
 auto_probe_lock = threading.RLock()
 auto_probe_pending: set[str] = set()
 auto_probe_done: set[str] = set()
@@ -706,7 +804,54 @@ def api_epg_status():
 
 @app.get("/api/epg/sources")
 def api_epg_sources():
-    return api_success({"epg_sources": EPG_SOURCES, "logo_sources": LOGO_SOURCES})
+    custom = custom_sources_store.load()
+    epg_sources = [{**s, "builtin": True} for s in EPG_SOURCES] + custom.get("epg", [])
+    logo_sources = [{**s, "builtin": True} for s in LOGO_SOURCES] + custom.get("logo", [])
+    return api_success({"epg_sources": epg_sources, "logo_sources": logo_sources})
+
+
+@app.get("/api/sources/custom")
+def api_sources_custom_get():
+    return api_success(custom_sources_store.load())
+
+
+@app.post("/api/sources/custom")
+def api_sources_custom_add():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    try:
+        entry = custom_sources_store.add(str(data.get("type", "")), str(data.get("name", "")), str(data.get("url", "")))
+        return api_success(entry)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+
+
+@app.delete("/api/sources/custom/<source_type>/<source_id>")
+def api_sources_custom_delete(source_type: str, source_id: str):
+    if custom_sources_store.delete(source_type, source_id):
+        return api_success()
+    return api_error("未找到该来源", 404)
+
+
+@app.post("/api/epg/detect-best")
+def api_epg_detect_best():
+    with _epg_detect_lock:
+        current = dict(_epg_detect_state)
+    if current["status"] == "detecting":
+        return api_success(current)
+    custom = custom_sources_store.load()
+    all_sources = EPG_SOURCES + custom.get("epg", [])
+    threading.Thread(target=_do_epg_detect_best, args=(all_sources,), daemon=True).start()
+    with _epg_detect_lock:
+        _epg_detect_state["status"] = "detecting"
+    return api_success({"status": "detecting"})
+
+
+@app.get("/api/epg/detect-best")
+def api_epg_detect_best_status():
+    with _epg_detect_lock:
+        return api_success(dict(_epg_detect_state))
 
 
 @app.post("/api/epg/refresh")
@@ -905,6 +1050,63 @@ def api_preview(host: str, port: int):
     return Response(stream_with_context(generate()), headers=headers, mimetype="video/MP2T", direct_passthrough=True)
 
 
+@app.get("/api/stream/<host>/<int:port>/hls/index.m3u8")
+def api_stream_hls_playlist(host: str, port: int):
+    if not valid_ipv4_multicast(host):
+        return api_error("必须是 IPv4 组播地址", 400)
+    if not 1 <= port <= 65535:
+        return api_error("端口无效", 400)
+    if shutil.which("ffmpeg") is None:
+        return api_error("缺少 ffmpeg 命令", 503)
+    session = _get_or_start_hls_stream(host, port)
+    for _ in range(16):
+        if os.path.exists(session["playlist"]):
+            break
+        time.sleep(0.5)
+    if not os.path.exists(session["playlist"]):
+        return api_error("流启动超时，请确认组播地址可达", 504)
+    with open(session["playlist"], "r", encoding="utf-8") as fh:
+        raw = fh.read()
+    base = f"/api/stream/{host}/{port}/hls/"
+    lines = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            lines.append(base + os.path.basename(stripped.split("?")[0]))
+        else:
+            lines.append(line)
+    resp = Response("\n".join(lines) + "\n", mimetype="application/vnd.apple.mpegurl")
+    resp.headers["Cache-Control"] = "no-cache, no-store"
+    return resp
+
+
+@app.get("/api/stream/<host>/<int:port>/hls/<path:filename>")
+def api_stream_hls_segment(host: str, port: int, filename: str):
+    key = _stream_session_key(host, port)
+    with _stream_sessions_lock:
+        session = _stream_sessions.get(key)
+        if session:
+            session["last_access"] = time.time()
+    if not session:
+        return ("", 404)
+    seg_path = os.path.normpath(os.path.join(session["dir"], filename))
+    if not seg_path.startswith(os.path.normpath(session["dir"])):
+        return ("", 403)
+    if not os.path.exists(seg_path):
+        return ("", 404)
+    return send_file(seg_path, mimetype="video/mp2t")
+
+
+@app.delete("/api/stream/<host>/<int:port>/hls")
+def api_stream_hls_stop(host: str, port: int):
+    key = _stream_session_key(host, port)
+    with _stream_sessions_lock:
+        session = _stream_sessions.pop(key, None)
+    if session:
+        _cleanup_stream_session(session)
+    return api_success({})
+
+
 @app.get("/api/snapshot/<host>/<int:port>")
 def api_snapshot(host: str, port: int):
     if not valid_ipv4_multicast(host):
@@ -925,7 +1127,7 @@ def api_snapshot(host: str, port: int):
         "-probesize", "2000000",
         "-i", source,
         "-frames:v", "1",
-        "-vf", "scale=320:-2",
+        "-vf", "scale=640:-2",
         "-f", "image2",
         "-vcodec", "mjpeg",
         "pipe:1",

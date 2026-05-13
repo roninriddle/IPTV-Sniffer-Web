@@ -259,3 +259,48 @@ class StbTokenStore:
             data = {"latest": payload, "history": history[-100:]}
             _atomic_dump_json(self.path, data)
             return True
+
+
+class CustomSourcesStore:
+    """Persists user-added EPG and logo sources."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.RLock()
+
+    def load(self) -> dict[str, list[dict[str, Any]]]:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict):
+                data = {}
+            return {"epg": list(data.get("epg") or []), "logo": list(data.get("logo") or [])}
+
+    def add(self, source_type: str, name: str, url: str) -> dict[str, Any]:
+        if source_type not in ("epg", "logo"):
+            raise ValueError("来源类型必须是 epg 或 logo")
+        name = str(name).strip()
+        url = str(url).strip()
+        if not name or not url:
+            raise ValueError("名称和地址不能为空")
+        with self._lock:
+            data = self.load()
+            existing_urls = {s["url"] for s in data[source_type]}
+            if url in existing_urls:
+                raise ValueError("该地址已存在")
+            import uuid
+            entry = {"id": str(uuid.uuid4())[:8], "name": name, "url": url}
+            data[source_type].append(entry)
+            _atomic_dump_json(self.path, data)
+            return entry
+
+    def delete(self, source_type: str, source_id: str) -> bool:
+        if source_type not in ("epg", "logo"):
+            return False
+        with self._lock:
+            data = self.load()
+            before = len(data[source_type])
+            data[source_type] = [s for s in data[source_type] if s.get("id") != source_id]
+            if len(data[source_type]) == before:
+                return False
+            _atomic_dump_json(self.path, data)
+            return True
