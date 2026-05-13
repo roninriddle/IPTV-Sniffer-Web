@@ -585,12 +585,9 @@ function showExportDownloads(files) {
 }
 
 async function bootstrap() {
-  await loadHealth();
-  await loadInterfaces();
-  await loadEpgSources();
+  await Promise.all([loadHealth(), loadInterfaces(), loadEpgSources()]);
   await loadSettings();
-  await refreshStatusAndStreams();
-  await appendLogs();
+  await Promise.all([refreshStatusAndStreams(), appendLogs()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   startPolling();
 }
@@ -678,6 +675,7 @@ $("autoClassifyBtn").addEventListener("click", async () => {
   }
   try {
     await requestJson("/api/channels/save", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
+    await refreshStatusAndStreams();
   } catch (err) { alert(err.message); }
 });
 $("selectAllStreams").addEventListener("change", (event) => {

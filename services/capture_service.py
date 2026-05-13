@@ -209,7 +209,13 @@ class CaptureService:
         with self._lock:
             if self._state["state"] == "running":
                 raise RuntimeError("已有抓包任务正在运行")
-            self._streams = {}
+            self._fcc_buffer = ""
+            self._fcc_seen = set()
+            self._metadata_buffer = ""
+            self._metadata_seen = set()
+            self._http_buffer = ""
+            self._token_seen = set()
+            self._last_tcp_peer = {}
             self._state.update({
                 "state": "running",
                 "message": "抓包进行中，请切换机顶盒频道",

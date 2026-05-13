@@ -250,7 +250,6 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         item["auto_name"] = auto_name
         item["auto_name_source"] = str(channel.get("auto_name_source") or discovery.get("source") or "").strip()
         item["name"] = str(channel.get("name") or auto_name or "").strip()
-        item["category"] = channel.get("category") or classify_channel_name(item["name"])
         item.update(probe_service.merge_probe_data(stream["key"], channel))
         if not item["auto_name"] and item.get("detected_name"):
             item["auto_name"] = str(item.get("detected_name", "")).strip()
@@ -309,8 +308,8 @@ def fetch_text_resource(url: str, timeout: int = 30) -> str:
     source = str(url or "").strip()
     if not source:
         raise ValueError("M3U 地址不能为空")
-    request = Request(source, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-    with urlopen(request, timeout=timeout) as response:
+    req = Request(source, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    with urlopen(req, timeout=timeout) as response:
         data = response.read()
     if source.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
         data = gzip.decompress(data)
@@ -372,7 +371,7 @@ def update_scheduled_m3u_epg(settings: dict[str, Any]) -> dict[str, Any]:
     epg_url = str(settings.get("epg_url", "")).strip()
     logo_url = str(settings.get("logo_url", "")).strip()
     output_name = str(settings.get("schedule_output_name", "scheduled-epg.m3u")).strip() or "scheduled-epg.m3u"
-    if output_name not in ALLOWED_DOWNLOADS:
+    if output_name != "scheduled-epg.m3u":
         output_name = "scheduled-epg.m3u"
     if not m3u_url:
         raise ValueError("M3U 地址不能为空")
@@ -581,7 +580,6 @@ def api_capture_start():
         settings_store.save(data)
         with auto_probe_lock:
             auto_probe_pending.clear()
-            auto_probe_done.clear()
         status = capture_service.start(data)
         return api_success(status)
     except ValueError as exc:
@@ -689,15 +687,6 @@ def api_channels_save():
     logger.info(f"已保存频道草稿：新增或更新 {result['saved']} 条，删除 {result['deleted']} 条")
     return api_success(result)
 
-
-@app.post("/api/channels/auto-classify")
-def api_channels_auto_classify():
-    rows = merge_streams_with_channels()
-    for row in rows:
-        row["category"] = classify_channel_name(str(row.get("name", "")))
-    result = channel_store.save_rows(rows)
-    logger.info("已按频道名称自动更新频道分类")
-    return api_success({"store": result, "streams": merge_streams_with_channels()})
 
 
 @app.post("/api/probe")
