@@ -39,6 +39,9 @@ function formSettings() {
     http_port: Number($("httpPort").value || 5140),
     path_mode: $("pathMode").value,
     duration: Number($("duration").value || 0),
+    auto_probe: $("autoProbe").checked,
+    auto_epg: $("autoEpg").checked,
+    epg_url: $("epgUrl").value.trim(),
   };
 }
 
@@ -89,6 +92,7 @@ function maskToken(value) {
 }
 
 function renderMetrics(metrics, tokenData) {
+  $("discoveredChannels").textContent = metrics.discovered_channels ?? 0;
   $("fccRecords").textContent = metrics.fcc_records ?? 0;
   $("stbTokens").textContent = metrics.stb_tokens ?? 0;
   const latest = tokenData?.latest;
@@ -99,6 +103,23 @@ function renderMetrics(metrics, tokenData) {
     $("snifferInsight").textContent = `已发现 FCC 记录 ${metrics.fcc_records} 条，尚未捕获 channelAcquire UserToken。`;
   } else {
     $("snifferInsight").textContent = "尚未发现 FCC 或 channelAcquire 令牌。";
+  }
+}
+
+function renderEpgStatus(epg) {
+  const badge = $("epgBadge");
+  if (epg.refreshing) {
+    badge.className = "chip warning";
+    badge.textContent = "EPG 刷新中";
+  } else if (epg.last_error) {
+    badge.className = "chip danger";
+    badge.textContent = "EPG 异常";
+  } else if ((epg.channels ?? 0) > 0) {
+    badge.className = "chip ok";
+    badge.textContent = `EPG ${epg.channels} 个频道`;
+  } else {
+    badge.className = "chip neutral";
+    badge.textContent = "EPG 未加载";
   }
 }
 
@@ -125,6 +146,9 @@ async function loadSettings() {
   $("httpPort").value = data.http_port ?? 5140;
   $("pathMode").value = data.path_mode || "rtp";
   $("duration").value = data.duration ?? 30;
+  $("autoProbe").checked = data.auto_probe !== false;
+  $("autoEpg").checked = data.auto_epg !== false;
+  $("epgUrl").value = data.epg_url || "";
   $("scheduleEnabled").checked = Boolean(data.schedule_enabled);
   $("scheduleUnit").value = data.schedule_unit || "days";
   $("scheduleEvery").value = data.schedule_every ?? 1;
@@ -214,6 +238,13 @@ function rowProbePayload(row) {
     probed_at: row.dataset.probedAt ? Number(row.dataset.probedAt) : null,
     fcc_ip: row.dataset.fccIp || "",
     fcc_port: row.dataset.fccPort ? Number(row.dataset.fccPort) : null,
+    tvg_id: row.dataset.tvgId || "",
+    tvg_name: row.dataset.tvgName || "",
+    tvg_logo: row.dataset.tvgLogo || "",
+    epg_source: row.dataset.epgSource || "",
+    auto_name: row.dataset.autoName || "",
+    auto_name_source: row.dataset.autoNameSource || "",
+    epg_matched_at: row.dataset.epgMatchedAt ? Number(row.dataset.epgMatchedAt) : null,
   };
 }
 
@@ -249,6 +280,13 @@ function preserveRowEdits(streams) {
       probed_at: stream.probed_at ?? draft.probed_at,
       fcc_ip: stream.fcc_ip || draft.fcc_ip,
       fcc_port: stream.fcc_port ?? draft.fcc_port,
+      tvg_id: stream.tvg_id || draft.tvg_id,
+      tvg_name: stream.tvg_name || draft.tvg_name,
+      tvg_logo: stream.tvg_logo || draft.tvg_logo,
+      epg_source: stream.epg_source || draft.epg_source,
+      auto_name: stream.auto_name || draft.auto_name,
+      auto_name_source: stream.auto_name_source || draft.auto_name_source,
+      epg_matched_at: stream.epg_matched_at ?? draft.epg_matched_at,
     };
   });
 }
@@ -268,8 +306,10 @@ function streamInfoHtml(stream) {
   const resolution = stream.width && stream.height ? `${escapeHtml(stream.width)}×${escapeHtml(stream.height)}` : escapeHtml(stream.resolution_label || "未识别");
   const fps = stream.frame_rate ? escapeHtml(stream.frame_rate) : "-";
   const fcc = stream.fcc_ip && stream.fcc_port ? `<span>FCC：${escapeHtml(stream.fcc_ip)}:${escapeHtml(stream.fcc_port)}</span>` : "";
+  const autoName = stream.auto_name ? `<span>自动名：${escapeHtml(stream.auto_name)}</span>` : "";
+  const epgName = stream.tvg_name || stream.tvg_id ? `<span>EPG：${escapeHtml(stream.tvg_name || "-")} / ${escapeHtml(stream.tvg_id || "-")}</span>` : "";
   const message = stream.probe_message ? `<div class="probe-note">${escapeHtml(stream.probe_message)}</div>` : "";
-  return `<div class="probe-meta">${probeBadge(stream)}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
+  return `<div class="probe-meta">${probeBadge(stream)}${autoName}${epgName}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
 }
 
 function previewHtml(stream) {
@@ -321,13 +361,20 @@ function renderStreams(streams) {
         data-quality-group="${escapeHtml(stream.quality_group || "未识别")}"
         data-probed-at="${escapeHtml(stream.probed_at ?? "")}"
         data-fcc-ip="${escapeHtml(stream.fcc_ip || "")}"
-        data-fcc-port="${escapeHtml(stream.fcc_port ?? "")}">
+        data-fcc-port="${escapeHtml(stream.fcc_port ?? "")}"
+        data-tvg-id="${escapeHtml(stream.tvg_id || "")}"
+        data-tvg-name="${escapeHtml(stream.tvg_name || "")}"
+        data-tvg-logo="${escapeHtml(stream.tvg_logo || "")}"
+        data-epg-source="${escapeHtml(stream.epg_source || "")}"
+        data-auto-name="${escapeHtml(stream.auto_name || "")}"
+        data-auto-name-source="${escapeHtml(stream.auto_name_source || "")}"
+        data-epg-matched-at="${escapeHtml(stream.epg_matched_at ?? "")}">
       <td><input type="checkbox" class="stream-check" ${checked}></td>
       <td><code>${escapeHtml(stream.key)}</code></td>
       <td>${escapeHtml(stream.packets)}</td>
       <td>${candidateBadge}</td>
       <td>${snapshotHtml(stream)}</td>
-      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="例如 CCTV-4K 超高清"></td>
+      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="${stream.auto_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
       <td>
         <select class="channel-category">
           <option value="央视频道" ${stream.category === "央视频道" ? "selected" : ""}>央视频道</option>
@@ -377,16 +424,18 @@ function closeSnapshot() {
 }
 
 async function refreshStatusAndStreams() {
-  const [status, streams, metrics, tokenData, schedule] = await Promise.all([
+  const [status, streams, metrics, tokenData, schedule, epg] = await Promise.all([
     requestJson("/api/status"),
     requestJson("/api/streams"),
     requestJson("/api/metrics"),
     requestJson("/api/stb-token"),
     requestJson("/api/schedule"),
+    requestJson("/api/epg/status"),
   ]);
   renderStatus(status);
   renderMetrics(metrics, tokenData);
   renderSchedule(schedule);
+  renderEpgStatus(epg);
   renderStreams(streams.streams || []);
 }
 
@@ -511,7 +560,15 @@ $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch
 $("saveSettingsBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/settings", {method: "POST", body: JSON.stringify(formSettings())});
+    await refreshStatusAndStreams();
     alert("默认设置已保存");
+  } catch (err) { alert(err.message); }
+});
+$("refreshEpgBtn").addEventListener("click", async () => {
+  try {
+    const epg = await requestJson("/api/epg/refresh", {method: "POST", body: JSON.stringify(formSettings())});
+    renderEpgStatus(epg);
+    alert("EPG 刷新已启动");
   } catch (err) { alert(err.message); }
 });
 $("scheduleUnit").addEventListener("change", updateScheduleUnitState);

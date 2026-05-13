@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -19,6 +20,8 @@ from config import (
     APP_VERSION,
     CHANNELS_FILE,
     DATA_DIR,
+    DISCOVERY_FILE,
+    EPG_CACHE_FILE,
     FCC_FILE,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
@@ -31,11 +34,12 @@ from config import (
     WEB_PORT,
 )
 from services.capture_service import CaptureService
+from services.epg_service import EpgService
 from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
-from services.storage_service import ChannelStore, FccStore, SettingsStore, StbTokenStore
+from services.storage_service import ChannelStore, DiscoveryStore, FccStore, SettingsStore, StbTokenStore
 from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
@@ -44,12 +48,18 @@ settings_store = SettingsStore(SETTINGS_FILE)
 channel_store = ChannelStore(CHANNELS_FILE)
 fcc_store = FccStore(FCC_FILE)
 token_store = StbTokenStore(STB_TOKEN_FILE)
-capture_service = CaptureService(logger, fcc_store, token_store)
+discovery_store = DiscoveryStore(DISCOVERY_FILE)
+capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
+epg_service = EpgService(logger, EPG_CACHE_FILE)
 schedule_service = ScheduleService(logger, settings_store, capture_service)
 STARTED_AT = time.time()
 preview_failures: dict[str, str] = {}
+auto_probe_lock = threading.RLock()
+auto_probe_pending: set[str] = set()
+auto_probe_done: set[str] = set()
+auto_enrichment_started = False
 
 
 def api_success(data: Any | None = None, **extra: Any):
@@ -71,27 +81,120 @@ def remember_preview_failure(key: str, message: str) -> None:
         probe_service.remember_failure(key, message)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    settings = settings or settings_store.load()
+    discovered = discovery_store.load()
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        key = str(item.get("key") or f"{item.get('host', '')}:{item.get('port', '')}")
+        discovery = discovered.get(key, {})
+        if not str(item.get("name", "")).strip() and discovery.get("name"):
+            item["name"] = str(discovery.get("name", "")).strip()
+        if discovery.get("name"):
+            if not str(item.get("auto_name", "")).strip():
+                item["auto_name"] = str(discovery.get("name", "")).strip()
+            if not str(item.get("auto_name_source", "")).strip():
+                item["auto_name_source"] = str(discovery.get("source", "stb_payload")).strip()
+        item["category"] = str(item.get("category", "")).strip() or classify_channel_name(str(item.get("name", "")))
+        if settings.get("auto_epg", True):
+            epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
+        enriched.append(item)
+    return enriched
+
+
+def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
+    if not settings.get("auto_probe", True):
+        return
+    if item.get("filter_reason") or not item.get("eligible"):
+        return
+    if str(item.get("probe_status", "not_probed")) in {"ok", "partial", "failed"}:
+        return
+    key = str(item.get("key", "")).strip()
+    host = str(item.get("host", "")).strip()
+    port = _safe_int(item.get("port"))
+    if not key or not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
+        return
+    with auto_probe_lock:
+        if key in auto_probe_pending or key in auto_probe_done:
+            return
+        if len(auto_probe_pending) >= 2:
+            return
+        auto_probe_pending.add(key)
+    path_mode = str(settings.get("path_mode", "rtp"))
+    snapshot = dict(item)
+
+    def worker() -> None:
+        try:
+            logger.info(f"自动检测流信息：{key}")
+            result = probe_service.probe(key, host, port, path_mode)
+            stored = channel_store.get(key) or {}
+            if str(snapshot.get("name", "")).strip() and not str(stored.get("name", "")).strip():
+                stored.update({
+                    "key": key,
+                    "host": host,
+                    "port": port,
+                    "name": str(snapshot.get("name", "")).strip(),
+                    "category": str(snapshot.get("category", "")) or classify_channel_name(str(snapshot.get("name", ""))),
+                    "auto_name": str(snapshot.get("auto_name", "")),
+                    "auto_name_source": str(snapshot.get("auto_name_source", "")),
+                    "packets": _safe_int(snapshot.get("packets")),
+                })
+            stored.update(result)
+            if str(stored.get("name", "")).strip():
+                channel_store.save_rows(enrich_channel_rows([stored], settings))
+        except Exception as exc:
+            logger.warning(f"自动检测流信息失败：{key}，{exc}")
+        finally:
+            with auto_probe_lock:
+                auto_probe_pending.discard(key)
+                auto_probe_done.add(key)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def merge_streams_with_channels() -> list[dict[str, Any]]:
     streams = capture_service.streams()
     named = channel_store.load()
     fcc_records = fcc_store.load()
+    discovered = discovery_store.load()
     settings = settings_store.load()
     payload: list[dict[str, Any]] = []
     for stream in streams:
         channel = named.get(stream["key"], {})
+        discovery = discovered.get(stream["key"], {})
         filter_reason = stream_filter_reason(
             str(stream.get("host", "")),
             int(stream.get("port", 0)),
             int(stream.get("packets", 0)),
             MIN_PACKET_COUNT,
         )
-        if filter_reason and not str(channel.get("name", "")).strip():
+        if filter_reason and not str(channel.get("name") or discovery.get("name") or "").strip():
             continue
         item = dict(stream)
         item["filter_reason"] = filter_reason
-        item["name"] = channel.get("name", "")
-        item["category"] = channel.get("category", classify_channel_name(item["name"]))
+        auto_name = str(channel.get("auto_name") or discovery.get("name") or "").strip()
+        item["auto_name"] = auto_name
+        item["auto_name_source"] = str(channel.get("auto_name_source") or discovery.get("source") or "").strip()
+        item["name"] = str(channel.get("name") or auto_name or "").strip()
+        item["category"] = channel.get("category") or classify_channel_name(item["name"])
         item.update(probe_service.merge_probe_data(stream["key"], channel))
+        item["tvg_id"] = str(channel.get("tvg_id", ""))
+        item["tvg_name"] = str(channel.get("tvg_name", ""))
+        item["tvg_logo"] = str(channel.get("tvg_logo", ""))
+        item["epg_source"] = str(channel.get("epg_source", ""))
+        item["epg_matched_at"] = channel.get("epg_matched_at")
+        if settings.get("auto_epg", True):
+            epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
         fcc = dict(fcc_records.get(stream["key"], {}))
         if channel.get("fcc_ip"):
             fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
@@ -126,8 +229,26 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             f"http://{settings.get('http_host')}:{int(settings.get('http_port', 5140))}/player"
             if settings.get("http_host") else ""
         )
+        maybe_auto_probe(item, settings)
         payload.append(item)
     return payload
+
+
+def start_auto_enrichment_loop() -> None:
+    global auto_enrichment_started
+    if auto_enrichment_started:
+        return
+    auto_enrichment_started = True
+
+    def worker() -> None:
+        while True:
+            try:
+                merge_streams_with_channels()
+            except Exception as exc:
+                logger.warning(f"自动补全后台任务异常：{exc}")
+            time.sleep(5)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 @app.get("/")
@@ -173,7 +294,9 @@ def api_metrics():
         "logs": logger.stats(),
         "schedule": schedule_service.status(),
         "saved_channels": len(channel_store.load()),
+        "discovered_channels": len(discovery_store.load()),
         "fcc_records": len(fcc_store.load()),
+        "epg": epg_service.status(summary=True),
         "stb_tokens": len(token_store.load().get("history") or []),
         "output_files": {
             name: (OUTPUT_DIR / name).exists()
@@ -202,6 +325,15 @@ def api_settings_save():
     if not isinstance(data, dict):
         return api_error("请求体格式不正确")
     saved = settings_store.save(data)
+    epg_url = str(saved.get("epg_url", "")).strip()
+    epg_status = epg_service.status(summary=True)
+    if (
+        saved.get("auto_epg", True)
+        and epg_url
+        and not epg_status.get("refreshing")
+        and (epg_status.get("url") != epg_url or int(epg_status.get("channels") or 0) == 0)
+    ):
+        epg_service.refresh_async(epg_url)
     logger.info("已保存网页默认设置")
     return api_success(saved)
 
@@ -237,6 +369,9 @@ def api_capture_start():
         return api_error("请求体格式不正确")
     try:
         settings_store.save(data)
+        with auto_probe_lock:
+            auto_probe_pending.clear()
+            auto_probe_done.clear()
         status = capture_service.start(data)
         return api_success(status)
     except ValueError as exc:
@@ -260,6 +395,9 @@ def api_capture_stop():
 @app.post("/api/capture/reset")
 def api_capture_reset():
     try:
+        with auto_probe_lock:
+            auto_probe_pending.clear()
+            auto_probe_done.clear()
         return api_success(capture_service.reset())
     except RuntimeError as exc:
         return api_error(str(exc), 409)
@@ -289,12 +427,44 @@ def api_stb_token():
     return api_success({"latest": data.get("latest"), "count": len(data.get("history") or []), "file": str(STB_TOKEN_FILE)})
 
 
+@app.get("/api/discovery")
+def api_discovery():
+    return api_success({"records": list(discovery_store.load().values()), "file": str(DISCOVERY_FILE)})
+
+
+@app.get("/api/epg/status")
+def api_epg_status():
+    return api_success(epg_service.status())
+
+
+@app.post("/api/epg/refresh")
+def api_epg_refresh():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    settings = settings_store.load()
+    url = str(data.get("epg_url") or settings.get("epg_url", "")).strip()
+    if not url:
+        return api_error("EPG 地址不能为空")
+    settings_store.save({"epg_url": url, "auto_epg": bool(data.get("auto_epg", settings.get("auto_epg", True)))})
+    try:
+        status = epg_service.refresh_async(url)
+        logger.info(f"已启动 EPG 刷新：{url}")
+        return api_success(status)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:
+        logger.error(f"启动 EPG 刷新失败：{exc}")
+        return api_error(str(exc), 500)
+
+
 @app.post("/api/channels/save")
 def api_channels_save():
     data = request.get_json(silent=True) or {}
     rows = data.get("channels", []) if isinstance(data, dict) else []
     if not isinstance(rows, list):
         return api_error("channels 必须是数组")
+    rows = enrich_channel_rows(rows)
     result = channel_store.save_rows(rows)
     logger.info(f"已保存频道草稿：新增或更新 {result['saved']} 条，删除 {result['deleted']} 条")
     return api_success(result)
@@ -335,7 +505,7 @@ def api_probe_one():
         stored.update(result)
         # 仅当已有频道名称时持久化到草稿；未命名的流保留在内存缓存中。
         if str(stored.get("name", "")).strip():
-            channel_store.save_rows([stored])
+            channel_store.save_rows(enrich_channel_rows([stored], settings))
         return api_success(result)
     except ValueError as exc:
         return api_error(str(exc), 400)
@@ -382,6 +552,7 @@ def api_probe_batch():
             logger.warning(f"批量检测跳过失败项：{result['key']}，{exc}")
         results.append(result)
         row.update(result)
+    rows = enrich_channel_rows(rows, settings)
     named_rows = [row for row in rows if isinstance(row, dict) and str(row.get("name", "")).strip()]
     if named_rows:
         channel_store.save_rows(named_rows)
@@ -400,6 +571,7 @@ def api_export():
         return api_error("channels 必须是数组")
     settings = settings_store.load()
     try:
+        rows = enrich_channel_rows(rows, settings)
         result = export_service.export(rows, settings)
         channel_store.save_rows(rows)
         logger.info(
@@ -494,7 +666,9 @@ def boot() -> None:
     logger.info(f"应用启动：{APP_NAME} v{APP_VERSION}")
     capture_service.validate_runtime()
     probe_service.validate_runtime()
+    epg_service.start_auto_refresh(settings_store)
     schedule_service.start()
+    start_auto_enrichment_loop()
     logger.info(f"数据目录：{DATA_DIR}")
     logger.info(f"输出目录：{OUTPUT_DIR}")
     serve(app, host=WEB_HOST, port=WEB_PORT, threads=WAITRESS_THREADS)

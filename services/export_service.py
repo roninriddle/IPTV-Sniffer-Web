@@ -84,6 +84,10 @@ class ExportService:
                 quality_group=quality_group,
                 fcc_ip=str(row.get("fcc_ip", "") or "").strip(),
                 fcc_port=self._safe_int(row.get("fcc_port")),
+                tvg_id=str(row.get("tvg_id", "") or "").strip(),
+                tvg_name=str(row.get("tvg_name", "") or "").strip(),
+                tvg_logo=str(row.get("tvg_logo", "") or "").strip(),
+                epg_source=str(row.get("epg_source", "") or "").strip(),
             ))
             seen_keys.add(key)
         channels.sort(key=self._channel_sort_key)
@@ -124,14 +128,15 @@ class ExportService:
         path_mode = str(settings.get("path_mode", "rtp")).strip().lower()
         if path_mode not in {"rtp", "udp"}:
             path_mode = "rtp"
+        epg_url = str(settings.get("epg_url", "") or "").strip()
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
         json_path = self.output_dir / "channels.json"
         txt_path = self.output_dir / "channels.txt"
         csv_path = self.output_dir / "channels.csv"
         quality_groups = self._quality_groups(channels)
-        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct")
-        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source")
+        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct", epg_url=epg_url)
+        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source", epg_url=epg_url)
         self._write_playlist_json(channels, json_path, path_mode)
         self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode)
         self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode)
@@ -166,9 +171,14 @@ class ExportService:
         http_port: int,
         path_mode: str,
         url_mode: str,
+        epg_url: str = "",
     ) -> None:
         with target.open("w", encoding="utf-8", newline="\n") as handle:
-            handle.write("#EXTM3U\n")
+            if epg_url:
+                safe_epg_url = epg_url.replace('"', "%22")
+                handle.write(f'#EXTM3U x-tvg-url="{safe_epg_url}"\n')
+            else:
+                handle.write("#EXTM3U\n")
             for channel in channels:
                 self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode)
             for group_name in QUALITY_GROUP_OPTIONS:
@@ -186,12 +196,15 @@ class ExportService:
         url_mode: str,
     ) -> None:
         safe_group = group.replace('"', "'")
-        tvg_name = channel.name.replace('"', "'")
+        tvg_name = (channel.tvg_name or channel.name).replace('"', "'")
+        tvg_id = (channel.tvg_id or channel.tvg_name or channel.name).replace('"', "'")
+        tvg_logo = channel.tvg_logo.replace('"', "%22")
         if url_mode == "source":
             url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
         else:
             url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
-        handle.write(f'#EXTINF:-1 tvg-name="{tvg_name}" group-title="{safe_group}",{channel.name}\n')
+        logo_attr = f' tvg-logo="{tvg_logo}"' if tvg_logo else ""
+        handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}",{channel.name}\n')
         handle.write(f"{url}\n")
 
     def _write_txt(
@@ -243,6 +256,10 @@ class ExportService:
                 "分辨率",
                 "编码",
                 "帧率",
+                "EPG ID",
+                "EPG名称",
+                "台标",
+                "EPG来源",
                 "FCC服务器IP",
                 "FCC服务器端口",
                 "源地址",
@@ -269,6 +286,10 @@ class ExportService:
             resolution,
             channel.codec_name,
             channel.frame_rate,
+            channel.tvg_id,
+            channel.tvg_name,
+            channel.tvg_logo,
+            channel.epg_source,
             channel.fcc_ip,
             channel.fcc_port or "",
             source,
@@ -285,8 +306,10 @@ class ExportService:
             definition = channel.resolution_label if channel.resolution_label != "未识别" else ""
             payload[channel.name] = {
                 "chno": index,
-                "tvg_id": channel.name,
-                "tvg_name": channel.name,
+                "tvg_id": channel.tvg_id or channel.name,
+                "tvg_name": channel.tvg_name or channel.name,
+                "tvg_logo": channel.tvg_logo,
+                "epg_source": channel.epg_source,
                 "group_title": channel.category,
                 "definition": definition,
                 "flag": [] if channel.probe_status != "failed" else ["probe_failed"],

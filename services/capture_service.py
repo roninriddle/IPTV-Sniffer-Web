@@ -10,7 +10,6 @@ import signal
 import subprocess
 import threading
 import time
-from dataclasses import asdict
 from typing import Any, Sequence
 from urllib.parse import unquote
 
@@ -23,7 +22,7 @@ from config import (
 )
 from models import StreamRecord
 from services.log_service import AppLogger
-from services.storage_service import FccStore, StbTokenStore
+from services.storage_service import DiscoveryStore, FccStore, StbTokenStore
 from utils import is_probable_iptv_stream, stream_static_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 # Typical tcpdump lines:
@@ -51,6 +50,30 @@ FCC_PORT_RE = re.compile(
     r"(?:ChannelFCCPort\s*(?:=|:)\s*[\"']?|<ChannelFCCPort>\s*)(?P<port>\d{1,5})",
     re.IGNORECASE,
 )
+CHANNEL_NAME_RE = re.compile(
+    r"\"(?P<json_key>ChannelName|ChannelNameCN|UserChannelName|channelName|name|Name|title|ChannelTitle)\"\s*:\s*\"(?P<json_value>[^\"\r\n]{1,120})\""
+    r"|(?:\b(?P<query_key>ChannelName|ChannelNameCN|UserChannelName|channelName|name|Name|title|ChannelTitle)\s*(?:=|:)\s*[\"']?)(?P<query_value>[^&<>\r\n\"']{1,120})"
+    r"|<(?P<xml_key>ChannelName|ChannelNameCN|UserChannelName|channelName|Name|title|ChannelTitle)>\s*(?P<xml_value>[^<\r\n]{1,120})",
+    re.IGNORECASE,
+)
+CHANNEL_ID_RE = re.compile(
+    r"\"(?P<json_key>ChannelID|channelId|channel_id|ChannelNumber|chno|UserChannelID)\"\s*:\s*\"?(?P<json_value>[^\",\s\r\n]{1,40})\"?"
+    r"|(?:\b(?P<query_key>ChannelID|channelId|channel_id|ChannelNumber|chno|UserChannelID)\s*(?:=|:)\s*[\"']?)(?P<query_value>[^&<>\s\"']{1,40})"
+    r"|<(?P<xml_key>ChannelID|channelId|channel_id|ChannelNumber|chno|UserChannelID)>\s*(?P<xml_value>[^<\s]{1,40})",
+    re.IGNORECASE,
+)
+BAD_CHANNEL_NAME_TOKENS = {
+    "channelname",
+    "channelid",
+    "channelfccip",
+    "channelfccport",
+    "usertoken",
+    "rtp",
+    "igmp",
+    "udp",
+    "http",
+    "https",
+}
 
 
 def _run_text(cmd: Sequence[str]) -> str:
@@ -66,10 +89,12 @@ class CaptureService:
         logger: AppLogger,
         fcc_store: FccStore | None = None,
         token_store: StbTokenStore | None = None,
+        discovery_store: DiscoveryStore | None = None,
     ) -> None:
         self.logger = logger
         self.fcc_store = fcc_store
         self.token_store = token_store
+        self.discovery_store = discovery_store
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
         self._stdout_thread: threading.Thread | None = None
@@ -79,6 +104,8 @@ class CaptureService:
         self._streams: dict[str, StreamRecord] = {}
         self._fcc_buffer = ""
         self._fcc_seen: set[str] = set()
+        self._metadata_buffer = ""
+        self._metadata_seen: set[str] = set()
         self._http_buffer = ""
         self._last_tcp_peer: dict[str, Any] = {}
         self._token_seen: set[str] = set()
@@ -254,6 +281,7 @@ class CaptureService:
     def _consume_tcpdump_line(self, line: str) -> None:
         self._consume_http_text(line)
         self._consume_fcc_text(line)
+        self._consume_channel_metadata_text(line)
         peer_match = TCP_PEER_RE.search(line)
         if peer_match:
             with self._lock:
@@ -336,6 +364,105 @@ class CaptureService:
             }
             if self.fcc_store and self.fcc_store.save_record(record):
                 self.logger.info(f"发现 FCC 信息：{key} -> {fcc_ip}:{fcc_port}，已写入 fcc.json")
+
+    def _consume_channel_metadata_text(self, line: str) -> None:
+        text = unquote(line)
+        if "\ufffd" in text:
+            return
+        interesting = any(token in text for token in ("rtp://", "igmp://", "Channel", "channel", "Name", "name", "title"))
+        if not interesting and not self._metadata_buffer:
+            return
+        with self._lock:
+            self._metadata_buffer = (self._metadata_buffer + "\n" + text)[-64000:]
+            buffer = self._metadata_buffer
+        if "rtp://" not in buffer and "igmp://" not in buffer:
+            return
+        for match in STREAM_URL_RE.finditer(buffer):
+            host = match.group("host")
+            try:
+                port = int(match.group("port"))
+            except ValueError:
+                continue
+            if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
+                continue
+            segment = buffer[max(0, match.start() - 2200): match.end() + 2200]
+            name, raw_field = self._extract_channel_name(segment)
+            if not name:
+                continue
+            channel_id = self._extract_channel_id(segment)
+            key = f"{host}:{port}"
+            seen_token = f"{key}|{name}|{channel_id}"
+            if seen_token in self._metadata_seen:
+                continue
+            self._metadata_seen.add(seen_token)
+            record = {
+                "key": key,
+                "host": host,
+                "port": port,
+                "name": name,
+                "channel_id": channel_id,
+                "source": "stb_payload",
+                "source_url": match.group("url"),
+                "raw_field": raw_field,
+                "discovered_at": int(time.time()),
+            }
+            if self.discovery_store and self.discovery_store.save_record(record):
+                suffix = f"（频道号 {channel_id}）" if channel_id else ""
+                self.logger.info(f"自动识别频道名：{key} -> {name}{suffix}，已写入 discovered_channels.json")
+
+    @staticmethod
+    def _extract_channel_name(segment: str) -> tuple[str, str]:
+        candidates: list[tuple[int, str, str]] = []
+        for match in CHANNEL_NAME_RE.finditer(segment):
+            key = match.group("json_key") or match.group("query_key") or match.group("xml_key") or ""
+            value = match.group("json_value") or match.group("query_value") or match.group("xml_value") or ""
+            name = CaptureService._clean_channel_name(value)
+            if not name:
+                continue
+            key_lower = key.lower()
+            score = 30 if "channel" in key_lower else 20
+            if key_lower in {"name", "title"}:
+                score -= 8
+            if any(token in name.lower() for token in ("cctv", "卫视", "高清", "超清", "4k")):
+                score += 5
+            candidates.append((score, name, f"{key}={name}"))
+        if not candidates:
+            return "", ""
+        candidates.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
+        return candidates[0][1], candidates[0][2]
+
+    @staticmethod
+    def _extract_channel_id(segment: str) -> str:
+        for match in CHANNEL_ID_RE.finditer(segment):
+            value = match.group("json_value") or match.group("query_value") or match.group("xml_value") or ""
+            value = unquote(str(value)).strip().strip("\"'")
+            if value and re.match(r"^[A-Za-z0-9_.:-]{1,40}$", value):
+                return value
+        return ""
+
+    @staticmethod
+    def _clean_channel_name(value: str) -> str:
+        name = unquote(str(value or "")).strip().strip("\"'`")
+        if "\\u" in name:
+            try:
+                name = name.encode("utf-8").decode("unicode_escape")
+            except UnicodeError:
+                pass
+        name = re.sub(r"[\x00-\x1f\x7f]+", "", name).strip()
+        name = re.sub(r"\s+", " ", name)
+        name = name.strip(" ,;，；")
+        lower = name.lower()
+        if not name or len(name) > 80:
+            return ""
+        if lower in BAD_CHANNEL_NAME_TOKENS:
+            return ""
+        if any(token in lower for token in ("rtp://", "igmp://", "udp://", "http://", "https://", "usertoken")):
+            return ""
+        if re.match(r"^\d+$", name) or re.match(r"^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?$", name):
+            return ""
+        if "ChannelFCC" in name or "channelFCC" in name:
+            return ""
+        return name
 
     def _consume_http_text(self, line: str) -> None:
         text = unquote(line)

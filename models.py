@@ -43,6 +43,10 @@ class ChannelRecord:
     quality_group: str = "未识别"
     fcc_ip: str = ""
     fcc_port: int | None = None
+    tvg_id: str = ""
+    tvg_name: str = ""
+    tvg_logo: str = ""
+    epg_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

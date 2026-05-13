@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -18,6 +18,8 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 CHANNELS_FILE = DATA_DIR / "channels.json"
 FCC_FILE = DATA_DIR / "fcc.json"
 STB_TOKEN_FILE = DATA_DIR / "playlist_token.json"
+DISCOVERY_FILE = DATA_DIR / "discovered_channels.json"
+EPG_CACHE_FILE = DATA_DIR / "epg_cache.json"
 
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8787"))
@@ -27,6 +29,7 @@ DEFAULT_RTP2HTTP_HOST = os.environ.get("RTP2HTTPD_HOST", os.environ.get("RTP2HTT
 DEFAULT_RTP2HTTP_PORT = int(os.environ.get("RTP2HTTPD_PORT", os.environ.get("RTP2HTTP_PORT", "5140")))
 DEFAULT_PATH_MODE = os.environ.get("PATH_MODE", "rtp")
 DEFAULT_CAPTURE_SECONDS = int(os.environ.get("CAPTURE_SECONDS", "30"))
+DEFAULT_EPG_URL = os.environ.get("EPG_URL", "https://epg.zsdc.eu.org/t.xml.gz")
 MAX_TIMED_CAPTURE_SECONDS = int(os.environ.get("MAX_TIMED_CAPTURE_SECONDS", "3600"))
 MIN_PACKET_COUNT = int(os.environ.get("MIN_PACKET_COUNT", "3"))
 LOG_MEMORY_LIMIT = int(os.environ.get("LOG_MEMORY_LIMIT", "600"))
@@ -54,6 +57,9 @@ DEFAULT_SETTINGS = {
     "http_port": DEFAULT_RTP2HTTP_PORT,
     "path_mode": DEFAULT_PATH_MODE if DEFAULT_PATH_MODE in {"rtp", "udp"} else "rtp",
     "duration": DEFAULT_CAPTURE_SECONDS,
+    "auto_probe": True,
+    "auto_epg": True,
+    "epg_url": DEFAULT_EPG_URL,
     "schedule_enabled": False,
     "schedule_unit": "days",
     "schedule_every": 1,

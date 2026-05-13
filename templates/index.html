@@ -99,6 +99,25 @@ OpenWrt / iStoreOS
           <small>0 表示手动停止</small>
         </label>
       </div>
+      <div class="section-subtitle">
+        <h3>自动补全</h3>
+        <span id="epgBadge" class="chip neutral">EPG 未加载</span>
+      </div>
+      <div class="form-grid auto-grid">
+        <label class="checkbox-label">
+          <input id="autoProbe" type="checkbox" checked>
+          自动识别技术信息
+        </label>
+        <label class="checkbox-label">
+          <input id="autoEpg" type="checkbox" checked>
+          自动补全 EPG
+        </label>
+        <label class="wide-field">
+          XMLTV EPG 地址
+          <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
+        </label>
+        <button id="refreshEpgBtn" class="secondary" type="button">刷新 EPG</button>
+      </div>
       <div class="button-row">
         <button id="startBtn" class="primary">开始嗅探</button>
         <button id="stopBtn" class="danger" disabled>停止嗅探</button>
@@ -154,6 +173,7 @@ OpenWrt / iStoreOS
       <div class="metrics-grid">
         <div class="metric"><span>发现流</span><strong id="streamsFound">0</strong></div>
         <div class="metric"><span>有效候选</span><strong id="eligibleStreams">0</strong></div>
+        <div class="metric"><span>自动识别名</span><strong id="discoveredChannels">0</strong></div>
         <div class="metric"><span>FCC 记录</span><strong id="fccRecords">0</strong></div>
         <div class="metric"><span>令牌记录</span><strong id="stbTokens">0</strong></div>
         <div class="metric"><span>包计数</span><strong id="packetCount">0</strong></div>

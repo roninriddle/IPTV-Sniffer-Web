@@ -115,7 +115,14 @@ class ChannelStore:
                     "quality_group": str(row.get("quality_group", data.get(key, {}).get("quality_group", "未识别"))),
                     "fcc_ip": str(row.get("fcc_ip") or data.get(key, {}).get("fcc_ip", "")),
                     "fcc_port": self._safe_port(row.get("fcc_port") or data.get(key, {}).get("fcc_port")),
+                    "tvg_id": str(row.get("tvg_id") or data.get(key, {}).get("tvg_id", "")),
+                    "tvg_name": str(row.get("tvg_name") or data.get(key, {}).get("tvg_name", "")),
+                    "tvg_logo": str(row.get("tvg_logo") or data.get(key, {}).get("tvg_logo", "")),
+                    "epg_source": str(row.get("epg_source") or data.get(key, {}).get("epg_source", "")),
+                    "auto_name": str(row.get("auto_name") or data.get(key, {}).get("auto_name", "")),
+                    "auto_name_source": str(row.get("auto_name_source") or data.get(key, {}).get("auto_name_source", "")),
                     "probed_at": row.get("probed_at", data.get(key, {}).get("probed_at")),
+                    "epg_matched_at": row.get("epg_matched_at", data.get(key, {}).get("epg_matched_at")),
                     "updated_at": row.get("updated_at"),
                 }
                 saved += 1
@@ -166,6 +173,44 @@ class FccStore:
                 "fcc_port": fcc_port,
                 "source_url": str(record.get("source_url", current.get("source_url", ""))).strip(),
                 "raw_field": str(record.get("raw_field", current.get("raw_field", ""))).strip(),
+                "first_seen": current.get("first_seen") or record.get("discovered_at"),
+                "last_seen": record.get("discovered_at"),
+            }
+            data[key] = payload
+            _atomic_dump_json(self.path, data)
+            return True
+
+
+class DiscoveryStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.RLock()
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            return data if isinstance(data, dict) else {}
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        return self.load().get(key)
+
+    def save_record(self, record: dict[str, Any]) -> bool:
+        key = str(record.get("key", "")).strip()
+        name = str(record.get("name", "")).strip()
+        if not key or not name:
+            return False
+        with self._lock:
+            data = self.load()
+            current = data.get(key, {})
+            payload = {
+                "key": key,
+                "host": str(record.get("host", current.get("host", ""))).strip(),
+                "port": ChannelStore._safe_port(record.get("port", current.get("port"))),
+                "name": name,
+                "channel_id": str(record.get("channel_id", current.get("channel_id", ""))).strip(),
+                "source": str(record.get("source", current.get("source", "stb_payload"))).strip(),
+                "raw_field": str(record.get("raw_field", current.get("raw_field", ""))).strip(),
+                "source_url": str(record.get("source_url", current.get("source_url", ""))).strip(),
                 "first_seen": current.get("first_seen") or record.get("discovered_at"),
                 "last_seen": record.get("discovered_at"),
             }
