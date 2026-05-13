@@ -8,6 +8,8 @@ const state = {
   streams: [],
   epgSources: [],
   logoSources: [],
+  ignoredKeys: new Set(),
+  logoAuto: true,
 };
 
 async function requestJson(url, options = {}) {
@@ -34,6 +36,9 @@ function formatTime(seconds) {
 }
 
 function formSettings() {
+  const logoUrl = state.logoAuto
+    ? (state.logoSources[0]?.url || "")
+    : $("logoUrl").value.trim();
   return {
     interface: $("interface").value,
     http_host: $("httpHost").value.trim(),
@@ -43,7 +48,7 @@ function formSettings() {
     auto_probe: $("autoProbe").checked,
     auto_epg: $("autoEpg").checked,
     epg_url: $("epgUrl").value.trim(),
-    logo_url: $("logoUrl").value.trim(),
+    logo_url: logoUrl,
   };
 }
 
@@ -186,6 +191,14 @@ function syncPresetFromUrl(select, url) {
   select.value = [...select.options].some((option) => option.value === value) ? value : "";
 }
 
+function setLogoMode(auto) {
+  state.logoAuto = auto;
+  $("logoAutoBtn").classList.toggle("active", auto);
+  $("logoManualBtn").classList.toggle("active", !auto);
+  $("logoPreset").hidden = auto;
+  $("logoUrlLabel").hidden = auto;
+}
+
 async function loadEpgSources() {
   const data = await requestJson("/api/epg/sources");
   state.epgSources = data.epg_sources || [];
@@ -207,6 +220,9 @@ async function loadSettings() {
   $("logoUrl").value = data.logo_url || "";
   syncPresetFromUrl($("epgPreset"), $("epgUrl").value);
   syncPresetFromUrl($("logoPreset"), $("logoUrl").value);
+  const knownLogoUrls = new Set(state.logoSources.map((s) => s.url));
+  const savedLogoUrl = data.logo_url || "";
+  setLogoMode(!savedLogoUrl || knownLogoUrls.has(savedLogoUrl));
   $("scheduleM3uUrl").value = data.schedule_m3u_url || "";
   $("scheduleOutputName").value = data.schedule_output_name || "scheduled-epg.m3u";
   $("scheduleEnabled").checked = Boolean(data.schedule_enabled);
@@ -335,7 +351,7 @@ function streamRowsFromDom() {
 
 function preserveRowEdits(streams) {
   const currentEdits = new Map(streamRowsFromDom().map((row) => [row.key, row]));
-  return (streams || []).map((stream) => {
+  return (streams || []).filter((s) => !state.ignoredKeys.has(s.key)).map((stream) => {
     const draft = currentEdits.get(stream.key);
     if (!draft) return stream;
     return {
@@ -389,7 +405,7 @@ function streamInfoHtml(stream) {
 }
 
 function previewHtml(stream) {
-  if (!stream.preview_url) return '<span class="muted">未设置 rtp2httpd 地址</span>';
+  if (!stream.preview_url) return '<span class="muted">-</span>';
   const title = stream.name || stream.key;
   return `<div class="preview-cell">
     <button class="secondary preview-play-btn"
@@ -423,7 +439,8 @@ function tableHasEditingFocus() {
 
 function renderStreams(streams) {
   const currentChecks = new Map([...document.querySelectorAll("#streamsTableBody tr[data-key]")].map((row) => [row.dataset.key, Boolean(row.querySelector(".stream-check")?.checked)]));
-  state.streams = preserveRowEdits(streams);
+  const sorted = (streams || []).filter((s) => !state.ignoredKeys.has(s.key)).sort((a, b) => (b.first_seen || 0) - (a.first_seen || 0));
+  state.streams = preserveRowEdits(sorted);
   const body = $("streamsTableBody");
   if (!state.streams.length) {
     body.innerHTML = '<tr><td colspan="9" class="empty">暂无候选流</td></tr>';
@@ -616,6 +633,8 @@ $("logoPreset").addEventListener("change", () => {
 });
 $("epgUrl").addEventListener("input", () => syncPresetFromUrl($("epgPreset"), $("epgUrl").value));
 $("logoUrl").addEventListener("input", () => syncPresetFromUrl($("logoPreset"), $("logoUrl").value));
+$("logoAutoBtn").addEventListener("click", () => setLogoMode(true));
+$("logoManualBtn").addEventListener("click", () => setLogoMode(false));
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
 $("saveSettingsBtn").addEventListener("click", async () => {
   try {
@@ -668,6 +687,7 @@ $("stopBtn").addEventListener("click", async () => {
 });
 $("resetBtn").addEventListener("click", async () => {
   try {
+    state.ignoredKeys.clear();
     await requestJson("/api/capture/reset", {method: "POST", body: "{}"});
     await refreshStatusAndStreams();
   } catch (err) { alert(err.message); }
@@ -691,6 +711,27 @@ $("autoClassifyBtn").addEventListener("click", async () => {
     await requestJson("/api/channels/save", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
     await refreshStatusAndStreams();
   } catch (err) { alert(err.message); }
+});
+$("deleteCheckedBtn").addEventListener("click", async () => {
+  const checkedRows = [...document.querySelectorAll("#streamsTableBody tr[data-key]")]
+    .filter((row) => row.querySelector(".stream-check")?.checked);
+  if (!checkedRows.length) return;
+  checkedRows.forEach((row) => state.ignoredKeys.add(row.dataset.key));
+  state.streams = state.streams.filter((s) => !state.ignoredKeys.has(s.key));
+  renderStreams(state.streams);
+  try {
+    await requestJson("/api/channels/save", {
+      method: "POST",
+      body: JSON.stringify({
+        channels: checkedRows.map((row) => ({
+          key: row.dataset.key,
+          host: row.dataset.host,
+          port: Number(row.dataset.port),
+          name: "",
+        })),
+      }),
+    });
+  } catch (_) {}
 });
 $("selectAllStreams").addEventListener("change", (event) => {
   document.querySelectorAll(".stream-check").forEach((checkbox) => { checkbox.checked = event.target.checked; });

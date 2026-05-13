@@ -140,6 +140,12 @@ label { display: grid; gap: 6px; font-weight: 650; }
 label small, .muted { color: var(--muted); font-weight: 400; }
 .task-description { color: var(--muted); line-height: 1.6; margin: 0 0 12px; }
 
+.logo-mode-cell { display: grid; gap: 6px; font-weight: 650; }
+.logo-mode-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.mode-toggle-btns { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.mode-btn { padding: 2px 9px; font-size: 12px; font-weight: 600; background: #fff; border: none; cursor: pointer; color: var(--muted); line-height: 1.6; }
+.mode-btn.active { background: var(--accent); color: #fff; }
+
 .checkbox-label {
   min-height: 36px;
   display: flex;
@@ -206,7 +212,8 @@ table { width: 100%; border-collapse: collapse; min-width: 960px; table-layout: 
 th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: middle; }
 th { background: #f7f9fb; font-size: 13px; }
 th:nth-child(1), td:nth-child(1) { width: 42px; }
-th:nth-child(2), td:nth-child(2) { width: 152px; }
+th:nth-child(2), td:nth-child(2) { width: 184px; }
+td:nth-child(2) code { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 th:nth-child(3), td:nth-child(3) { width: 64px; }
 th:nth-child(4), td:nth-child(4) { width: 78px; }
 th:nth-child(5), td:nth-child(5) { width: 78px; }

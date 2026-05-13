@@ -160,11 +160,16 @@ OpenWrt / iStoreOS
                 XMLTV EPG 地址
                 <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
               </label>
-              <label>
-                台标来源
+              <div class="logo-mode-cell">
+                <div class="logo-mode-header">
+                  <span>台标来源</span>
+                  <div class="mode-toggle-btns">
+                    <button type="button" id="logoAutoBtn" class="mode-btn">自动</button><button type="button" id="logoManualBtn" class="mode-btn">手动</button>
+                  </div>
+                </div>
                 <select id="logoPreset"></select>
-              </label>
-              <label class="wide-field">
+              </div>
+              <label id="logoUrlLabel" class="wide-field">
                 台标 M3U 地址
                 <input id="logoUrl" type="url" placeholder="https://example.com/TVlist.m3u">
               </label>
@@ -204,6 +209,7 @@ OpenWrt / iStoreOS
             <div class="toolbar">
               <button id="saveChannelsBtn" class="secondary" type="button">保存频道草稿</button>
               <button id="autoClassifyBtn" class="secondary" type="button">按名称自动分类</button>
+              <button id="deleteCheckedBtn" class="danger" type="button">删除勾选</button>
               <select id="batchCategory">
                 <option value="央视频道">央视频道</option>
                 <option value="卫视频道">卫视频道</option>

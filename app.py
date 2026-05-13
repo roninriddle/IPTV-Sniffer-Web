@@ -6,6 +6,8 @@ from __future__ import annotations
 import gzip
 import json
 import re
+import shutil
+import subprocess
 import time
 import threading
 from pathlib import Path
@@ -62,6 +64,8 @@ probe_service = ProbeService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
 STARTED_AT = time.time()
 preview_failures: dict[str, str] = {}
+_snapshot_cache: dict[str, tuple[float, bytes]] = {}
+_snapshot_cache_ttl = 30
 _version_check_lock = threading.RLock()
 _version_check: dict[str, Any] = {
     "latest_version": None,
@@ -218,7 +222,8 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
             if not str(item.get("auto_name_source", "")).strip():
                 item["auto_name_source"] = str(discovery.get("source", "stb_payload")).strip()
         fill_channel_name_from_metadata(item, allow_epg_name=False)
-        item["category"] = str(item.get("category", "")).strip() or classify_channel_name(str(item.get("name", "")))
+        _auto_cat = classify_channel_name(str(item.get("name", "")))
+        item["category"] = _auto_cat if _auto_cat != "其它频道" else (str(item.get("category", "")).strip() or "其它频道")
         if settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
             fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(row, item))
@@ -255,12 +260,13 @@ def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
             detected_name = str(result.get("detected_name", "")).strip()
             snapshot_name = str(snapshot.get("name", "")).strip() or detected_name
             if snapshot_name and not str(stored.get("name", "")).strip():
+                _snap_cat = classify_channel_name(snapshot_name)
                 stored.update({
                     "key": key,
                     "host": host,
                     "port": port,
                     "name": snapshot_name,
-                    "category": str(snapshot.get("category", "")) or classify_channel_name(snapshot_name),
+                    "category": _snap_cat if _snap_cat != "其它频道" else (str(snapshot.get("category", "")) or "其它频道"),
                     "auto_name": str(snapshot.get("auto_name", "")) or detected_name,
                     "auto_name_source": str(snapshot.get("auto_name_source", "")) or str(result.get("detected_name_source", "")),
                     "packets": _safe_int(snapshot.get("packets")),
@@ -316,7 +322,8 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         if settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
             fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(channel, item))
-        item["category"] = channel.get("category") or classify_channel_name(str(item.get("name", "")))
+        _auto_cat = classify_channel_name(str(item.get("name", "")))
+        item["category"] = _auto_cat if _auto_cat != "其它频道" else (channel.get("category") or "其它频道")
         fcc = dict(fcc_records.get(stream["key"], {}))
         if channel.get("fcc_ip"):
             fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
@@ -343,10 +350,7 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             item["fcc_ip"],
             item["fcc_port"],
         ) if settings.get("http_host") else ""
-        item["snapshot_url"] = (
-            f"{item['preview_url']}{'&' if '?' in item['preview_url'] else '?'}snapshot=1"
-            if settings.get("http_host") else ""
-        )
+        item["snapshot_url"] = f"/api/snapshot/{item['host']}/{item['port']}" if item.get("eligible") else ""
         item["player_url"] = (
             f"http://{settings.get('http_host')}:{int(settings.get('http_port', 5140))}/player"
             if settings.get("http_host") else ""
@@ -899,6 +903,43 @@ def api_preview(host: str, port: int):
         "X-Accel-Buffering": "no",
     }
     return Response(stream_with_context(generate()), headers=headers, mimetype="video/MP2T", direct_passthrough=True)
+
+
+@app.get("/api/snapshot/<host>/<int:port>")
+def api_snapshot(host: str, port: int):
+    if not valid_ipv4_multicast(host):
+        return api_error("预览地址必须是 IPv4 组播地址", 400)
+    if not 1 <= port <= 65535:
+        return api_error("预览端口必须位于 1-65535", 400)
+    if shutil.which("ffmpeg") is None:
+        return api_error("缺少 ffmpeg 命令", 503)
+    key = f"{host}:{port}"
+    now = time.time()
+    cached = _snapshot_cache.get(key)
+    if cached and now - cached[0] < _snapshot_cache_ttl:
+        return Response(cached[1], mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
+    source = f"udp://{host}:{port}?timeout=8000000"
+    cmd = [
+        "ffmpeg", "-y",
+        "-analyzeduration", "2000000",
+        "-probesize", "2000000",
+        "-i", source,
+        "-frames:v", "1",
+        "-vf", "scale=320:-2",
+        "-f", "image2",
+        "-vcodec", "mjpeg",
+        "pipe:1",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+    except subprocess.TimeoutExpired:
+        return api_error("截图超时", 504)
+    except OSError as exc:
+        return api_error(f"ffmpeg 执行失败：{exc}", 500)
+    if proc.returncode != 0 or not proc.stdout:
+        return api_error("无法从流中截图", 502)
+    _snapshot_cache[key] = (now, proc.stdout)
+    return Response(proc.stdout, mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
 
 
 @app.get("/api/logs")
