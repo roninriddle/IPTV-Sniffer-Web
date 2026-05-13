@@ -6,7 +6,8 @@ const state = {
   poller: null,
   logPoller: null,
   streams: [],
-  probingKeys: new Set(),
+  epgSources: [],
+  logoSources: [],
 };
 
 async function requestJson(url, options = {}) {
@@ -42,12 +43,15 @@ function formSettings() {
     auto_probe: $("autoProbe").checked,
     auto_epg: $("autoEpg").checked,
     epg_url: $("epgUrl").value.trim(),
+    logo_url: $("logoUrl").value.trim(),
   };
 }
 
 function formScheduleSettings() {
   return {
     ...formSettings(),
+    schedule_m3u_url: $("scheduleM3uUrl").value.trim(),
+    schedule_output_name: $("scheduleOutputName").value.trim() || "scheduled-epg.m3u",
     schedule_enabled: $("scheduleEnabled").checked,
     schedule_unit: $("scheduleUnit").value,
     schedule_every: Number($("scheduleEvery").value || 1),
@@ -56,16 +60,34 @@ function formScheduleSettings() {
   };
 }
 
+function showHome() {
+  $("homePage").hidden = false;
+  $("workbenchPage").hidden = true;
+  document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.add("active"));
+  document.querySelectorAll("[data-tab]").forEach((item) => item.classList.remove("active"));
+}
+
+function showTab(tabName) {
+  $("homePage").hidden = true;
+  $("workbenchPage").hidden = false;
+  $("snifferTab").hidden = tabName !== "sniffer";
+  $("scheduleTab").hidden = tabName !== "schedule";
+  document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
+  document.querySelectorAll("[data-tab]").forEach((item) => {
+    item.classList.toggle("active", item.dataset.tab === tabName);
+  });
+}
+
 function setRuntimeBadge(health) {
   const badge = $("runtimeBadge");
   const captureOk = Boolean(health.runtime?.ok);
   const probeOk = Boolean(health.probe_runtime?.ok);
   if (captureOk && probeOk) {
     badge.className = "chip ok";
-    badge.textContent = "抓包与 4K 检测环境正常";
+    badge.textContent = "抓包与 4K 自动识别环境正常";
   } else if (captureOk && !probeOk) {
     badge.className = "chip warning";
-    badge.textContent = "抓包可用，ffprobe 检测异常";
+    badge.textContent = "抓包可用，ffprobe 异常";
   } else {
     badge.className = "chip danger";
     badge.textContent = "抓包权限或依赖异常";
@@ -95,6 +117,10 @@ function renderMetrics(metrics, tokenData) {
   $("discoveredChannels").textContent = metrics.discovered_channels ?? 0;
   $("fccRecords").textContent = metrics.fcc_records ?? 0;
   $("stbTokens").textContent = metrics.stb_tokens ?? 0;
+  if (metrics.output_files?.["scheduled-epg.m3u"]) {
+    $("downloadScheduledM3u").href = "/api/download/scheduled-epg.m3u";
+    $("downloadScheduledM3u").classList.remove("disabled");
+  }
   const latest = tokenData?.latest;
   if (latest) {
     const endpoint = latest.dip && latest.dport ? `${latest.dip}:${latest.dport}` : "-";
@@ -116,7 +142,7 @@ function renderEpgStatus(epg) {
     badge.textContent = "EPG 异常";
   } else if ((epg.channels ?? 0) > 0) {
     badge.className = "chip ok";
-    badge.textContent = `EPG ${epg.channels} 个频道`;
+    badge.textContent = `EPG ${epg.channels} 个频道 / 台标 ${epg.logos ?? 0}`;
   } else {
     badge.className = "chip neutral";
     badge.textContent = "EPG 未加载";
@@ -139,6 +165,35 @@ async function loadInterfaces() {
   }
 }
 
+function populatePreset(select, sources) {
+  const current = select.value;
+  select.innerHTML = "";
+  for (const source of sources || []) {
+    const option = document.createElement("option");
+    option.value = source.url;
+    option.textContent = source.name;
+    select.appendChild(option);
+  }
+  const custom = document.createElement("option");
+  custom.value = "";
+  custom.textContent = "自定义";
+  select.appendChild(custom);
+  select.value = [...select.options].some((option) => option.value === current) ? current : (select.options[0]?.value || "");
+}
+
+function syncPresetFromUrl(select, url) {
+  const value = String(url || "").trim();
+  select.value = [...select.options].some((option) => option.value === value) ? value : "";
+}
+
+async function loadEpgSources() {
+  const data = await requestJson("/api/epg/sources");
+  state.epgSources = data.epg_sources || [];
+  state.logoSources = data.logo_sources || [];
+  populatePreset($("epgPreset"), state.epgSources);
+  populatePreset($("logoPreset"), state.logoSources);
+}
+
 async function loadSettings() {
   const data = await requestJson("/api/settings");
   $("interface").value = data.interface || $("interface").value;
@@ -149,6 +204,11 @@ async function loadSettings() {
   $("autoProbe").checked = data.auto_probe !== false;
   $("autoEpg").checked = data.auto_epg !== false;
   $("epgUrl").value = data.epg_url || "";
+  $("logoUrl").value = data.logo_url || "";
+  syncPresetFromUrl($("epgPreset"), $("epgUrl").value);
+  syncPresetFromUrl($("logoPreset"), $("logoUrl").value);
+  $("scheduleM3uUrl").value = data.schedule_m3u_url || "";
+  $("scheduleOutputName").value = data.schedule_output_name || "scheduled-epg.m3u";
   $("scheduleEnabled").checked = Boolean(data.schedule_enabled);
   $("scheduleUnit").value = data.schedule_unit || "days";
   $("scheduleEvery").value = data.schedule_every ?? 1;
@@ -175,7 +235,10 @@ function updateScheduleUnitState() {
 
 function renderSchedule(schedule) {
   const badge = $("scheduleBadge");
-  if (schedule.enabled) {
+  if (schedule.running) {
+    badge.className = "chip warning";
+    badge.textContent = "更新中";
+  } else if (schedule.enabled) {
     badge.className = schedule.last_error ? "chip warning" : "chip ok";
     badge.textContent = schedule.last_error ? "已启用，有错误" : "已启用";
   } else {
@@ -188,9 +251,17 @@ function renderSchedule(schedule) {
   const lines = [
     `<strong>${escapeHtml(schedule.last_message || (schedule.enabled ? "定时任务已启用" : "定时任务未启用"))}</strong>`,
     `模式：<span class="mono">${mode}</span>`,
+    `M3U：<span class="mono">${escapeHtml(schedule.m3u_url || "-")}</span>`,
     `下次执行：<span class="mono">${escapeHtml(schedule.next_run_text || "-")}</span>`,
     `上次执行：<span class="mono">${escapeHtml(schedule.last_run_text || "-")}</span>`,
   ];
+  if (schedule.last_result) {
+    lines.push(`上次结果：${escapeHtml(schedule.last_result.count ?? 0)} 个频道，匹配 ${escapeHtml(schedule.last_result.matched ?? 0)} 个，输出 <span class="mono">${escapeHtml(schedule.last_result.file || "-")}</span>`);
+    if (schedule.last_result.file) {
+      $("downloadScheduledM3u").href = `/api/download/${schedule.last_result.file}`;
+      $("downloadScheduledM3u").classList.remove("disabled");
+    }
+  }
   if (schedule.last_error) lines.push(`错误：${escapeHtml(schedule.last_error)}`);
   $("schedulePanel").innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
 }
@@ -228,13 +299,15 @@ function renderStatus(status) {
 function rowProbePayload(row) {
   return {
     probe_status: row.dataset.probeStatus || "not_probed",
-    probe_message: row.dataset.probeMessage || "未检测",
+    probe_message: row.dataset.probeMessage || "未识别",
     codec_name: row.dataset.codecName || "",
     width: row.dataset.width ? Number(row.dataset.width) : null,
     height: row.dataset.height ? Number(row.dataset.height) : null,
     frame_rate: row.dataset.frameRate || "",
     resolution_label: row.dataset.resolutionLabel || "未识别",
     quality_group: row.dataset.qualityGroup || "未识别",
+    detected_name: row.dataset.detectedName || "",
+    detected_name_source: row.dataset.detectedNameSource || "",
     probed_at: row.dataset.probedAt ? Number(row.dataset.probedAt) : null,
     fcc_ip: row.dataset.fccIp || "",
     fcc_port: row.dataset.fccPort ? Number(row.dataset.fccPort) : null,
@@ -277,6 +350,8 @@ function preserveRowEdits(streams) {
       frame_rate: stream.frame_rate || draft.frame_rate,
       resolution_label: stream.resolution_label || draft.resolution_label,
       quality_group: stream.quality_group || draft.quality_group,
+      detected_name: stream.detected_name || draft.detected_name,
+      detected_name_source: stream.detected_name_source || draft.detected_name_source,
       probed_at: stream.probed_at ?? draft.probed_at,
       fcc_ip: stream.fcc_ip || draft.fcc_ip,
       fcc_port: stream.fcc_port ?? draft.fcc_port,
@@ -297,8 +372,8 @@ function probeBadge(stream) {
     return stream.quality_group === "4K高清" ? '<span class="badge ultra">4K高清</span>' : '<span class="badge info">普通频道</span>';
   }
   if (status === "partial") return '<span class="badge wait">信息不完整</span>';
-  if (status === "failed") return '<span class="badge danger">检测失败</span>';
-  return '<span class="badge neutral">未检测</span>';
+  if (status === "failed") return '<span class="badge danger">识别失败</span>';
+  return '<span class="badge neutral">等待自动识别</span>';
 }
 
 function streamInfoHtml(stream) {
@@ -307,9 +382,10 @@ function streamInfoHtml(stream) {
   const fps = stream.frame_rate ? escapeHtml(stream.frame_rate) : "-";
   const fcc = stream.fcc_ip && stream.fcc_port ? `<span>FCC：${escapeHtml(stream.fcc_ip)}:${escapeHtml(stream.fcc_port)}</span>` : "";
   const autoName = stream.auto_name ? `<span>自动名：${escapeHtml(stream.auto_name)}</span>` : "";
+  const detectedName = stream.detected_name && stream.detected_name !== stream.auto_name ? `<span>流内名称：${escapeHtml(stream.detected_name)}</span>` : "";
   const epgName = stream.tvg_name || stream.tvg_id ? `<span>EPG：${escapeHtml(stream.tvg_name || "-")} / ${escapeHtml(stream.tvg_id || "-")}</span>` : "";
   const message = stream.probe_message ? `<div class="probe-note">${escapeHtml(stream.probe_message)}</div>` : "";
-  return `<div class="probe-meta">${probeBadge(stream)}${autoName}${epgName}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
+  return `<div class="probe-meta">${probeBadge(stream)}${autoName}${detectedName}${epgName}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
 }
 
 function previewHtml(stream) {
@@ -335,30 +411,41 @@ function snapshotHtml(stream) {
   </button>`;
 }
 
+function tableHasEditingFocus() {
+  const active = document.activeElement;
+  const body = $("streamsTableBody");
+  return Boolean(
+    active
+    && body?.contains(active)
+    && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)
+  );
+}
+
 function renderStreams(streams) {
   const currentChecks = new Map([...document.querySelectorAll("#streamsTableBody tr[data-key]")].map((row) => [row.dataset.key, Boolean(row.querySelector(".stream-check")?.checked)]));
   state.streams = preserveRowEdits(streams);
   const body = $("streamsTableBody");
   if (!state.streams.length) {
-    body.innerHTML = '<tr><td colspan="10" class="empty">暂无候选流</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="empty">暂无候选流</td></tr>';
     return;
   }
   body.innerHTML = state.streams.map((stream) => {
     const candidateBadge = stream.eligible ? '<span class="badge ok">有效候选</span>' : '<span class="badge wait">包数偏少</span>';
     const checked = currentChecks.get(stream.key) ? "checked" : "";
-    const probing = state.probingKeys.has(stream.key);
     return `<tr data-key="${escapeHtml(stream.key)}"
         data-host="${escapeHtml(stream.host)}"
         data-port="${escapeHtml(stream.port)}"
         data-packets="${escapeHtml(stream.packets)}"
         data-probe-status="${escapeHtml(stream.probe_status || "not_probed")}"
-        data-probe-message="${escapeHtml(stream.probe_message || "未检测")}"
+        data-probe-message="${escapeHtml(stream.probe_message || "未识别")}"
         data-codec-name="${escapeHtml(stream.codec_name || "")}"
         data-width="${escapeHtml(stream.width ?? "")}"
         data-height="${escapeHtml(stream.height ?? "")}"
         data-frame-rate="${escapeHtml(stream.frame_rate || "")}"
         data-resolution-label="${escapeHtml(stream.resolution_label || "未识别")}"
         data-quality-group="${escapeHtml(stream.quality_group || "未识别")}"
+        data-detected-name="${escapeHtml(stream.detected_name || "")}"
+        data-detected-name-source="${escapeHtml(stream.detected_name_source || "")}"
         data-probed-at="${escapeHtml(stream.probed_at ?? "")}"
         data-fcc-ip="${escapeHtml(stream.fcc_ip || "")}"
         data-fcc-port="${escapeHtml(stream.fcc_port ?? "")}"
@@ -374,7 +461,7 @@ function renderStreams(streams) {
       <td>${escapeHtml(stream.packets)}</td>
       <td>${candidateBadge}</td>
       <td>${snapshotHtml(stream)}</td>
-      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="${stream.auto_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
+      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="${stream.auto_name || stream.tvg_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
       <td>
         <select class="channel-category">
           <option value="央视频道" ${stream.category === "央视频道" ? "selected" : ""}>央视频道</option>
@@ -383,7 +470,6 @@ function renderStreams(streams) {
         </select>
       </td>
       <td>${streamInfoHtml(stream)}</td>
-      <td><button class="secondary probe-one-btn" data-key="${escapeHtml(stream.key)}" ${probing ? "disabled" : ""}>${probing ? "检测中" : "检测流信息"}</button></td>
       <td>${previewHtml(stream)}</td>
     </tr>`;
   }).join("");
@@ -436,7 +522,11 @@ async function refreshStatusAndStreams() {
   renderMetrics(metrics, tokenData);
   renderSchedule(schedule);
   renderEpgStatus(epg);
-  renderStreams(streams.streams || []);
+  if (tableHasEditingFocus()) {
+    state.streams = preserveRowEdits(streams.streams || []);
+  } else {
+    renderStreams(streams.streams || []);
+  }
 }
 
 function startPolling() {
@@ -445,7 +535,7 @@ function startPolling() {
     try {
       await refreshStatusAndStreams();
     } catch (_) {}
-  }, 1000);
+  }, 2000);
 }
 
 async function appendLogs() {
@@ -494,61 +584,10 @@ function showExportDownloads(files) {
   }
 }
 
-function selectedRowsOrAll() {
-  const rows = streamRowsFromDom();
-  const selectedKeys = new Set([...document.querySelectorAll("#streamsTableBody tr[data-key]")]
-    .filter((row) => row.querySelector(".stream-check")?.checked)
-    .map((row) => row.dataset.key));
-  return selectedKeys.size ? rows.filter((row) => selectedKeys.has(row.key)) : rows;
-}
-
-async function probeOneByRow(row) {
-  const rows = streamRowsFromDom();
-  const payload = rows.find((item) => item.key === row.dataset.key);
-  if (!payload) return;
-  state.probingKeys.add(payload.key);
-  renderStreams(state.streams);
-  try {
-    await requestJson("/api/probe", {
-      method: "POST",
-      body: JSON.stringify({...payload, path_mode: $("pathMode").value}),
-    });
-    await refreshStatusAndStreams();
-  } catch (err) {
-    alert(err.message);
-  } finally {
-    state.probingKeys.delete(payload.key);
-    renderStreams(state.streams);
-  }
-}
-
-async function probeBatch() {
-  const rows = selectedRowsOrAll();
-  if (!rows.length) {
-    alert("暂无可检测的候选流");
-    return;
-  }
-  rows.forEach((row) => state.probingKeys.add(row.key));
-  renderStreams(state.streams);
-  try {
-    const data = await requestJson("/api/probe/batch", {
-      method: "POST",
-      body: JSON.stringify({channels: rows, path_mode: $("pathMode").value}),
-    });
-    await refreshStatusAndStreams();
-    const ok = (data.results || []).filter((item) => item.probe_status === "ok").length;
-    alert(`检测完成：共 ${data.count} 条，成功识别 ${ok} 条。`);
-  } catch (err) {
-    alert(err.message);
-  } finally {
-    rows.forEach((row) => state.probingKeys.delete(row.key));
-    renderStreams(state.streams);
-  }
-}
-
 async function bootstrap() {
   await loadHealth();
   await loadInterfaces();
+  await loadEpgSources();
   await loadSettings();
   await refreshStatusAndStreams();
   await appendLogs();
@@ -556,6 +595,16 @@ async function bootstrap() {
   startPolling();
 }
 
+document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
+document.querySelectorAll("[data-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.tab)));
+$("epgPreset").addEventListener("change", () => {
+  if ($("epgPreset").value) $("epgUrl").value = $("epgPreset").value;
+});
+$("logoPreset").addEventListener("change", () => {
+  if ($("logoPreset").value) $("logoUrl").value = $("logoPreset").value;
+});
+$("epgUrl").addEventListener("input", () => syncPresetFromUrl($("epgPreset"), $("epgUrl").value));
+$("logoUrl").addEventListener("input", () => syncPresetFromUrl($("logoPreset"), $("logoUrl").value));
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
 $("saveSettingsBtn").addEventListener("click", async () => {
   try {
@@ -584,6 +633,13 @@ $("disableScheduleBtn").addEventListener("click", async () => {
   try {
     $("scheduleEnabled").checked = false;
     const data = await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
+    renderSchedule(data);
+  } catch (err) { alert(err.message); }
+});
+$("runScheduleNowBtn").addEventListener("click", async () => {
+  try {
+    await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
+    const data = await requestJson("/api/schedule/run-now", {method: "POST", body: "{}"});
     renderSchedule(data);
   } catch (err) { alert(err.message); }
 });
@@ -635,14 +691,7 @@ $("applyBatchCategoryBtn").addEventListener("click", () => {
     }
   });
 });
-$("probeSelectedBtn").addEventListener("click", probeBatch);
 $("streamsTableBody").addEventListener("click", (event) => {
-  const probeButton = event.target.closest(".probe-one-btn");
-  if (probeButton) {
-    const row = probeButton.closest("tr[data-key]");
-    if (row) probeOneByRow(row);
-    return;
-  }
   const previewButton = event.target.closest(".preview-play-btn");
   if (previewButton) {
     openPreview(
@@ -657,6 +706,11 @@ $("streamsTableBody").addEventListener("click", (event) => {
   if (snapshotButton) {
     openSnapshot(snapshotButton.dataset.snapshotUrl, snapshotButton.dataset.title);
   }
+});
+$("streamsTableBody").addEventListener("focusout", () => {
+  setTimeout(() => {
+    if (!tableHasEditingFocus()) renderStreams(state.streams);
+  }, 80);
 });
 $("exportBtn").addEventListener("click", async () => {
   try {

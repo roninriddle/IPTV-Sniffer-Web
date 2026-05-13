@@ -71,11 +71,14 @@ class EpgService:
         self._boot_thread_started = False
         self._cache: dict[str, Any] = {
             "url": "",
+            "logo_url": "",
             "channels": [],
+            "logos": [],
             "last_refresh": None,
             "last_error": "",
         }
         self._index: dict[str, dict[str, Any]] = {}
+        self._logo_index: dict[str, dict[str, Any]] = {}
         self._load_cache()
 
     def _load_cache(self) -> None:
@@ -83,9 +86,14 @@ class EpgService:
         channels = data.get("channels")
         if not isinstance(channels, list):
             channels = []
+        logos = data.get("logos")
+        if not isinstance(logos, list):
+            logos = []
         payload = {
             "url": str(data.get("url", "")),
+            "logo_url": str(data.get("logo_url", "")),
             "channels": [item for item in channels if isinstance(item, dict)],
+            "logos": [item for item in logos if isinstance(item, dict)],
             "last_refresh": data.get("last_refresh"),
             "last_error": str(data.get("last_error", "")),
         }
@@ -105,6 +113,14 @@ class EpgService:
                 if normalized and normalized not in index:
                     index[normalized] = channel
         self._index = index
+        logo_index: dict[str, dict[str, Any]] = {}
+        for logo in self._cache.get("logos", []):
+            names = [str(logo.get("name", "")), *(str(item) for item in logo.get("names", []) or [])]
+            for name in names:
+                normalized = normalize_channel_name(name)
+                if normalized and normalized not in logo_index:
+                    logo_index[normalized] = logo
+        self._logo_index = logo_index
 
     def start_auto_refresh(self, settings_store: Any) -> None:
         with self._lock:
@@ -119,45 +135,53 @@ class EpgService:
             url = str(settings.get("epg_url", "")).strip()
             if not url:
                 return
+            logo_url = str(settings.get("logo_url", "")).strip()
             with self._lock:
                 last_refresh = self._cache.get("last_refresh")
                 fresh = isinstance(last_refresh, (int, float)) and time.time() - float(last_refresh) < EPG_REFRESH_INTERVAL
             if fresh and self.count() > 0:
                 return
-            self.refresh(url)
+            self.refresh(url, logo_url)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def refresh_async(self, url: str) -> dict[str, Any]:
+    def refresh_async(self, url: str, logo_url: str = "") -> dict[str, Any]:
         url = str(url or "").strip()
+        logo_url = str(logo_url or "").strip()
         if not url:
             raise ValueError("EPG 地址不能为空")
         with self._lock:
             if self._refresh_thread and self._refresh_thread.is_alive():
                 return self.status()
             self._cache["url"] = url
+            self._cache["logo_url"] = logo_url
             self._cache["last_error"] = ""
 
         def worker() -> None:
-            self.refresh(url)
+            self.refresh(url, logo_url)
 
         self._refresh_thread = threading.Thread(target=worker, daemon=True)
         self._refresh_thread.start()
         return self.status()
 
-    def refresh(self, url: str) -> dict[str, Any]:
+    def refresh(self, url: str, logo_url: str = "") -> dict[str, Any]:
         url = str(url or "").strip()
+        logo_url = str(logo_url or "").strip()
         if not url:
             raise ValueError("EPG 地址不能为空")
         with self._lock:
             self._cache["url"] = url
+            self._cache["logo_url"] = logo_url
             self._cache["last_error"] = ""
         try:
             raw = self._fetch(url)
             channels = self._parse_xmltv(raw)
+            logos = self._fetch_logo_map(logo_url) if logo_url else list(self._cache.get("logos", []))
             payload = {
                 "url": url,
+                "logo_url": logo_url,
                 "channels": channels,
+                "logos": logos,
                 "last_refresh": int(time.time()),
                 "last_error": "",
             }
@@ -165,7 +189,7 @@ class EpgService:
                 self._cache = payload
                 self._rebuild_index_locked()
                 self._save_cache_locked()
-            self.logger.info(f"EPG 刷新完成：{url}，频道 {len(channels)} 个")
+            self.logger.info(f"EPG 刷新完成：{url}，频道 {len(channels)} 个，台标 {len(logos)} 个")
             return self.status()
         except Exception as exc:
             message = str(exc)
@@ -213,6 +237,29 @@ class EpgService:
             })
         return channels
 
+    def _fetch_logo_map(self, url: str) -> list[dict[str, Any]]:
+        text = self._fetch(url).decode("utf-8", errors="ignore")
+        logos: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for line in text.splitlines():
+            if not line.startswith("#EXTINF"):
+                continue
+            attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', line))
+            logo_url = str(attrs.get("tvg-logo", "")).strip()
+            if not logo_url:
+                continue
+            title = line.rsplit(",", 1)[-1].strip() if "," in line else ""
+            names = [str(attrs.get("tvg-name", "")).strip(), title]
+            names = [name for name in names if name]
+            if not names:
+                continue
+            normalized = normalize_channel_name(names[0])
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            logos.append({"name": names[0], "names": names, "logo": logo_url})
+        return logos
+
     def count(self) -> int:
         with self._lock:
             return len(self._cache.get("channels", []) or [])
@@ -222,7 +269,9 @@ class EpgService:
             refreshing = bool(self._refresh_thread and self._refresh_thread.is_alive())
             payload = {
                 "url": self._cache.get("url", ""),
+                "logo_url": self._cache.get("logo_url", ""),
                 "channels": len(self._cache.get("channels", []) or []),
+                "logos": len(self._cache.get("logos", []) or []),
                 "last_refresh": self._cache.get("last_refresh"),
                 "last_error": self._cache.get("last_error", ""),
                 "refreshing": refreshing,
@@ -251,18 +300,38 @@ class EpgService:
             candidates.sort(key=lambda item: item[0], reverse=True)
             return dict(candidates[0][1])
 
+    def match_logo(self, name: str) -> dict[str, Any] | None:
+        normalized = normalize_channel_name(name)
+        if not normalized:
+            return None
+        with self._lock:
+            if normalized in self._logo_index:
+                return dict(self._logo_index[normalized])
+            candidates: list[tuple[int, dict[str, Any]]] = []
+            for key, logo in self._logo_index.items():
+                if not key:
+                    continue
+                if normalized in key or key in normalized:
+                    candidates.append((min(len(normalized), len(key)), logo))
+            if not candidates:
+                return None
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return dict(candidates[0][1])
+
     def enrich_item(self, item: dict[str, Any], epg_url: str = "", only_missing: bool = True) -> dict[str, Any]:
-        if only_missing and str(item.get("tvg_id", "")).strip():
-            return item
         name = str(item.get("name", "")).strip()
         if not name:
             return item
-        match = self.match(name)
-        if not match:
-            return item
-        item["tvg_id"] = str(match.get("id", "") or match.get("name", "")).strip()
-        item["tvg_name"] = str(match.get("name", "") or name).strip()
-        item["tvg_logo"] = str(match.get("logo", "")).strip()
-        item["epg_source"] = str(self.status(summary=True).get("url") or epg_url or "").strip()
-        item["epg_matched_at"] = int(time.time())
+        if not (only_missing and str(item.get("tvg_id", "")).strip()):
+            match = self.match(name)
+            if match:
+                item["tvg_id"] = str(match.get("id", "") or match.get("name", "")).strip()
+                item["tvg_name"] = str(match.get("name", "") or name).strip()
+                item["tvg_logo"] = str(match.get("logo", "")).strip()
+                item["epg_source"] = str(self.status(summary=True).get("url") or epg_url or "").strip()
+                item["epg_matched_at"] = int(time.time())
+        if not str(item.get("tvg_logo", "")).strip():
+            logo_match = self.match_logo(str(item.get("tvg_name") or name))
+            if logo_match:
+                item["tvg_logo"] = str(logo_match.get("logo", "")).strip()
         return item

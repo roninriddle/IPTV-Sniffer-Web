@@ -75,7 +75,7 @@ class ExportService:
                 category=category,
                 packets=packets,
                 probe_status=str(row.get("probe_status", "not_probed")),
-                probe_message=str(row.get("probe_message", "未检测")),
+                probe_message=str(row.get("probe_message", "未识别")),
                 codec_name=str(row.get("codec_name", "")),
                 width=width,
                 height=height,

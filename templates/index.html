@@ -8,235 +8,311 @@
 </head>
 <body data-version="{{ app_version }}">
   <header class="topbar">
-    <div>
-      <div class="eyebrow">{{ app_name }} <span class="version">v{{ app_version }}</span></div>
-      <h1>统一 IPTV 嗅探工作台</h1>
-      <p class="top-subtitle">{{ app_description }}</p>
-    </div>
-    <div class="top-actions">
-      <button id="refreshInterfacesBtn" class="secondary">刷新接口</button>
-      <button id="logsBtn" class="primary">实时日志</button>
+    <div class="topbar-inner">
+      <div>
+        <div class="eyebrow">{{ app_name }} <span class="version">v{{ app_version }}</span></div>
+        <h1>统一 IPTV 嗅探工作台</h1>
+        <p class="top-subtitle">{{ app_description }}</p>
+      </div>
+      <div class="top-actions">
+        <button class="nav-pill active" data-page="home" type="button">使用说明</button>
+        <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
+        <button class="nav-pill" data-tab="schedule" type="button">定时 EPG</button>
+        <button id="refreshInterfacesBtn" class="secondary" type="button">刷新接口</button>
+        <button id="logsBtn" class="primary" type="button">实时日志</button>
+      </div>
     </div>
   </header>
 
   <div class="app-shell">
-  <aside id="logsDrawer" class="logs-drawer" aria-hidden="true">
-    <div class="logs-header">
-      <div>
-        <div class="eyebrow">实时日志</div>
-        <h2>{{ app_name }} v{{ app_version }}</h2>
+    <aside id="logsDrawer" class="logs-drawer" aria-hidden="true">
+      <div class="logs-header">
+        <div>
+          <div class="eyebrow">实时日志</div>
+          <h2>{{ app_name }} v{{ app_version }}</h2>
+        </div>
+        <button id="closeLogsBtn" class="secondary" type="button">收起</button>
       </div>
-      <button id="closeLogsBtn" class="secondary">收起</button>
-    </div>
-    <div class="logs-actions">
-      <button id="clearLogMemoryBtn" class="secondary">清空面板缓存</button>
-      <a class="download" href="/api/logs/download">下载完整日志</a>
-    </div>
-    <pre id="logsOutput" class="logs-output"></pre>
-  </aside>
+      <div class="logs-actions">
+        <button id="clearLogMemoryBtn" class="secondary" type="button">清空面板缓存</button>
+        <a class="download" href="/api/logs/download">下载完整日志</a>
+      </div>
+      <pre id="logsOutput" class="logs-output"></pre>
+    </aside>
 
-  <main class="layout">
-    <section class="card hero-card">
-      <div class="section-title">
-        <h2>运行拓扑</h2>
-        <span class="chip warning">宿主机必须能看到机顶盒 IPTV 流量</span>
-      </div>
-      <p>0.6 将组播候选、FCC 快速换台字段、channelAcquire 令牌记录、截图预览和多格式导出集中在同一页面。容器只能抓取宿主机实际可见的流量。</p>
-      <div class="grid two">
-        <article class="notice compact">
-          <h3>推荐：管理型交换机镜像口</h3>
-          <pre>光猫 IPTV 口 → 交换机 A 口
+    <main class="layout">
+      <section id="homePage" class="home-page">
+        <div class="home-hero">
+          <div>
+            <div class="eyebrow">使用说明</div>
+            <h2>先确认拓扑，再嗅探整理，最后导出或定时更新 EPG。</h2>
+            <p>容器只能抓到宿主机实际可见的 IPTV 流量。推荐使用交换机镜像机顶盒端口，或让 IPTV 流量真实经过运行 Docker 的设备。</p>
+          </div>
+          <div class="home-actions">
+            <button class="primary" data-tab="sniffer" type="button">进入嗅探整理</button>
+            <button class="secondary" data-tab="schedule" type="button">配置定时 EPG</button>
+          </div>
+        </div>
+
+        <section class="card topology-card">
+          <details open>
+            <summary>
+              <span>运行拓扑与抓包前提</span>
+              <span class="chip warning">宿主机必须能看到机顶盒 IPTV 流量</span>
+            </summary>
+            <div class="grid two">
+              <article class="notice compact">
+                <h3>推荐：管理型交换机镜像口</h3>
+                <pre>光猫 IPTV 口 → 交换机 A 口
 交换机 B 口 → 机顶盒
 交换机 C 口 → 抓包设备 / Docker 宿主机
 
-推荐配置：
 源端口：B 口（机顶盒端口）
 目标端口：C 口（抓包设备）
 镜像方向：Both / 双向</pre>
-          <p>A 口也可以镜像到 C，但优先推荐镜像 B 口，便于观察机顶盒实际收到的 IPTV 流量。</p>
-        </article>
-        <article class="notice compact">
-          <h3>无管理型交换机</h3>
-          <pre>光猫 IPTV 口
+              </article>
+              <article class="notice compact">
+                <h3>OpenWrt / iStoreOS 串接</h3>
+                <pre>光猫 IPTV 口
       ↓
 OpenWrt / iStoreOS
       ↓
 机顶盒</pre>
-          <p>前提是 IPTV 流量真实经过这台设备，并在本页选择对应 IPTV 接口抓包。</p>
-          <p class="muted">不可用场景：光猫 IPTV 口直接接机顶盒，而 NAS / Docker 只在普通 LAN 中。</p>
-        </article>
-      </div>
-    </section>
+                <p class="muted">不可用场景：光猫 IPTV 口直接接机顶盒，而 NAS / Docker 只在普通 LAN 中。</p>
+              </article>
+            </div>
+          </details>
+        </section>
 
-    <section class="card">
-      <div class="section-title">
-        <h2>1. 嗅探参数</h2>
-        <span id="runtimeBadge" class="chip neutral">检查中</span>
-      </div>
-      <div class="form-grid">
-        <label>
-          抓包网卡
-          <select id="interface"></select>
-        </label>
-        <label>
-          rtp2httpd 地址
-          <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
-        </label>
-        <label>
-          rtp2httpd 端口
-          <input id="httpPort" type="number" min="1" max="65535" value="5140">
-        </label>
-        <label>
-          播放路径
-          <select id="pathMode">
-            <option value="rtp">/rtp/</option>
-            <option value="udp">/udp/</option>
-          </select>
-        </label>
-        <label>
-          嗅探时长（秒）
-          <input id="duration" type="number" min="0" value="30">
-          <small>0 表示手动停止</small>
-        </label>
-      </div>
-      <div class="section-subtitle">
-        <h3>自动补全</h3>
-        <span id="epgBadge" class="chip neutral">EPG 未加载</span>
-      </div>
-      <div class="form-grid auto-grid">
-        <label class="checkbox-label">
-          <input id="autoProbe" type="checkbox" checked>
-          自动识别技术信息
-        </label>
-        <label class="checkbox-label">
-          <input id="autoEpg" type="checkbox" checked>
-          自动补全 EPG
-        </label>
-        <label class="wide-field">
-          XMLTV EPG 地址
-          <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
-        </label>
-        <button id="refreshEpgBtn" class="secondary" type="button">刷新 EPG</button>
-      </div>
-      <div class="button-row">
-        <button id="startBtn" class="primary">开始嗅探</button>
-        <button id="stopBtn" class="danger" disabled>停止嗅探</button>
-        <button id="resetBtn" class="secondary">重置候选流</button>
-        <button id="saveSettingsBtn" class="secondary">保存默认设置</button>
-      </div>
-    </section>
+        <section class="home-steps">
+          <article>
+            <strong>1. 嗅探整理</strong>
+            <span>设置抓包网卡和 rtp2httpd 地址，切换机顶盒频道，系统会先过滤无效组播，再自动识别编码、分辨率、截图和 EPG。</span>
+          </article>
+          <article>
+            <strong>2. 人工补全</strong>
+            <span>自动识别失败时，只补频道名称和分类即可；表格会在编辑时暂停重绘，避免输入被打断。</span>
+          </article>
+          <article>
+            <strong>3. 定时 EPG</strong>
+            <span>定时任务只更新已经指定的 M3U 清单的 EPG 和台标，不再自动抓包，不会改动你的频道源地址。</span>
+          </article>
+        </section>
+      </section>
 
-    <section class="card">
-      <div class="section-title">
-        <h2>2. 定时任务</h2>
-        <span id="scheduleBadge" class="chip neutral">未启用</span>
-      </div>
-      <div class="form-grid schedule-grid">
-        <label class="checkbox-label">
-          <input id="scheduleEnabled" type="checkbox">
-          启用自动嗅探
-        </label>
-        <label>
-          执行周期
-          <select id="scheduleUnit">
-            <option value="hours">按小时</option>
-            <option value="days">按天</option>
-          </select>
-        </label>
-        <label>
-          间隔
-          <input id="scheduleEvery" type="number" min="1" value="1">
-          <small id="scheduleEveryHint">每 1 天</small>
-        </label>
-        <label>
-          执行小时
-          <input id="scheduleHour" type="number" min="0" max="23" value="3">
-        </label>
-        <label>
-          执行分钟
-          <input id="scheduleMinute" type="number" min="0" max="59" value="0">
-        </label>
-      </div>
-      <div class="button-row">
-        <button id="saveScheduleBtn" class="primary">保存定时任务</button>
-        <button id="disableScheduleBtn" class="secondary">停用任务</button>
-      </div>
-      <div id="schedulePanel" class="status-panel muted">定时任务未启用。</div>
-    </section>
+      <section id="workbenchPage" class="workbench-page" hidden>
+        <nav class="tabs" aria-label="工作区切换">
+          <button class="tab-button active" data-tab="sniffer" type="button">嗅探整理</button>
+          <button class="tab-button" data-tab="schedule" type="button">定时 EPG</button>
+        </nav>
 
-    <section class="card">
-      <div class="section-title">
-        <h2>3. 实时状态</h2>
-        <span id="statusChip" class="chip neutral">等待开始</span>
-      </div>
-      <div id="statusPanel" class="status-panel"></div>
-      <div class="metrics-grid">
-        <div class="metric"><span>发现流</span><strong id="streamsFound">0</strong></div>
-        <div class="metric"><span>有效候选</span><strong id="eligibleStreams">0</strong></div>
-        <div class="metric"><span>自动识别名</span><strong id="discoveredChannels">0</strong></div>
-        <div class="metric"><span>FCC 记录</span><strong id="fccRecords">0</strong></div>
-        <div class="metric"><span>令牌记录</span><strong id="stbTokens">0</strong></div>
-        <div class="metric"><span>包计数</span><strong id="packetCount">0</strong></div>
-        <div class="metric"><span>运行秒数</span><strong id="elapsed">0</strong></div>
-      </div>
-      <div id="snifferInsight" class="insight-panel muted">尚未发现 FCC 或 channelAcquire 令牌。</div>
-    </section>
+        <div id="snifferTab" class="tab-panel">
+          <section class="card">
+            <div class="section-title">
+              <h2>嗅探参数</h2>
+              <span id="runtimeBadge" class="chip neutral">检查中</span>
+            </div>
+            <div class="form-grid">
+              <label>
+                抓包网卡
+                <select id="interface"></select>
+              </label>
+              <label>
+                rtp2httpd 地址
+                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
+              </label>
+              <label>
+                rtp2httpd 端口
+                <input id="httpPort" type="number" min="1" max="65535" value="5140">
+              </label>
+              <label>
+                播放路径
+                <select id="pathMode">
+                  <option value="rtp">/rtp/</option>
+                  <option value="udp">/udp/</option>
+                </select>
+              </label>
+              <label>
+                嗅探时长（秒）
+                <input id="duration" type="number" min="0" value="30">
+                <small>0 表示手动停止</small>
+              </label>
+            </div>
+            <div class="section-subtitle">
+              <h3>自动补全</h3>
+              <span id="epgBadge" class="chip neutral">EPG 未加载</span>
+            </div>
+            <div class="form-grid auto-grid">
+              <label class="checkbox-label">
+                <input id="autoProbe" type="checkbox" checked>
+                自动识别技术信息
+              </label>
+              <label class="checkbox-label">
+                <input id="autoEpg" type="checkbox" checked>
+                自动补全 EPG
+              </label>
+              <label>
+                EPG 预设
+                <select id="epgPreset"></select>
+              </label>
+              <label class="wide-field">
+                XMLTV EPG 地址
+                <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
+              </label>
+              <label>
+                台标来源
+                <select id="logoPreset"></select>
+              </label>
+              <label class="wide-field">
+                台标 M3U 地址
+                <input id="logoUrl" type="url" placeholder="https://example.com/TVlist.m3u">
+              </label>
+              <button id="refreshEpgBtn" class="secondary" type="button">刷新 EPG</button>
+            </div>
+            <div class="button-row">
+              <button id="startBtn" class="primary" type="button">开始嗅探</button>
+              <button id="stopBtn" class="danger" type="button" disabled>停止嗅探</button>
+              <button id="resetBtn" class="secondary" type="button">重置候选流</button>
+              <button id="saveSettingsBtn" class="secondary" type="button">保存默认设置</button>
+            </div>
+          </section>
 
-    <section class="card">
-      <div class="section-title">
-        <h2>4. 有效候选与频道整理</h2>
-        <span class="muted">低包数、系统发现端口、503/失败且未命名的流会自动折叠；截图来自 rtp2httpd snapshot。</span>
-      </div>
-      <div class="toolbar">
-        <button id="saveChannelsBtn" class="secondary">保存频道草稿</button>
-        <button id="autoClassifyBtn" class="secondary">按名称自动分类</button>
-        <select id="batchCategory">
-          <option value="央视频道">央视频道</option>
-          <option value="卫视频道">卫视频道</option>
-          <option value="其它频道">其它频道</option>
-        </select>
-        <button id="applyBatchCategoryBtn" class="secondary">应用到勾选项</button>
-        <button id="probeSelectedBtn" class="primary">检测勾选流</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th><input type="checkbox" id="selectAllStreams"></th>
-              <th>组播地址</th>
-              <th>包数</th>
-              <th>状态</th>
-              <th>截图</th>
-              <th>频道名称</th>
-              <th>分类</th>
-              <th>流信息 / 清晰度</th>
-              <th>检测</th>
-              <th>预览地址</th>
-            </tr>
-          </thead>
-          <tbody id="streamsTableBody">
-            <tr><td colspan="10" class="empty">暂无候选流</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+          <section class="card">
+            <div class="section-title">
+              <h2>实时状态</h2>
+              <span id="statusChip" class="chip neutral">等待开始</span>
+            </div>
+            <div id="statusPanel" class="status-panel"></div>
+            <div class="metrics-grid">
+              <div class="metric"><span>发现流</span><strong id="streamsFound">0</strong></div>
+              <div class="metric"><span>有效候选</span><strong id="eligibleStreams">0</strong></div>
+              <div class="metric"><span>自动识别名</span><strong id="discoveredChannels">0</strong></div>
+              <div class="metric"><span>FCC 记录</span><strong id="fccRecords">0</strong></div>
+              <div class="metric"><span>令牌记录</span><strong id="stbTokens">0</strong></div>
+              <div class="metric"><span>包计数</span><strong id="packetCount">0</strong></div>
+              <div class="metric"><span>运行秒数</span><strong id="elapsed">0</strong></div>
+            </div>
+            <div id="snifferInsight" class="insight-panel muted">尚未发现 FCC 或 channelAcquire 令牌。</div>
+          </section>
 
-    <section class="card">
-      <div class="section-title">
-        <h2>5. 导出结果</h2>
-        <span class="muted">原分类保留；同时额外复制到“4K高清”与“普通频道”两个清晰度分组。</span>
-      </div>
-      <div class="button-row">
-        <button id="exportBtn" class="primary">生成播放列表</button>
-        <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
-        <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
-        <a id="downloadJson" class="download disabled" href="#">下载 JSON</a>
-        <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
-        <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
-      </div>
-      <div id="exportResult" class="result-box muted">尚未生成导出文件。源地址 M3U 可作为 rtp2httpd external-m3u；JSON 保留 live/source 结构，便于后续二次转换。</div>
-    </section>
-  </main>
+          <section class="card">
+            <div class="section-title">
+              <h2>有效候选与频道整理</h2>
+              <span class="muted">低包数、系统发现端口、503/失败且未命名的流会自动折叠。</span>
+            </div>
+            <div class="toolbar">
+              <button id="saveChannelsBtn" class="secondary" type="button">保存频道草稿</button>
+              <button id="autoClassifyBtn" class="secondary" type="button">按名称自动分类</button>
+              <select id="batchCategory">
+                <option value="央视频道">央视频道</option>
+                <option value="卫视频道">卫视频道</option>
+                <option value="其它频道">其它频道</option>
+              </select>
+              <button id="applyBatchCategoryBtn" class="secondary" type="button">应用到勾选项</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th><input type="checkbox" id="selectAllStreams"></th>
+                    <th>组播地址</th>
+                    <th>包数</th>
+                    <th>状态</th>
+                    <th>截图</th>
+                    <th>频道名称</th>
+                    <th>分类</th>
+                    <th>流信息 / 清晰度</th>
+                    <th>预览地址</th>
+                  </tr>
+                </thead>
+                <tbody id="streamsTableBody">
+                  <tr><td colspan="9" class="empty">暂无候选流</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>导出结果</h2>
+              <span class="muted">原分类保留；同时额外复制到“4K高清”与“普通频道”两个清晰度分组。</span>
+            </div>
+            <div class="button-row">
+              <button id="exportBtn" class="primary" type="button">生成播放列表</button>
+              <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
+              <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
+              <a id="downloadJson" class="download disabled" href="#">下载 JSON</a>
+              <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
+              <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
+            </div>
+            <div id="exportResult" class="result-box muted">尚未生成导出文件。源地址 M3U 可作为 rtp2httpd external-m3u；JSON 保留 live/source 结构，便于后续二次转换。</div>
+          </section>
+        </div>
+
+        <div id="scheduleTab" class="tab-panel" hidden>
+          <section class="card">
+            <div class="section-title">
+              <h2>定时 EPG</h2>
+              <span id="scheduleBadge" class="chip neutral">未启用</span>
+            </div>
+            <p class="task-description">定时任务会按周期读取下面指定的 M3U，刷新 XMLTV EPG 与台标匹配结果，然后输出 <span class="mono">scheduled-epg.m3u</span>。它只更新清单元数据，不会自动抓包，也不会改变频道播放地址。</p>
+            <div class="form-grid schedule-grid">
+              <label class="checkbox-label">
+                <input id="scheduleEnabled" type="checkbox">
+                启用定时 EPG
+              </label>
+              <label>
+                执行周期
+                <select id="scheduleUnit">
+                  <option value="hours">按小时</option>
+                  <option value="days">按天</option>
+                </select>
+              </label>
+              <label>
+                间隔
+                <input id="scheduleEvery" type="number" min="1" value="1">
+                <small id="scheduleEveryHint">每 1 天</small>
+              </label>
+              <label>
+                执行小时
+                <input id="scheduleHour" type="number" min="0" max="23" value="3">
+              </label>
+              <label>
+                执行分钟
+                <input id="scheduleMinute" type="number" min="0" max="59" value="0">
+              </label>
+              <label class="wide-field span-2">
+                要更新的 M3U 地址
+                <input id="scheduleM3uUrl" type="url" placeholder="http://example.com/channels.m3u">
+              </label>
+              <label>
+                输出文件
+                <input id="scheduleOutputName" type="text" value="scheduled-epg.m3u" readonly>
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="saveScheduleBtn" class="primary" type="button">保存定时任务</button>
+              <button id="runScheduleNowBtn" class="secondary" type="button">立即更新一次</button>
+              <button id="disableScheduleBtn" class="secondary" type="button">停用任务</button>
+              <a id="downloadScheduledM3u" class="download disabled" href="#">下载更新后的 M3U</a>
+            </div>
+            <div id="schedulePanel" class="status-panel muted">定时 EPG 未启用。</div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>EPG 与台标来源</h2>
+              <span class="muted">同一组来源也会用于嗅探页的自动补全。</span>
+            </div>
+            <div class="source-links">
+              <a href="https://epg.112114.xyz/" target="_blank" rel="noreferrer">epg.112114.xyz</a>
+              <a href="https://epg.51zmt.top:8001/" target="_blank" rel="noreferrer">epg.51zmt.top</a>
+              <a href="https://github.com/wanglindl/TVlogo" target="_blank" rel="noreferrer">wanglindl/TVlogo</a>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
   </div>
 
   <div id="previewModal" class="preview-modal" hidden>
@@ -246,7 +322,7 @@ OpenWrt / iStoreOS
           <div class="eyebrow">实时预览</div>
           <h2 id="previewTitle">频道预览</h2>
         </div>
-        <button id="closePreviewBtn" class="secondary">关闭</button>
+        <button id="closePreviewBtn" class="secondary" type="button">关闭</button>
       </div>
       <div class="preview-actions">
         <a id="previewPlayerLink" class="download" href="#" target="_blank" rel="noreferrer">打开 rtp2httpd 播放器</a>
@@ -260,7 +336,7 @@ OpenWrt / iStoreOS
   </div>
 
   <div id="snapshotModal" class="snapshot-modal" hidden>
-    <button id="closeSnapshotBtn" class="snapshot-close">关闭</button>
+    <button id="closeSnapshotBtn" class="snapshot-close" type="button">关闭</button>
     <img id="snapshotLarge" alt="频道截图放大预览">
   </div>
 

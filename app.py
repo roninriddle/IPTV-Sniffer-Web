@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""IPTV Sniffer Web v0.6.1 application entrypoint."""
+"""IPTV Sniffer Web application entrypoint."""
 from __future__ import annotations
 
+import gzip
+import re
 import time
 import threading
 from pathlib import Path
@@ -22,7 +24,9 @@ from config import (
     DATA_DIR,
     DISCOVERY_FILE,
     EPG_CACHE_FILE,
+    EPG_SOURCES,
     FCC_FILE,
+    LOGO_SOURCES,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
     MIN_PACKET_COUNT,
@@ -34,7 +38,7 @@ from config import (
     WEB_PORT,
 )
 from services.capture_service import CaptureService
-from services.epg_service import EpgService
+from services.epg_service import EpgService, normalize_channel_name
 from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
@@ -53,13 +57,13 @@ capture_service = CaptureService(logger, fcc_store, token_store, discovery_store
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
-schedule_service = ScheduleService(logger, settings_store, capture_service)
 STARTED_AT = time.time()
 preview_failures: dict[str, str] = {}
 auto_probe_lock = threading.RLock()
 auto_probe_pending: set[str] = set()
 auto_probe_done: set[str] = set()
 auto_enrichment_started = False
+M3U_ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 
 
 def api_success(data: Any | None = None, **extra: Any):
@@ -88,6 +92,61 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def fill_channel_name_from_metadata(item: dict[str, Any], allow_epg_name: bool = True) -> dict[str, Any]:
+    current_name = str(item.get("name", "")).strip()
+    detected_name = str(item.get("detected_name", "")).strip()
+    epg_name = str(item.get("tvg_name", "")).strip()
+    auto_name = str(item.get("auto_name", "")).strip()
+    if detected_name and not auto_name:
+        item["auto_name"] = detected_name
+        item["auto_name_source"] = str(item.get("detected_name_source") or "ffprobe_service_name")
+        auto_name = detected_name
+    if detected_name and not current_name:
+        item["name"] = detected_name
+        current_name = detected_name
+    current_matches_epg = (
+        bool(current_name)
+        and bool(epg_name)
+        and normalize_channel_name(current_name) == normalize_channel_name(epg_name)
+    )
+    if allow_epg_name and epg_name and (not current_name or current_name == auto_name or current_matches_epg):
+        if current_name and not auto_name:
+            item["auto_name"] = current_name
+            item["auto_name_source"] = str(item.get("auto_name_source") or "auto")
+        item["name"] = epg_name
+        item["category"] = classify_channel_name(epg_name)
+    return item
+
+
+def can_replace_with_epg_name(stored: dict[str, Any], item: dict[str, Any] | None = None) -> bool:
+    item = item or stored
+    saved_name = str(stored.get("name", "")).strip()
+    auto_names = {
+        str(stored.get("auto_name", "")).strip(),
+        str(item.get("auto_name", "")).strip(),
+        str(item.get("detected_name", "")).strip(),
+    }
+    auto_names.discard("")
+    epg_name = str(item.get("tvg_name", "")).strip()
+    saved_matches_epg = (
+        bool(saved_name)
+        and bool(epg_name)
+        and normalize_channel_name(saved_name) == normalize_channel_name(epg_name)
+    )
+    return not saved_name or saved_name in auto_names or saved_matches_epg
+
+
+def persist_auto_channel_if_changed(item: dict[str, Any], stored: dict[str, Any], settings: dict[str, Any]) -> None:
+    if not str(item.get("name", "")).strip():
+        return
+    if not (item.get("auto_name") or item.get("detected_name") or item.get("tvg_name")):
+        return
+    keys = ("name", "category", "probe_status", "codec_name", "width", "height", "tvg_id", "tvg_name", "tvg_logo")
+    changed = not stored or any(str(item.get(key, "")) != str(stored.get(key, "")) for key in keys)
+    if changed:
+        channel_store.save_rows(enrich_channel_rows([item], settings))
+
+
 def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings or settings_store.load()
     discovered = discovery_store.load()
@@ -105,9 +164,11 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
                 item["auto_name"] = str(discovery.get("name", "")).strip()
             if not str(item.get("auto_name_source", "")).strip():
                 item["auto_name_source"] = str(discovery.get("source", "stb_payload")).strip()
+        fill_channel_name_from_metadata(item, allow_epg_name=False)
         item["category"] = str(item.get("category", "")).strip() or classify_channel_name(str(item.get("name", "")))
         if settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
+            fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(row, item))
         enriched.append(item)
     return enriched
 
@@ -135,25 +196,28 @@ def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
 
     def worker() -> None:
         try:
-            logger.info(f"自动检测流信息：{key}")
+            logger.info(f"自动识别流信息：{key}")
             result = probe_service.probe(key, host, port, path_mode)
             stored = channel_store.get(key) or {}
-            if str(snapshot.get("name", "")).strip() and not str(stored.get("name", "")).strip():
+            detected_name = str(result.get("detected_name", "")).strip()
+            snapshot_name = str(snapshot.get("name", "")).strip() or detected_name
+            if snapshot_name and not str(stored.get("name", "")).strip():
                 stored.update({
                     "key": key,
                     "host": host,
                     "port": port,
-                    "name": str(snapshot.get("name", "")).strip(),
-                    "category": str(snapshot.get("category", "")) or classify_channel_name(str(snapshot.get("name", ""))),
-                    "auto_name": str(snapshot.get("auto_name", "")),
-                    "auto_name_source": str(snapshot.get("auto_name_source", "")),
+                    "name": snapshot_name,
+                    "category": str(snapshot.get("category", "")) or classify_channel_name(snapshot_name),
+                    "auto_name": str(snapshot.get("auto_name", "")) or detected_name,
+                    "auto_name_source": str(snapshot.get("auto_name_source", "")) or str(result.get("detected_name_source", "")),
                     "packets": _safe_int(snapshot.get("packets")),
                 })
             stored.update(result)
+            stored = fill_channel_name_from_metadata(stored, allow_epg_name=can_replace_with_epg_name(channel_store.get(key) or {}, stored))
             if str(stored.get("name", "")).strip():
                 channel_store.save_rows(enrich_channel_rows([stored], settings))
         except Exception as exc:
-            logger.warning(f"自动检测流信息失败：{key}，{exc}")
+            logger.warning(f"自动识别流信息失败：{key}，{exc}")
         finally:
             with auto_probe_lock:
                 auto_probe_pending.discard(key)
@@ -188,6 +252,10 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         item["name"] = str(channel.get("name") or auto_name or "").strip()
         item["category"] = channel.get("category") or classify_channel_name(item["name"])
         item.update(probe_service.merge_probe_data(stream["key"], channel))
+        if not item["auto_name"] and item.get("detected_name"):
+            item["auto_name"] = str(item.get("detected_name", "")).strip()
+            item["auto_name_source"] = str(item.get("detected_name_source", "ffprobe_service_name")).strip()
+        fill_channel_name_from_metadata(item, allow_epg_name=False)
         item["tvg_id"] = str(channel.get("tvg_id", ""))
         item["tvg_name"] = str(channel.get("tvg_name", ""))
         item["tvg_logo"] = str(channel.get("tvg_logo", ""))
@@ -195,6 +263,8 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         item["epg_matched_at"] = channel.get("epg_matched_at")
         if settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
+            fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(channel, item))
+        item["category"] = channel.get("category") or classify_channel_name(str(item.get("name", "")))
         fcc = dict(fcc_records.get(stream["key"], {}))
         if channel.get("fcc_ip"):
             fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
@@ -229,9 +299,128 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             f"http://{settings.get('http_host')}:{int(settings.get('http_port', 5140))}/player"
             if settings.get("http_host") else ""
         )
+        persist_auto_channel_if_changed(item, channel, settings)
         maybe_auto_probe(item, settings)
         payload.append(item)
     return payload
+
+
+def fetch_text_resource(url: str, timeout: int = 30) -> str:
+    source = str(url or "").strip()
+    if not source:
+        raise ValueError("M3U 地址不能为空")
+    request = Request(source, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    with urlopen(request, timeout=timeout) as response:
+        data = response.read()
+    if source.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    return data.decode("utf-8-sig", errors="ignore")
+
+
+def parse_m3u_channels(text: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.upper().startswith("#EXTINF"):
+            parts = line.split(",", 1)
+            extinf = parts[0]
+            title = parts[1] if len(parts) > 1 else ""
+            duration = "-1"
+            if ":" in extinf:
+                duration_part = extinf.split(":", 1)[1].strip()
+                duration = (duration_part.split(" ", 1)[0] or "-1").strip()
+            attrs = dict(M3U_ATTR_RE.findall(extinf))
+            current = {
+                "duration": duration,
+                "attrs": attrs,
+                "title": title.strip() or str(attrs.get("tvg-name", "")).strip(),
+                "url": "",
+            }
+        elif current and not line.startswith("#"):
+            current["url"] = line
+            items.append(current)
+            current = None
+    return items
+
+
+def safe_m3u_attr(value: Any) -> str:
+    return str(value or "").replace('"', "'").replace("\r", " ").replace("\n", " ").strip()
+
+
+def write_m3u_channels(items: list[dict[str, Any]], epg_url: str) -> str:
+    lines = [f'#EXTM3U x-tvg-url="{safe_m3u_attr(epg_url)}"']
+    ordered_attrs = ["tvg-id", "tvg-name", "tvg-logo", "group-title"]
+    for item in items:
+        attrs = {str(key): safe_m3u_attr(value) for key, value in dict(item.get("attrs") or {}).items() if safe_m3u_attr(value)}
+        attr_keys = ordered_attrs + sorted(key for key in attrs if key not in ordered_attrs)
+        attr_text = " ".join(f'{key}="{attrs[key]}"' for key in attr_keys if attrs.get(key))
+        title = safe_m3u_attr(item.get("title") or attrs.get("tvg-name") or attrs.get("tvg-id") or "未命名频道")
+        duration = safe_m3u_attr(item.get("duration") or "-1")
+        prefix = f"#EXTINF:{duration}"
+        if attr_text:
+            prefix = f"{prefix} {attr_text}"
+        lines.append(f"{prefix},{title}")
+        lines.append(str(item.get("url", "")).strip())
+    return "\n".join(lines) + "\n"
+
+
+def update_scheduled_m3u_epg(settings: dict[str, Any]) -> dict[str, Any]:
+    m3u_url = str(settings.get("schedule_m3u_url", "")).strip()
+    epg_url = str(settings.get("epg_url", "")).strip()
+    logo_url = str(settings.get("logo_url", "")).strip()
+    output_name = str(settings.get("schedule_output_name", "scheduled-epg.m3u")).strip() or "scheduled-epg.m3u"
+    if output_name not in ALLOWED_DOWNLOADS:
+        output_name = "scheduled-epg.m3u"
+    if not m3u_url:
+        raise ValueError("M3U 地址不能为空")
+    if not epg_url:
+        raise ValueError("XMLTV EPG 地址不能为空")
+
+    epg_status = epg_service.refresh(epg_url, logo_url)
+    if epg_status.get("last_error") and int(epg_status.get("channels") or 0) == 0:
+        raise RuntimeError(f"EPG 刷新失败：{epg_status.get('last_error')}")
+    text = fetch_text_resource(m3u_url)
+    items = parse_m3u_channels(text)
+    if not items:
+        raise ValueError("指定 M3U 中没有可更新的频道")
+
+    matched = 0
+    for item in items:
+        attrs = dict(item.get("attrs") or {})
+        name = str(attrs.get("tvg-name") or item.get("title") or "").strip()
+        row = {
+            "name": name,
+            "tvg_id": str(attrs.get("tvg-id", "")).strip(),
+            "tvg_name": str(attrs.get("tvg-name", "")).strip(),
+            "tvg_logo": str(attrs.get("tvg-logo", "")).strip(),
+        }
+        epg_service.enrich_item(row, epg_url, only_missing=False)
+        if row.get("tvg_id") or row.get("tvg_logo"):
+            matched += 1
+        if row.get("tvg_id"):
+            attrs["tvg-id"] = row["tvg_id"]
+        if row.get("tvg_name"):
+            attrs["tvg-name"] = row["tvg_name"]
+        if row.get("tvg_logo"):
+            attrs["tvg-logo"] = row["tvg_logo"]
+        if not attrs.get("group-title"):
+            attrs["group-title"] = classify_channel_name(str(item.get("title") or row.get("tvg_name") or name))
+        item["attrs"] = attrs
+
+    target = OUTPUT_DIR / output_name
+    target.write_text(write_m3u_channels(items, epg_url), encoding="utf-8")
+    return {
+        "count": len(items),
+        "matched": matched,
+        "file": output_name,
+        "download_url": f"/api/download/{output_name}",
+        "m3u_url": m3u_url,
+        "epg_url": epg_url,
+        "updated_at": int(time.time()),
+    }
 
 
 def start_auto_enrichment_loop() -> None:
@@ -249,6 +438,9 @@ def start_auto_enrichment_loop() -> None:
             time.sleep(5)
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+schedule_service = ScheduleService(logger, settings_store, update_scheduled_m3u_epg)
 
 
 @app.get("/")
@@ -326,14 +518,19 @@ def api_settings_save():
         return api_error("请求体格式不正确")
     saved = settings_store.save(data)
     epg_url = str(saved.get("epg_url", "")).strip()
+    logo_url = str(saved.get("logo_url", "")).strip()
     epg_status = epg_service.status(summary=True)
     if (
         saved.get("auto_epg", True)
         and epg_url
         and not epg_status.get("refreshing")
-        and (epg_status.get("url") != epg_url or int(epg_status.get("channels") or 0) == 0)
+        and (
+            epg_status.get("url") != epg_url
+            or epg_status.get("logo_url") != logo_url
+            or int(epg_status.get("channels") or 0) == 0
+        )
     ):
-        epg_service.refresh_async(epg_url)
+        epg_service.refresh_async(epg_url, logo_url)
     logger.info("已保存网页默认设置")
     return api_success(saved)
 
@@ -354,6 +551,19 @@ def api_schedule_save():
         return api_error(str(exc), 400)
     except Exception as exc:
         logger.error(f"保存定时任务失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/schedule/run-now")
+def api_schedule_run_now():
+    try:
+        return api_success(schedule_service.run_now())
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except RuntimeError as exc:
+        return api_error(str(exc), 409)
+    except Exception as exc:
+        logger.error(f"立即更新 EPG 清单失败：{exc}")
         return api_error(str(exc), 500)
 
 
@@ -437,6 +647,11 @@ def api_epg_status():
     return api_success(epg_service.status())
 
 
+@app.get("/api/epg/sources")
+def api_epg_sources():
+    return api_success({"epg_sources": EPG_SOURCES, "logo_sources": LOGO_SOURCES})
+
+
 @app.post("/api/epg/refresh")
 def api_epg_refresh():
     data = request.get_json(silent=True) or {}
@@ -444,11 +659,16 @@ def api_epg_refresh():
         return api_error("请求体格式不正确")
     settings = settings_store.load()
     url = str(data.get("epg_url") or settings.get("epg_url", "")).strip()
+    logo_url = str(data.get("logo_url") or settings.get("logo_url", "")).strip()
     if not url:
         return api_error("EPG 地址不能为空")
-    settings_store.save({"epg_url": url, "auto_epg": bool(data.get("auto_epg", settings.get("auto_epg", True)))})
+    settings_store.save({
+        "epg_url": url,
+        "logo_url": logo_url,
+        "auto_epg": bool(data.get("auto_epg", settings.get("auto_epg", True))),
+    })
     try:
-        status = epg_service.refresh_async(url)
+        status = epg_service.refresh_async(url, logo_url)
         logger.info(f"已启动 EPG 刷新：{url}")
         return api_success(status)
     except ValueError as exc:
@@ -512,7 +732,7 @@ def api_probe_one():
     except RuntimeError as exc:
         return api_error(str(exc), 409)
     except Exception as exc:
-        logger.error(f"流信息检测失败：{exc}")
+        logger.error(f"流信息自动识别失败：{exc}")
         return api_error(str(exc), 500)
 
 
@@ -549,7 +769,7 @@ def api_probe_batch():
                 "quality_group": "未识别",
                 "probed_at": int(time.time()),
             }
-            logger.warning(f"批量检测跳过失败项：{result['key']}，{exc}")
+            logger.warning(f"批量自动识别跳过失败项：{result['key']}，{exc}")
         results.append(result)
         row.update(result)
     rows = enrich_channel_rows(rows, settings)

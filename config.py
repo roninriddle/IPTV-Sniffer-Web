@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.4"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -29,7 +29,42 @@ DEFAULT_RTP2HTTP_HOST = os.environ.get("RTP2HTTPD_HOST", os.environ.get("RTP2HTT
 DEFAULT_RTP2HTTP_PORT = int(os.environ.get("RTP2HTTPD_PORT", os.environ.get("RTP2HTTP_PORT", "5140")))
 DEFAULT_PATH_MODE = os.environ.get("PATH_MODE", "rtp")
 DEFAULT_CAPTURE_SECONDS = int(os.environ.get("CAPTURE_SECONDS", "30"))
-DEFAULT_EPG_URL = os.environ.get("EPG_URL", "https://epg.zsdc.eu.org/t.xml.gz")
+EPG_SOURCES = [
+    {
+        "id": "112114",
+        "name": "112114 XMLTV",
+        "url": "https://epg.112114.xyz/pp.xml.gz",
+        "homepage": "https://epg.112114.xyz/",
+    },
+    {
+        "id": "51zmt",
+        "name": "老张的 EPG / 51zmt",
+        "url": "http://epg.51zmt.top:8000/e.xml.gz",
+        "homepage": "https://epg.51zmt.top:8001/",
+    },
+    {
+        "id": "51zmt-lite-1",
+        "name": "51zmt 备用 EPG 1",
+        "url": "http://epg.51zmt.top:8000/e1.xml.gz",
+        "homepage": "https://epg.51zmt.top:8001/",
+    },
+    {
+        "id": "51zmt-lite-2",
+        "name": "51zmt 备用 EPG 2",
+        "url": "http://epg.51zmt.top:8000/e2.xml.gz",
+        "homepage": "https://epg.51zmt.top:8001/",
+    },
+]
+LOGO_SOURCES = [
+    {
+        "id": "tvlogo",
+        "name": "wanglindl/TVlogo",
+        "url": "https://raw.githubusercontent.com/wanglindl/TVlogo/main/TVlist.m3u",
+        "homepage": "https://github.com/wanglindl/TVlogo",
+    },
+]
+DEFAULT_EPG_URL = os.environ.get("EPG_URL", EPG_SOURCES[0]["url"])
+DEFAULT_LOGO_URL = os.environ.get("LOGO_URL", LOGO_SOURCES[0]["url"])
 MAX_TIMED_CAPTURE_SECONDS = int(os.environ.get("MAX_TIMED_CAPTURE_SECONDS", "3600"))
 MIN_PACKET_COUNT = int(os.environ.get("MIN_PACKET_COUNT", "3"))
 LOG_MEMORY_LIMIT = int(os.environ.get("LOG_MEMORY_LIMIT", "600"))
@@ -43,6 +78,7 @@ CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "(udp and dst net 224.0.0.0/4)
 ALLOWED_DOWNLOADS = {
     "channels-direct.m3u",
     "channels-rtp2httpd-source.m3u",
+    "scheduled-epg.m3u",
     "channels.json",
     "channels.txt",
     "channels.csv",
@@ -60,6 +96,9 @@ DEFAULT_SETTINGS = {
     "auto_probe": True,
     "auto_epg": True,
     "epg_url": DEFAULT_EPG_URL,
+    "logo_url": DEFAULT_LOGO_URL,
+    "schedule_m3u_url": "",
+    "schedule_output_name": "scheduled-epg.m3u",
     "schedule_enabled": False,
     "schedule_unit": "days",
     "schedule_every": 1,

@@ -38,7 +38,7 @@ class ProbeService:
             for error in errors:
                 self.logger.error(error)
         else:
-            self.logger.info("流信息检测环境检查通过：ffprobe 可用")
+            self.logger.info("流信息自动识别环境检查通过：ffprobe 可用")
         return result
 
     def runtime_check(self) -> dict[str, Any]:
@@ -55,13 +55,15 @@ class ProbeService:
         cached = self.get_cached(key) or {}
         merged = {
             "probe_status": stored.get("probe_status", "not_probed"),
-            "probe_message": stored.get("probe_message", "未检测"),
+            "probe_message": stored.get("probe_message", "未识别"),
             "codec_name": stored.get("codec_name", ""),
             "width": stored.get("width"),
             "height": stored.get("height"),
             "frame_rate": stored.get("frame_rate", ""),
             "resolution_label": stored.get("resolution_label", "未识别"),
             "quality_group": stored.get("quality_group", "未识别"),
+            "detected_name": stored.get("detected_name", ""),
+            "detected_name_source": stored.get("detected_name_source", ""),
             "probed_at": stored.get("probed_at"),
         }
         merged.update({k: v for k, v in cached.items() if v not in (None, "") or k in {"width", "height"}})
@@ -82,7 +84,7 @@ class ProbeService:
     def probe(self, key: str, host: str, port: int, path_mode: str) -> dict[str, Any]:
         runtime = self.runtime_check()
         if not runtime.get("ok"):
-            raise RuntimeError("流信息检测环境检查未通过：" + "；".join(runtime.get("errors", [])))
+            raise RuntimeError("流信息自动识别环境检查未通过：" + "；".join(runtime.get("errors", [])))
         if not valid_ipv4_multicast(host):
             raise ValueError("仅支持探测 IPv4 组播地址")
         if not 1 <= int(port) <= 65535:
@@ -96,12 +98,11 @@ class ProbeService:
             "-v", "error",
             "-probesize", str(PROBE_SIZE_BYTES),
             "-analyzeduration", str(PROBE_ANALYZE_DURATION_US),
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,width,height,r_frame_rate",
+            "-show_entries", "stream=codec_name,width,height,r_frame_rate:program=program_id,program_num:program_tags=service_name,service_provider:format_tags=service_name,title",
             "-of", "json",
             url,
         ]
-        self.logger.info(f"开始检测流信息：{key}，请确保该频道当前仍在机顶盒播放")
+        self.logger.info(f"开始自动识别流信息：{key}，请确保该频道当前仍在机顶盒播放")
         started = time.time()
         try:
             proc = subprocess.run(
@@ -113,31 +114,34 @@ class ProbeService:
                 timeout=PROBE_TIMEOUT_SECONDS + 4,
             )
         except subprocess.TimeoutExpired:
-            result = self._build_failure(key, "检测超时；请保持频道正在播放后重试", started)
+            result = self._build_failure(key, "自动识别超时；请保持频道正在播放后重试", started)
             self._remember(key, result)
-            self.logger.warning(f"流信息检测超时：{key}")
+            self.logger.warning(f"流信息自动识别超时：{key}")
             return result
         stderr = (proc.stderr or "").strip()
         if proc.returncode != 0:
             message = stderr.splitlines()[-1] if stderr else "ffprobe 未能解析该流"
             result = self._build_failure(key, message, started)
             self._remember(key, result)
-            self.logger.warning(f"流信息检测失败：{key}，{message}")
+            self.logger.warning(f"流信息自动识别失败：{key}，{message}")
             return result
         try:
             payload = json.loads(proc.stdout or "{}")
         except json.JSONDecodeError:
             result = self._build_failure(key, "ffprobe 返回了无法解析的 JSON", started)
             self._remember(key, result)
-            self.logger.warning(f"流信息检测失败：{key}，ffprobe JSON 无法解析")
+            self.logger.warning(f"流信息自动识别失败：{key}，ffprobe JSON 无法解析")
             return result
         streams = payload.get("streams") or []
         if not streams:
             result = self._build_failure(key, "未识别到视频流；请切回该频道后重试", started)
             self._remember(key, result)
-            self.logger.warning(f"流信息检测失败：{key}，未识别到视频流")
+            self.logger.warning(f"流信息自动识别失败：{key}，未识别到视频流")
             return result
-        stream = streams[0] if isinstance(streams[0], dict) else {}
+        stream = next(
+            (item for item in streams if isinstance(item, dict) and (item.get("width") or item.get("height"))),
+            streams[0] if isinstance(streams[0], dict) else {},
+        )
         try:
             width = int(stream.get("width") or 0)
             height = int(stream.get("height") or 0)
@@ -145,24 +149,27 @@ class ProbeService:
             width, height = 0, 0
         codec_name = str(stream.get("codec_name") or "").strip()
         frame_rate = str(stream.get("r_frame_rate") or "").strip()
+        detected_name = self._extract_service_name(payload)
         resolution_label = resolution_label_from_size(width, height)
         quality_group = stream_quality_group(width, height)
         result = {
             "key": key,
             "probe_status": "ok" if width > 0 and height > 0 else "partial",
-            "probe_message": "检测成功" if width > 0 and height > 0 else "检测到视频流，但分辨率不完整",
+            "probe_message": "自动识别成功" if width > 0 and height > 0 else "识别到视频流，但分辨率不完整",
             "codec_name": codec_name,
             "width": width or None,
             "height": height or None,
             "frame_rate": frame_rate,
             "resolution_label": resolution_label,
             "quality_group": quality_group,
+            "detected_name": detected_name,
+            "detected_name_source": "ffprobe_service_name" if detected_name else "",
             "probed_at": int(time.time()),
             "probe_elapsed_ms": int((time.time() - started) * 1000),
         }
         self._remember(key, result)
         self.logger.info(
-            f"流信息检测完成：{key}，编码={codec_name or '-'}，分辨率={width or '-'}x{height or '-'}，判定={quality_group}"
+            f"流信息自动识别完成：{key}，编码={codec_name or '-'}，分辨率={width or '-'}x{height or '-'}，判定={quality_group}"
         )
         return result
 
@@ -177,6 +184,8 @@ class ProbeService:
             "frame_rate": "",
             "resolution_label": "未识别",
             "quality_group": "未识别",
+            "detected_name": "",
+            "detected_name_source": "",
             "probed_at": int(time.time()),
             "probe_elapsed_ms": int((time.time() - started) * 1000),
         }
@@ -184,3 +193,19 @@ class ProbeService:
     def _remember(self, key: str, result: dict[str, Any]) -> None:
         with self._lock:
             self._cache[key] = dict(result)
+
+    @staticmethod
+    def _extract_service_name(payload: dict[str, Any]) -> str:
+        values: list[str] = []
+        for program in payload.get("programs") or []:
+            if not isinstance(program, dict):
+                continue
+            tags = program.get("tags") if isinstance(program.get("tags"), dict) else {}
+            values.extend([str(tags.get("service_name", "")).strip(), str(tags.get("title", "")).strip()])
+        format_payload = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+        tags = format_payload.get("tags") if isinstance(format_payload.get("tags"), dict) else {}
+        values.extend([str(tags.get("service_name", "")).strip(), str(tags.get("title", "")).strip()])
+        for value in values:
+            if value and value.lower() not in {"unknown", "no name", "service01"}:
+                return value
+        return ""
