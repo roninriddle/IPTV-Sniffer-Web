@@ -10,6 +10,7 @@ const state = {
   logoSources: [],
   ignoredKeys: new Set(),
   logoAuto: true,
+  epgAuto: true,
 };
 
 async function requestJson(url, options = {}) {
@@ -36,6 +37,9 @@ function formatTime(seconds) {
 }
 
 function formSettings() {
+  const epgUrl = state.epgAuto
+    ? (state.epgSources[0]?.url || "")
+    : $("epgUrl").value.trim();
   const logoUrl = state.logoAuto
     ? (state.logoSources[0]?.url || "")
     : $("logoUrl").value.trim();
@@ -47,7 +51,7 @@ function formSettings() {
     duration: Number($("duration").value || 0),
     auto_probe: $("autoProbe").checked,
     auto_epg: $("autoEpg").checked,
-    epg_url: $("epgUrl").value.trim(),
+    epg_url: epgUrl,
     logo_url: logoUrl,
   };
 }
@@ -191,6 +195,14 @@ function syncPresetFromUrl(select, url) {
   select.value = [...select.options].some((option) => option.value === value) ? value : "";
 }
 
+function setEpgMode(auto) {
+  state.epgAuto = auto;
+  $("epgAutoBtn").classList.toggle("active", auto);
+  $("epgManualBtn").classList.toggle("active", !auto);
+  $("epgPreset").hidden = auto;
+  $("epgUrlLabel").hidden = auto;
+}
+
 function setLogoMode(auto) {
   state.logoAuto = auto;
   $("logoAutoBtn").classList.toggle("active", auto);
@@ -220,6 +232,9 @@ async function loadSettings() {
   $("logoUrl").value = data.logo_url || "";
   syncPresetFromUrl($("epgPreset"), $("epgUrl").value);
   syncPresetFromUrl($("logoPreset"), $("logoUrl").value);
+  const knownEpgUrls = new Set(state.epgSources.map((s) => s.url));
+  const savedEpgUrl = data.epg_url || "";
+  setEpgMode(!savedEpgUrl || knownEpgUrls.has(savedEpgUrl));
   const knownLogoUrls = new Set(state.logoSources.map((s) => s.url));
   const savedLogoUrl = data.logo_url || "";
   setLogoMode(!savedLogoUrl || knownLogoUrls.has(savedLogoUrl));
@@ -494,19 +509,24 @@ function renderStreams(streams) {
 
 function stopPreview() {
   $("previewFrame").removeAttribute("src");
+  $("previewFrame").hidden = true;
   $("previewSnapshot").removeAttribute("src");
 }
 
 function openPreview(streamUrl, playerUrl, title, snapshotUrl) {
   $("previewTitle").textContent = title || "频道预览";
-  $("previewStatus").textContent = "优先使用 rtp2httpd 内置播放器；若该页面未配置频道列表，请使用直连流或截图确认。";
   $("previewExternalLink").href = streamUrl;
   $("previewExternalLink").textContent = streamUrl;
   $("previewDirectLink").href = streamUrl;
   $("previewPlayerLink").href = playerUrl || "#";
+  $("previewPlayerLink").hidden = !playerUrl;
   $("previewSnapshot").src = snapshotUrl || "";
   $("previewSnapshot").hidden = !snapshotUrl;
-  $("previewFrame").src = playerUrl || streamUrl;
+  $("previewFrame").hidden = !playerUrl;
+  if (playerUrl) $("previewFrame").src = playerUrl;
+  $("previewStatus").textContent = playerUrl
+    ? "已加载 rtp2httpd 内置播放器"
+    : "请在下方设置 rtp2httpd 地址后，可通过"播放预览"实时观看；截图为 ffmpeg 直接抓帧。";
   $("previewModal").hidden = false;
 }
 
@@ -633,6 +653,8 @@ $("logoPreset").addEventListener("change", () => {
 });
 $("epgUrl").addEventListener("input", () => syncPresetFromUrl($("epgPreset"), $("epgUrl").value));
 $("logoUrl").addEventListener("input", () => syncPresetFromUrl($("logoPreset"), $("logoUrl").value));
+$("epgAutoBtn").addEventListener("click", () => setEpgMode(true));
+$("epgManualBtn").addEventListener("click", () => setEpgMode(false));
 $("logoAutoBtn").addEventListener("click", () => setLogoMode(true));
 $("logoManualBtn").addEventListener("click", () => setLogoMode(false));
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));

@@ -119,21 +119,6 @@ OpenWrt / iStoreOS
                 <select id="interface"></select>
               </label>
               <label>
-                rtp2httpd 地址
-                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
-              </label>
-              <label>
-                rtp2httpd 端口
-                <input id="httpPort" type="number" min="1" max="65535" value="5140">
-              </label>
-              <label>
-                播放路径
-                <select id="pathMode">
-                  <option value="rtp">/rtp/</option>
-                  <option value="udp">/udp/</option>
-                </select>
-              </label>
-              <label>
                 嗅探时长（秒）
                 <input id="duration" type="number" min="0" value="30">
                 <small>0 表示手动停止</small>
@@ -152,11 +137,16 @@ OpenWrt / iStoreOS
                 <input id="autoEpg" type="checkbox" checked>
                 自动补全 EPG
               </label>
-              <label>
-                EPG 预设
+              <div class="logo-mode-cell">
+                <div class="logo-mode-header">
+                  <span>EPG 来源</span>
+                  <div class="mode-toggle-btns">
+                    <button type="button" id="epgAutoBtn" class="mode-btn">自动</button><button type="button" id="epgManualBtn" class="mode-btn">手动</button>
+                  </div>
+                </div>
                 <select id="epgPreset"></select>
-              </label>
-              <label class="wide-field">
+              </div>
+              <label id="epgUrlLabel" class="wide-field">
                 XMLTV EPG 地址
                 <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
               </label>
@@ -239,13 +229,34 @@ OpenWrt / iStoreOS
             </div>
           </section>
 
-          <section class="card">
-            <div class="section-title">
+          <section class=”card”>
+            <div class=”section-title”>
               <h2>导出结果</h2>
-              <span class="muted">原分类保留；同时额外复制到“4K高清”与“普通频道”两个清晰度分组。</span>
+              <span class=”muted”>原分类保留；同时额外复制到”4K高清”与”普通频道”两个清晰度分组。</span>
             </div>
-            <div class="button-row">
-              <button id="exportBtn" class="primary" type="button">生成播放列表</button>
+            <div class=”section-subtitle”>
+              <h3>rtp2httpd 配置</h3>
+              <span class=”muted small”>仅导出 rtp2httpd 格式地址时需要填写</span>
+            </div>
+            <div class=”form-grid”>
+              <label>
+                rtp2httpd 地址
+                <input id=”httpHost” type=”text” placeholder=”例如 192.168.10.2”>
+              </label>
+              <label>
+                rtp2httpd 端口
+                <input id=”httpPort” type=”number” min=”1” max=”65535” value=”5140”>
+              </label>
+              <label>
+                播放路径
+                <select id=”pathMode”>
+                  <option value=”rtp”>/rtp/</option>
+                  <option value=”udp”>/udp/</option>
+                </select>
+              </label>
+            </div>
+            <div class=”button-row”>
+              <button id=”exportBtn” class=”primary” type=”button”>生成播放列表</button>
               <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
               <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
               <a id="downloadJson" class="download disabled" href="#">下载 JSON</a>
