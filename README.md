@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.6.4
+# IPTV Sniffer Web v0.6.5
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、频道整理与 `rtp2httpd` 播放列表统一工作台。
 
@@ -83,7 +83,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 1. 首页先确认抓包拓扑；
 2. 进入“嗅探整理”，选择抓包接口；
 3. 填写 `rtp2httpd` 地址、端口和路径模式；
-4. 点击“开始嗅探”，在机顶盒上逐个切台；
+4. 点击”继续抓包”，在机顶盒上逐个切台；每次抓包结束后可再次点击”继续抓包”累积频道，”重置候选流”可清零重来；
 5. 等待候选流、自动频道名、FCC、token、截图、流信息和 EPG 匹配结果自动出现在页面；
 6. 自动频道名不准确时，在频道名称输入框中人工修正；
 7. 保存草稿并生成播放列表；
@@ -140,9 +140,9 @@ M3U / TXT 会保留原始分类，并额外生成：
 | GET | `/api/schedule` | 获取定时任务状态 |
 | POST | `/api/schedule` | 保存或停用定时 EPG 任务 |
 | POST | `/api/schedule/run-now` | 立即更新一次指定 M3U 的 EPG 清单 |
-| POST | `/api/capture/start` | 开始嗅探 |
-| POST | `/api/capture/stop` | 停止嗅探 |
-| POST | `/api/capture/reset` | 重置候选流 |
+| POST | `/api/capture/start` | 继续抓包（不清空已发现流，可多次追加） |
+| POST | `/api/capture/stop` | 停止抓包 |
+| POST | `/api/capture/reset` | 重置候选流（清空所有已发现流） |
 | GET | `/api/streams` | 获取候选流 |
 | GET | `/api/fcc` | 获取 FCC 记录 |
 | GET | `/api/stb-token` | 获取最近的 channelAcquire token 摘要 |
@@ -179,6 +179,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.6.5`：抓包改为"继续抓包"累积模式，多次 30 秒抓包的频道自动叠加，"重置候选流"清零；修复跨次抓包缓冲区污染、EPG 分类双重赋值、output_name 边界校验错误和变量名遮蔽等 Bug；删除从未被调用的 auto-classify 端点；前端启动改为并行加载；
 - `v0.6.4`：重做首页与双 tab 工作区，定时任务改为指定 M3U 的 EPG/台标清单更新；抓包后自动识别流信息并用流内名称或 EPG 名称回填频道名，移除手动检测按钮；
 - `v0.6.3`：整理 EPG 与台标来源，优化页面比例、日志侧栏与编辑时表格刷新行为；
 - `v0.6.2`：优化自动抓流补全链路，抓包自动读取频道名和频道号，后台自动识别流技术信息，并支持 XMLTV EPG 缓存、自动匹配和导出字段补全；
