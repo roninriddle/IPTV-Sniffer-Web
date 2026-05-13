@@ -61,6 +61,18 @@ body {
 }
 .form-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 label { display: grid; gap: 6px; font-weight: 600; }
+.schedule-grid { align-items: end; }
+.checkbox-label {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.checkbox-label input { width: auto; }
 label small, .muted { color: var(--muted); font-weight: 400; }
 input, select, button, .download {
   min-height: 34px;
@@ -69,6 +81,7 @@ input, select, button, .download {
   font: inherit;
 }
 input, select { width: 100%; padding: 0 9px; background: #fff; }
+input:disabled, select:disabled { background: #eef2f6; color: var(--muted); }
 button, .download {
   padding: 0 12px;
   cursor: pointer;

@@ -126,13 +126,13 @@ class ExportService:
             path_mode = "rtp"
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
-        zz_json_path = self.output_dir / "channels-zz.json"
+        json_path = self.output_dir / "channels.json"
         txt_path = self.output_dir / "channels.txt"
         csv_path = self.output_dir / "channels.csv"
         quality_groups = self._quality_groups(channels)
         self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct")
         self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source")
-        self._write_zz_json(channels, zz_json_path, path_mode)
+        self._write_playlist_json(channels, json_path, path_mode)
         self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode)
         self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode)
         return {
@@ -142,7 +142,7 @@ class ExportService:
             "files": {
                 "direct_m3u": direct_m3u_path.name,
                 "source_m3u": source_m3u_path.name,
-                "zz_json": zz_json_path.name,
+                "json": json_path.name,
                 "txt": txt_path.name,
                 "csv": csv_path.name,
             },
@@ -278,7 +278,7 @@ class ExportService:
             channel.packets,
         ])
 
-    def _write_zz_json(self, channels: list[ChannelRecord], target: Path, path_mode: str) -> None:
+    def _write_playlist_json(self, channels: list[ChannelRecord], target: Path, path_mode: str) -> None:
         payload: dict[str, Any] = {}
         for index, channel in enumerate(channels, start=1):
             source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)

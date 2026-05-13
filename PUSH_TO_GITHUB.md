@@ -3,7 +3,7 @@
 This repository is published on branch `main` with tagged releases.
 
 ```text
-Release IPTV Sniffer Web v0.6
+Release IPTV Sniffer Web v0.6.1
 ```
 
 ## Push to the target repository
@@ -47,6 +47,6 @@ DOCKERHUB_TOKEN
 Then push the tag:
 
 ```bash
-git tag v0.6
-git push origin v0.6
+git tag v0.6.1
+git push origin v0.6.1
 ```

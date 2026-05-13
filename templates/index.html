@@ -109,7 +109,45 @@ OpenWrt / iStoreOS
 
     <section class="card">
       <div class="section-title">
-        <h2>2. 实时状态</h2>
+        <h2>2. 定时任务</h2>
+        <span id="scheduleBadge" class="chip neutral">未启用</span>
+      </div>
+      <div class="form-grid schedule-grid">
+        <label class="checkbox-label">
+          <input id="scheduleEnabled" type="checkbox">
+          启用自动嗅探
+        </label>
+        <label>
+          执行周期
+          <select id="scheduleUnit">
+            <option value="hours">按小时</option>
+            <option value="days">按天</option>
+          </select>
+        </label>
+        <label>
+          间隔
+          <input id="scheduleEvery" type="number" min="1" value="1">
+          <small id="scheduleEveryHint">每 1 天</small>
+        </label>
+        <label>
+          执行小时
+          <input id="scheduleHour" type="number" min="0" max="23" value="3">
+        </label>
+        <label>
+          执行分钟
+          <input id="scheduleMinute" type="number" min="0" max="59" value="0">
+        </label>
+      </div>
+      <div class="button-row">
+        <button id="saveScheduleBtn" class="primary">保存定时任务</button>
+        <button id="disableScheduleBtn" class="secondary">停用任务</button>
+      </div>
+      <div id="schedulePanel" class="status-panel muted">定时任务未启用。</div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>3. 实时状态</h2>
         <span id="statusChip" class="chip neutral">等待开始</span>
       </div>
       <div id="statusPanel" class="status-panel"></div>
@@ -126,7 +164,7 @@ OpenWrt / iStoreOS
 
     <section class="card">
       <div class="section-title">
-        <h2>3. 有效候选与频道整理</h2>
+        <h2>4. 有效候选与频道整理</h2>
         <span class="muted">低包数、系统发现端口、503/失败且未命名的流会自动折叠；截图来自 rtp2httpd snapshot。</span>
       </div>
       <div class="toolbar">
@@ -165,18 +203,18 @@ OpenWrt / iStoreOS
 
     <section class="card">
       <div class="section-title">
-        <h2>4. 导出结果</h2>
+        <h2>5. 导出结果</h2>
         <span class="muted">原分类保留；同时额外复制到“4K高清”与“普通频道”两个清晰度分组。</span>
       </div>
       <div class="button-row">
         <button id="exportBtn" class="primary">生成播放列表</button>
         <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
         <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
-        <a id="downloadZzJson" class="download disabled" href="#">下载 ZZ JSON</a>
+        <a id="downloadJson" class="download disabled" href="#">下载 JSON</a>
         <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
         <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
       </div>
-      <div id="exportResult" class="result-box muted">尚未生成导出文件。源地址 M3U 可作为 rtp2httpd external-m3u；ZZ JSON 保留 live/source 结构，便于后续二次转换。</div>
+      <div id="exportResult" class="result-box muted">尚未生成导出文件。源地址 M3U 可作为 rtp2httpd external-m3u；JSON 保留 live/source 结构，便于后续二次转换。</div>
     </section>
   </main>
   </div>

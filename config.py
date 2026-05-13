@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.6"
+APP_VERSION = "0.6.1"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -40,7 +40,7 @@ CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "(udp and dst net 224.0.0.0/4)
 ALLOWED_DOWNLOADS = {
     "channels-direct.m3u",
     "channels-rtp2httpd-source.m3u",
-    "channels-zz.json",
+    "channels.json",
     "channels.txt",
     "channels.csv",
 }
@@ -54,6 +54,11 @@ DEFAULT_SETTINGS = {
     "http_port": DEFAULT_RTP2HTTP_PORT,
     "path_mode": DEFAULT_PATH_MODE if DEFAULT_PATH_MODE in {"rtp", "udp"} else "rtp",
     "duration": DEFAULT_CAPTURE_SECONDS,
+    "schedule_enabled": False,
+    "schedule_unit": "days",
+    "schedule_every": 1,
+    "schedule_hour": 3,
+    "schedule_minute": 0,
 }
 
 for directory in (DATA_DIR, OUTPUT_DIR):

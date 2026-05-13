@@ -42,6 +42,17 @@ function formSettings() {
   };
 }
 
+function formScheduleSettings() {
+  return {
+    ...formSettings(),
+    schedule_enabled: $("scheduleEnabled").checked,
+    schedule_unit: $("scheduleUnit").value,
+    schedule_every: Number($("scheduleEvery").value || 1),
+    schedule_hour: Number($("scheduleHour").value || 0),
+    schedule_minute: Number($("scheduleMinute").value || 0),
+  };
+}
+
 function setRuntimeBadge(health) {
   const badge = $("runtimeBadge");
   const captureOk = Boolean(health.runtime?.ok);
@@ -114,6 +125,50 @@ async function loadSettings() {
   $("httpPort").value = data.http_port ?? 5140;
   $("pathMode").value = data.path_mode || "rtp";
   $("duration").value = data.duration ?? 30;
+  $("scheduleEnabled").checked = Boolean(data.schedule_enabled);
+  $("scheduleUnit").value = data.schedule_unit || "days";
+  $("scheduleEvery").value = data.schedule_every ?? 1;
+  $("scheduleHour").value = data.schedule_hour ?? 3;
+  $("scheduleMinute").value = data.schedule_minute ?? 0;
+  updateScheduleUnitState();
+}
+
+function updateScheduleUnitState() {
+  const unit = $("scheduleUnit").value;
+  const every = Math.max(1, Number($("scheduleEvery").value || 1));
+  if (unit === "hours") {
+    $("scheduleEvery").max = 168;
+    $("scheduleEveryHint").textContent = `每 ${every} 小时`;
+    $("scheduleHour").disabled = true;
+    $("scheduleMinute").disabled = true;
+  } else {
+    $("scheduleEvery").max = 30;
+    $("scheduleEveryHint").textContent = `每 ${every} 天`;
+    $("scheduleHour").disabled = false;
+    $("scheduleMinute").disabled = false;
+  }
+}
+
+function renderSchedule(schedule) {
+  const badge = $("scheduleBadge");
+  if (schedule.enabled) {
+    badge.className = schedule.last_error ? "chip warning" : "chip ok";
+    badge.textContent = schedule.last_error ? "已启用，有错误" : "已启用";
+  } else {
+    badge.className = "chip neutral";
+    badge.textContent = "未启用";
+  }
+  const mode = schedule.unit === "hours"
+    ? `每 ${escapeHtml(schedule.every || 1)} 小时`
+    : `每 ${escapeHtml(schedule.every || 1)} 天 ${String(schedule.hour ?? 0).padStart(2, "0")}:${String(schedule.minute ?? 0).padStart(2, "0")}`;
+  const lines = [
+    `<strong>${escapeHtml(schedule.last_message || (schedule.enabled ? "定时任务已启用" : "定时任务未启用"))}</strong>`,
+    `模式：<span class="mono">${mode}</span>`,
+    `下次执行：<span class="mono">${escapeHtml(schedule.next_run_text || "-")}</span>`,
+    `上次执行：<span class="mono">${escapeHtml(schedule.last_run_text || "-")}</span>`,
+  ];
+  if (schedule.last_error) lines.push(`错误：${escapeHtml(schedule.last_error)}`);
+  $("schedulePanel").innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
 }
 
 function renderStatus(status) {
@@ -322,14 +377,16 @@ function closeSnapshot() {
 }
 
 async function refreshStatusAndStreams() {
-  const [status, streams, metrics, tokenData] = await Promise.all([
+  const [status, streams, metrics, tokenData, schedule] = await Promise.all([
     requestJson("/api/status"),
     requestJson("/api/streams"),
     requestJson("/api/metrics"),
     requestJson("/api/stb-token"),
+    requestJson("/api/schedule"),
   ]);
   renderStatus(status);
   renderMetrics(metrics, tokenData);
+  renderSchedule(schedule);
   renderStreams(streams.streams || []);
 }
 
@@ -376,7 +433,7 @@ function showExportDownloads(files) {
   const map = {
     direct_m3u: $("downloadDirectM3u"),
     source_m3u: $("downloadSourceM3u"),
-    zz_json: $("downloadZzJson"),
+    json: $("downloadJson"),
     txt: $("downloadTxt"),
     csv: $("downloadCsv"),
   };
@@ -457,6 +514,22 @@ $("saveSettingsBtn").addEventListener("click", async () => {
     alert("默认设置已保存");
   } catch (err) { alert(err.message); }
 });
+$("scheduleUnit").addEventListener("change", updateScheduleUnitState);
+$("scheduleEvery").addEventListener("input", updateScheduleUnitState);
+$("saveScheduleBtn").addEventListener("click", async () => {
+  try {
+    const data = await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
+    renderSchedule(data);
+    alert(data.enabled ? "定时任务已保存并启用" : "定时任务已保存为停用状态");
+  } catch (err) { alert(err.message); }
+});
+$("disableScheduleBtn").addEventListener("click", async () => {
+  try {
+    $("scheduleEnabled").checked = false;
+    const data = await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
+    renderSchedule(data);
+  } catch (err) { alert(err.message); }
+});
 $("startBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/capture/start", {method: "POST", body: JSON.stringify(formSettings())});
@@ -533,7 +606,7 @@ $("exportBtn").addEventListener("click", async () => {
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
     showExportDownloads(data.files);
     $("exportResult").className = "result-box";
-    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；已生成直连 M3U、rtp2httpd 源地址 M3U、ZZ JSON、TXT、CSV；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
+    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；已生成直连 M3U、rtp2httpd 源地址 M3U、JSON、TXT、CSV；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
   } catch (err) { alert(err.message); }
 });
 $("logsBtn").addEventListener("click", openLogs);

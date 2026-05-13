@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""IPTV Sniffer Web v0.6 application entrypoint."""
+"""IPTV Sniffer Web v0.6.1 application entrypoint."""
 from __future__ import annotations
 
 import time
@@ -34,6 +34,7 @@ from services.capture_service import CaptureService
 from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
+from services.schedule_service import ScheduleService
 from services.storage_service import ChannelStore, FccStore, SettingsStore, StbTokenStore
 from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
@@ -46,6 +47,7 @@ token_store = StbTokenStore(STB_TOKEN_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store)
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
+schedule_service = ScheduleService(logger, settings_store, capture_service)
 STARTED_AT = time.time()
 preview_failures: dict[str, str] = {}
 
@@ -169,6 +171,7 @@ def api_metrics():
         "capture": capture_service.metrics(),
         "probe_runtime": probe_service.runtime_check(),
         "logs": logger.stats(),
+        "schedule": schedule_service.status(),
         "saved_channels": len(channel_store.load()),
         "fcc_records": len(fcc_store.load()),
         "stb_tokens": len(token_store.load().get("history") or []),
@@ -201,6 +204,25 @@ def api_settings_save():
     saved = settings_store.save(data)
     logger.info("已保存网页默认设置")
     return api_success(saved)
+
+
+@app.get("/api/schedule")
+def api_schedule_get():
+    return api_success(schedule_service.status())
+
+
+@app.post("/api/schedule")
+def api_schedule_save():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    try:
+        return api_success(schedule_service.configure(data))
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:
+        logger.error(f"保存定时任务失败：{exc}")
+        return api_error(str(exc), 500)
 
 
 @app.get("/api/status")
@@ -383,7 +405,7 @@ def api_export():
         logger.info(
             "导出完成：共生成 "
             f"{result['count']} 个频道，文件为 channels-direct.m3u / "
-            "channels-rtp2httpd-source.m3u / channels-zz.json / channels.txt / channels.csv"
+            "channels-rtp2httpd-source.m3u / channels.json / channels.txt / channels.csv"
         )
         return api_success(result)
     except ValueError as exc:
@@ -472,6 +494,7 @@ def boot() -> None:
     logger.info(f"应用启动：{APP_NAME} v{APP_VERSION}")
     capture_service.validate_runtime()
     probe_service.validate_runtime()
+    schedule_service.start()
     logger.info(f"数据目录：{DATA_DIR}")
     logger.info(f"输出目录：{OUTPUT_DIR}")
     serve(app, host=WEB_HOST, port=WEB_PORT, threads=WAITRESS_THREADS)
