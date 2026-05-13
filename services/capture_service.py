@@ -39,7 +39,7 @@ TCP_PEER_RE = re.compile(
 )
 CHANNEL_ACQUIRE_RE = re.compile(r"POST\s+(?P<path>/bj_stb/V1/STB/channelAcquire[^\s]*)", re.IGNORECASE)
 STREAM_URL_RE = re.compile(
-    r"(?P<url>(?:igmp|rtp)://(?P<host>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)(?:\?[^\"'\s,;)<>{}]{0,1200})?)",
+    r"(?P<url>(?:igmp|rtp|udp)://(?P<host>(?:\d{1,3}\.){3}\d{1,3}):(?P<port>\d+)(?:\?[^\"'\s,;)<>{}]{0,1200})?)",
     re.IGNORECASE,
 )
 FCC_IP_RE = re.compile(
@@ -325,7 +325,7 @@ class CaptureService:
                 existing.last_seen = now
 
     def _consume_fcc_text(self, line: str) -> None:
-        if "ChannelFCC" not in line and "channelFCC" not in line and "rtp://" not in line and "igmp://" not in line:
+        if "ChannelFCC" not in line and "channelFCC" not in line and "rtp://" not in line and "igmp://" not in line and "udp://" not in line:
             if self._fcc_buffer:
                 self._fcc_buffer = (self._fcc_buffer + "\n" + line)[-16000:]
             return
@@ -341,7 +341,7 @@ class CaptureService:
                 continue
             if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
                 continue
-            segment = buffer[max(0, match.start() - 1000): match.end() + 2400]
+            segment = buffer[max(0, match.start() - 2000): match.end() + 4000]
             ip_match = FCC_IP_RE.search(segment)
             port_match = FCC_PORT_RE.search(segment)
             if not ip_match or not port_match:
