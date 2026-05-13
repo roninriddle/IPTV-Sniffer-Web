@@ -584,10 +584,24 @@ function showExportDownloads(files) {
   }
 }
 
+async function checkVersion() {
+  try {
+    const data = await requestJson("/api/version");
+    const badge = $("updateBadge");
+    if (data.update_available && data.latest_version) {
+      badge.textContent = `有新版本 v${data.latest_version}`;
+      badge.href = data.release_url || "#";
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  } catch (_) {}
+}
+
 async function bootstrap() {
   await Promise.all([loadHealth(), loadInterfaces(), loadEpgSources()]);
   await loadSettings();
-  await Promise.all([refreshStatusAndStreams(), appendLogs()]);
+  await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   startPolling();
 }

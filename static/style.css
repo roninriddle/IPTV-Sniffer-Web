@@ -191,6 +191,8 @@ button:disabled, .download.disabled { opacity: .45; cursor: not-allowed; pointer
 .chip.ok { color: var(--ok); background: #e6f5ee; }
 .chip.warning { color: var(--warning); background: #fff2d7; }
 .chip.danger { color: var(--danger); background: #fde8ea; }
+.update-badge { text-decoration: none; cursor: pointer; animation: pulse-badge 2s infinite; }
+@keyframes pulse-badge { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
 
 .status-panel { padding: 10px; border: 1px solid var(--line); border-radius: 8px; line-height: 1.55; background: var(--panel); margin-bottom: 12px; overflow-wrap: anywhere; }
 .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); gap: 10px; }

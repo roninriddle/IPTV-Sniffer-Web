@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import re
 import time
 import threading
@@ -20,6 +21,8 @@ from config import (
     APP_DESCRIPTION,
     APP_NAME,
     APP_VERSION,
+    GITHUB_REPO,
+    VERSION_CHECK_INTERVAL,
     CHANNELS_FILE,
     DATA_DIR,
     DISCOVERY_FILE,
@@ -59,6 +62,56 @@ probe_service = ProbeService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
 STARTED_AT = time.time()
 preview_failures: dict[str, str] = {}
+_version_check_lock = threading.RLock()
+_version_check: dict[str, Any] = {
+    "latest_version": None,
+    "update_available": False,
+    "checked_at": None,
+    "error": None,
+    "release_url": "",
+}
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in str(v).strip().lstrip("v").split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
+def _do_version_check() -> None:
+    try:
+        req = Request(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": "application/vnd.github+json"},
+        )
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        tag = str(data.get("tag_name", "")).strip()
+        release_url = str(data.get("html_url", "")).strip()
+        clean = tag.lstrip("v")
+        update_available = bool(clean and _version_tuple(clean) > _version_tuple(APP_VERSION))
+        with _version_check_lock:
+            _version_check.update({
+                "latest_version": clean or None,
+                "update_available": update_available,
+                "checked_at": int(time.time()),
+                "error": None,
+                "release_url": release_url,
+            })
+        if update_available:
+            logger.info(f"发现新版本 v{clean}（当前 v{APP_VERSION}），发布地址：{release_url}")
+    except Exception as exc:
+        with _version_check_lock:
+            _version_check.update({"checked_at": int(time.time()), "error": str(exc)})
+
+
+def _start_version_check_loop() -> None:
+    def worker() -> None:
+        while True:
+            _do_version_check()
+            time.sleep(VERSION_CHECK_INTERVAL)
+    threading.Thread(target=worker, daemon=True).start()
 auto_probe_lock = threading.RLock()
 auto_probe_pending: set[str] = set()
 auto_probe_done: set[str] = set()
@@ -454,7 +507,9 @@ def index():
 
 @app.get("/api/version")
 def api_version():
-    return api_success({"name": APP_NAME, "version": APP_VERSION, "description": APP_DESCRIPTION})
+    with _version_check_lock:
+        vc = dict(_version_check)
+    return api_success({"name": APP_NAME, "version": APP_VERSION, "description": APP_DESCRIPTION, **vc})
 
 
 @app.get("/api/health")
@@ -878,6 +933,7 @@ def boot() -> None:
     epg_service.start_auto_refresh(settings_store)
     schedule_service.start()
     start_auto_enrichment_loop()
+    _start_version_check_loop()
     logger.info(f"数据目录：{DATA_DIR}")
     logger.info(f"输出目录：{OUTPUT_DIR}")
     serve(app, host=WEB_HOST, port=WEB_PORT, threads=WAITRESS_THREADS)
