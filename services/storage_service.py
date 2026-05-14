@@ -282,6 +282,8 @@ class CustomSourcesStore:
         url = str(url).strip()
         if not name or not url:
             raise ValueError("名称和地址不能为空")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("地址必须以 http:// 或 https:// 开头")
         with self._lock:
             data = self.load()
             existing_urls = {s["url"] for s in data[source_type]}

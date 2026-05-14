@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import gzip
+import zlib
 import json
-import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import threading
 from pathlib import Path
@@ -17,7 +16,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory, stream_with_context
+from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory
 from waitress import serve
 
 from config import (
@@ -67,7 +66,6 @@ export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
 STARTED_AT = time.time()
-preview_failures: dict[str, str] = {}
 _snapshot_cache: dict[str, tuple[float, bytes]] = {}
 _snapshot_cache_ttl = 30
 _version_check_lock = threading.RLock()
@@ -125,74 +123,17 @@ def _start_version_check_loop() -> None:
 _epg_detect_lock = threading.RLock()
 _epg_detect_state: dict[str, Any] = {"status": "idle", "best_url": "", "best_name": "", "best_channels": 0, "checked_at": None}
 
-# HLS stream proxy sessions
-_stream_sessions: dict[str, dict[str, Any]] = {}
-_stream_sessions_lock = threading.RLock()
-_STREAM_IDLE_TTL = 30
-
-
-def _stream_session_key(host: str, port: int) -> str:
-    return f"{host}:{port}"
-
-
-def _cleanup_stream_session(session: dict[str, Any]) -> None:
-    try:
-        proc = session.get("proc")
-        if proc and proc.poll() is None:
-            proc.terminate()
-            proc.wait(timeout=3)
-    except Exception:
-        pass
-    shutil.rmtree(session.get("dir", ""), ignore_errors=True)
-
-
-def _get_or_start_hls_stream(host: str, port: int) -> dict[str, Any]:
-    key = _stream_session_key(host, port)
-    with _stream_sessions_lock:
-        session = _stream_sessions.get(key)
-        if session and session["proc"].poll() is None:
-            session["last_access"] = time.time()
-            return session
-        if session:
-            _cleanup_stream_session(session)
-        tmpdir = tempfile.mkdtemp(prefix="iptv_hls_")
-        playlist_path = os.path.join(tmpdir, "index.m3u8")
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "quiet",
-            "-i", f"udp://{host}:{port}?overrun_nonfatal=1&fifo_size=50000000",
-            "-c", "copy",
-            "-f", "hls",
-            "-hls_time", "2",
-            "-hls_list_size", "5",
-            "-hls_flags", "delete_segments+append_list",
-            "-hls_segment_filename", os.path.join(tmpdir, "seg%d.ts"),
-            playlist_path,
-        ]
-        proc = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
-        session = {"proc": proc, "dir": tmpdir, "playlist": playlist_path, "last_access": time.time()}
-        _stream_sessions[key] = session
-        return session
-
-
-def _stream_cleanup_worker() -> None:
-    while True:
-        time.sleep(10)
-        now = time.time()
-        with _stream_sessions_lock:
-            stale = [k for k, s in _stream_sessions.items() if now - s["last_access"] > _STREAM_IDLE_TTL or s["proc"].poll() is not None]
-            for k in stale:
-                _cleanup_stream_session(_stream_sessions.pop(k))
-
-
-threading.Thread(target=_stream_cleanup_worker, daemon=True).start()
-
 
 def _count_epg_channels(url: str, timeout: int = 20) -> int:
     req = Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
     with urlopen(req, timeout=timeout) as resp:
         raw = resp.read(4 * 1024 * 1024)
     if url.lower().endswith(".gz") or raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
+        d = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        try:
+            raw = d.decompress(raw) + d.flush()
+        except zlib.error:
+            raw = b""
     return raw.count(b"<channel ")
 
 
@@ -235,11 +176,6 @@ def api_error(message: str, status_code: int = 400, **extra: Any):
     return jsonify(payload), status_code
 
 
-def remember_preview_failure(key: str, message: str) -> None:
-    preview_failures[key] = message
-    cached = probe_service.get_cached(key) or {}
-    if cached.get("probe_status") not in {"ok", "partial"}:
-        probe_service.remember_failure(key, message)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -429,18 +365,8 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
         item["fcc_ip"] = str(fcc.get("fcc_ip", ""))
         item["fcc_port"] = fcc.get("fcc_port")
-        preview_failure = preview_failures.get(stream["key"], "")
-        if (
-            not str(item.get("name", "")).strip()
-            and (
-                preview_failure
-                or str(item.get("probe_status", "")) == "failed"
-            )
-        ):
+        if not str(item.get("name", "")).strip() and str(item.get("probe_status", "")) == "failed":
             continue
-        if preview_failure:
-            item["preview_failed"] = True
-            item["preview_failure"] = preview_failure
         item["preview_url"] = export_service.make_http_url(
             str(settings.get("http_host", "")),
             int(settings.get("http_port", 5140)),
@@ -1014,101 +940,6 @@ def api_download(filename: str):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
-@app.get("/api/preview/<host>/<int:port>")
-def api_preview(host: str, port: int):
-    settings = settings_store.load()
-    http_host = str(settings.get("http_host", "")).strip()
-    try:
-        http_port = int(settings.get("http_port", 5140))
-    except (TypeError, ValueError):
-        return api_error("rtp2httpd 端口配置不正确", 400)
-    path_mode = str(request.args.get("path_mode") or settings.get("path_mode", "rtp")).strip().lower()
-    if not valid_ipv4_multicast(host):
-        return api_error("预览地址必须是 IPv4 组播地址", 400)
-    if not 1 <= port <= 65535:
-        return api_error("预览端口必须位于 1-65535", 400)
-    if not valid_ip_or_host(http_host):
-        return api_error("rtp2httpd 地址尚未正确配置", 400)
-    if path_mode not in {"rtp", "udp"}:
-        return api_error("路径模式只能是 rtp 或 udp", 400)
-    source_url = export_service.make_http_url(http_host, http_port, path_mode, host, port)
-    try:
-        upstream = urlopen(Request(source_url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"}), timeout=10)
-    except (OSError, URLError) as exc:
-        logger.warning(f"打开预览流失败：{source_url}，{exc}")
-        remember_preview_failure(f"{host}:{port}", f"预览失败：{exc}")
-        return api_error(f"无法打开预览流：{exc}", 502)
-
-    def generate():
-        with upstream:
-            while True:
-                chunk = upstream.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-
-    headers = {
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-    }
-    return Response(stream_with_context(generate()), headers=headers, mimetype="video/MP2T", direct_passthrough=True)
-
-
-@app.get("/api/stream/<host>/<int:port>/hls/index.m3u8")
-def api_stream_hls_playlist(host: str, port: int):
-    if not valid_ipv4_multicast(host):
-        return api_error("必须是 IPv4 组播地址", 400)
-    if not 1 <= port <= 65535:
-        return api_error("端口无效", 400)
-    if shutil.which("ffmpeg") is None:
-        return api_error("缺少 ffmpeg 命令", 503)
-    session = _get_or_start_hls_stream(host, port)
-    for _ in range(16):
-        if os.path.exists(session["playlist"]):
-            break
-        time.sleep(0.5)
-    if not os.path.exists(session["playlist"]):
-        return api_error("流启动超时，请确认组播地址可达", 504)
-    with open(session["playlist"], "r", encoding="utf-8") as fh:
-        raw = fh.read()
-    base = f"/api/stream/{host}/{port}/hls/"
-    lines = []
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            lines.append(base + os.path.basename(stripped.split("?")[0]))
-        else:
-            lines.append(line)
-    resp = Response("\n".join(lines) + "\n", mimetype="application/vnd.apple.mpegurl")
-    resp.headers["Cache-Control"] = "no-cache, no-store"
-    return resp
-
-
-@app.get("/api/stream/<host>/<int:port>/hls/<path:filename>")
-def api_stream_hls_segment(host: str, port: int, filename: str):
-    key = _stream_session_key(host, port)
-    with _stream_sessions_lock:
-        session = _stream_sessions.get(key)
-        if session:
-            session["last_access"] = time.time()
-    if not session:
-        return ("", 404)
-    seg_path = os.path.normpath(os.path.join(session["dir"], filename))
-    if not seg_path.startswith(os.path.normpath(session["dir"])):
-        return ("", 403)
-    if not os.path.exists(seg_path):
-        return ("", 404)
-    return send_file(seg_path, mimetype="video/mp2t")
-
-
-@app.delete("/api/stream/<host>/<int:port>/hls")
-def api_stream_hls_stop(host: str, port: int):
-    key = _stream_session_key(host, port)
-    with _stream_sessions_lock:
-        session = _stream_sessions.pop(key, None)
-    if session:
-        _cleanup_stream_session(session)
-    return api_success({})
 
 
 @app.get("/api/snapshot/<host>/<int:port>")
@@ -1124,7 +955,9 @@ def api_snapshot(host: str, port: int):
     cached = _snapshot_cache.get(key)
     if cached and now - cached[0] < _snapshot_cache_ttl:
         return Response(cached[1], mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
-    source = f"udp://{host}:{port}?timeout=8000000"
+    path_mode = str(settings_store.load().get("path_mode", "rtp")).strip().lower()
+    scheme = "rtp" if path_mode == "rtp" else "udp"
+    source = f"{scheme}://{host}:{port}?timeout=8000000"
     cmd = [
         "ffmpeg", "-y",
         "-analyzeduration", "2000000",

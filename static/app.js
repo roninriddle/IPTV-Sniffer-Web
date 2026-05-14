@@ -1,5 +1,13 @@
 const $ = (id) => document.getElementById(id);
 
+const _IGNORED_KEYS_STORAGE = "iptv_ignored_keys";
+function _loadIgnoredKeys() {
+  try { return new Set(JSON.parse(localStorage.getItem(_IGNORED_KEYS_STORAGE) || "[]")); } catch { return new Set(); }
+}
+function _saveIgnoredKeys(set) {
+  try { localStorage.setItem(_IGNORED_KEYS_STORAGE, JSON.stringify([...set])); } catch {}
+}
+
 const state = {
   logsOpen: false,
   latestLogId: 0,
@@ -8,7 +16,7 @@ const state = {
   streams: [],
   epgSources: [],
   logoSources: [],
-  ignoredKeys: new Set(),
+  ignoredKeys: _loadIgnoredKeys(),
   logoAuto: true,
   epgAuto: true,
   detectedEpgUrl: "",
@@ -39,7 +47,7 @@ function formatTime(seconds) {
 
 function formSettings() {
   const epgUrl = state.epgAuto
-    ? (state.detectedEpgUrl || state.epgSources[0]?.url || "")
+    ? (state.detectedEpgUrl || $("epgUrl").value.trim() || state.epgSources[0]?.url || "")
     : $("epgUrl").value.trim();
   const logoUrl = state.logoAuto
     ? (state.logoSources[0]?.url || "")
@@ -199,12 +207,12 @@ function syncPresetFromUrl(select, url) {
   select.value = [...select.options].some((option) => option.value === value) ? value : "";
 }
 
-function setEpgMode(auto) {
+function setEpgMode(auto, detectNow = auto) {
   state.epgAuto = auto;
   $("epgAutoBtn").classList.toggle("active", auto);
   $("epgManualBtn").classList.toggle("active", !auto);
   $("epgManualRow").hidden = auto;
-  if (auto) triggerEpgDetect();
+  if (detectNow) triggerEpgDetect();
 }
 
 async function triggerEpgDetect() {
@@ -315,7 +323,7 @@ async function loadSettings() {
   syncPresetFromUrl($("logoPreset"), $("logoUrl").value);
   const knownEpgUrls = new Set(state.epgSources.map((s) => s.url));
   const savedEpgUrl = data.epg_url || "";
-  setEpgMode(!savedEpgUrl || knownEpgUrls.has(savedEpgUrl));
+  setEpgMode(!savedEpgUrl || knownEpgUrls.has(savedEpgUrl), false);
   const knownLogoUrls = new Set(state.logoSources.map((s) => s.url));
   const savedLogoUrl = data.logo_url || "";
   setLogoMode(!savedLogoUrl || knownLogoUrls.has(savedLogoUrl));
@@ -766,6 +774,7 @@ $("stopBtn").addEventListener("click", async () => {
 $("resetBtn").addEventListener("click", async () => {
   try {
     state.ignoredKeys.clear();
+    _saveIgnoredKeys(state.ignoredKeys);
     await requestJson("/api/capture/reset", {method: "POST", body: "{}"});
     await refreshStatusAndStreams();
   } catch (err) { alert(err.message); }
@@ -795,6 +804,7 @@ $("deleteCheckedBtn").addEventListener("click", async () => {
     .filter((row) => row.querySelector(".stream-check")?.checked);
   if (!checkedRows.length) return;
   checkedRows.forEach((row) => state.ignoredKeys.add(row.dataset.key));
+  _saveIgnoredKeys(state.ignoredKeys);
   state.streams = state.streams.filter((s) => !state.ignoredKeys.has(s.key));
   renderStreams(state.streams);
   try {

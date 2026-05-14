@@ -375,13 +375,13 @@ class CaptureService:
         text = unquote(line)
         if "\ufffd" in text:
             return
-        interesting = any(token in text for token in ("rtp://", "igmp://", "Channel", "channel", "Name", "name", "title"))
+        interesting = any(token in text for token in ("rtp://", "udp://", "igmp://", "Channel", "channel", "Name", "name", "title"))
         if not interesting and not self._metadata_buffer:
             return
         with self._lock:
             self._metadata_buffer = (self._metadata_buffer + "\n" + text)[-64000:]
             buffer = self._metadata_buffer
-        if "rtp://" not in buffer and "igmp://" not in buffer:
+        if "rtp://" not in buffer and "udp://" not in buffer and "igmp://" not in buffer:
             return
         for match in STREAM_URL_RE.finditer(buffer):
             host = match.group("host")
