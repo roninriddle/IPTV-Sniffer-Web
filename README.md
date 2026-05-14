@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.8.3
+# IPTV Sniffer Web v0.8.4
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -181,6 +181,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.8.4`：修复「刷新接口」移回顶部 header；rtp2httpd 配置移至频道列表导出区；恢复运营商频道名称自动内嵌至嗅探结果；
 - `v0.8.3`：新增「频道列表」独立页面，运营商频道与嗅探结果均通过「导入到频道列表」汇入；导出功能移至频道列表，支持勾选特定频道导出；「定时 EPG」重做为 EPG 来源管理与定时刷新，删除 M3U 更新功能；运营商频道发现移除自动名称内嵌，「刷新接口」按钮移至嗅探整理；README 同步更新；
 - `v0.8.2`：STB 开机捕获页面（运营商频道发现）；运营商频道表持久化；EPG 匹配覆盖所有已配置来源；批量写入 FCC 记录；多来源 EPG 索引合并；
 - `v0.8.0`：STB 开机抓包 TCP 重组与频道解析（getchannellistHWCU.jsp / VSP JSON）；运营商频道导入自动批量写入 FCC；
