@@ -191,11 +191,16 @@ class ProbeService:
                 _ch = int(_s.get("channels") or 0) or None
             except (TypeError, ValueError):
                 _ch = None
+            try:
+                _br = int(_s.get("bit_rate") or 0) or None
+            except (TypeError, ValueError):
+                _br = None
             audio_streams.append({
                 "codec_name": str(_s.get("codec_name", "")).strip(),
                 "sample_rate": _sr,
                 "channels": _ch,
                 "channel_layout": str(_s.get("channel_layout", "")).strip(),
+                "bit_rate": _br,
             })
         result = {
             "key": key,

@@ -648,7 +648,8 @@ function buildProbeDetailHtml(stream) {
   </div></div>`);
   if (stream.audio_streams?.length) {
     const rows = stream.audio_streams.map((a, i) => {
-      const info = [a.codec_name, a.sample_rate ? `${a.sample_rate} Hz` : null, a.channel_layout || (a.channels ? `${a.channels}ch` : null)].filter(Boolean).join(" · ");
+      const kbps = a.bit_rate ? `${Math.round(a.bit_rate / 1000)} kbps` : null;
+      const info = [a.codec_name, a.sample_rate ? `${a.sample_rate} Hz` : null, a.channel_layout || (a.channels ? `${a.channels}ch` : null), kbps].filter(Boolean).join(" · ");
       return `<span class="pd-k">音频流 ${i + 1}</span><span>${escapeHtml(info || "-")}</span>`;
     }).join("");
     parts.push(`<div class="pd-section"><div class="pd-title">音频流</div><div class="pd-grid">${rows}</div></div>`);
