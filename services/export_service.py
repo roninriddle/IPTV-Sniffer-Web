@@ -12,7 +12,7 @@ from config import CATEGORY_OPTIONS, CATEGORY_ORDER
 from models import ChannelRecord
 from utils import ip_sort_key, natural_key, stream_quality_group
 
-QUALITY_GROUP_OPTIONS = ["4K高清", "普通频道"]
+QUALITY_GROUP_OPTIONS = ["4K高清", "高清频道", "普通频道"]
 
 
 class ExportService:
@@ -65,7 +65,7 @@ class ExportService:
             width = self._safe_int(row.get("width"))
             height = self._safe_int(row.get("height"))
             quality_group = str(row.get("quality_group") or stream_quality_group(width, height)).strip()
-            if quality_group not in {"4K高清", "普通频道", "未识别"}:
+            if quality_group not in {"4K高清", "高清频道", "普通频道", "未识别"}:
                 quality_group = stream_quality_group(width, height)
             channels.append(ChannelRecord(
                 key=key,

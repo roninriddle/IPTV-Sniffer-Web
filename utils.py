@@ -128,6 +128,8 @@ def stream_quality_group(width: int | None, height: int | None) -> str:
         return "未识别"
     if width >= 3840 and height >= 2160:
         return "4K高清"
+    if width >= 1280 and height >= 720:
+        return "高清频道"
     if width > 0 and height > 0:
         return "普通频道"
     return "未识别"
