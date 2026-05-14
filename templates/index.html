@@ -18,6 +18,7 @@
         <button class="nav-pill active" data-page="home" type="button">使用说明</button>
         <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
         <button class="nav-pill" data-tab="schedule" type="button">定时 EPG</button>
+        <button class="nav-pill" data-tab="stbDiscovery" type="button">运营商频道</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
         <button id="refreshInterfacesBtn" class="secondary" type="button">刷新接口</button>
         <button id="logsBtn" class="primary" type="button">实时日志</button>
@@ -105,6 +106,7 @@ OpenWrt / iStoreOS
         <nav class="tabs" aria-label="工作区切换">
           <button class="tab-button active" data-tab="sniffer" type="button">嗅探整理</button>
           <button class="tab-button" data-tab="schedule" type="button">定时 EPG</button>
+          <button class="tab-button" data-tab="stbDiscovery" type="button">运营商频道</button>
         </nav>
 
         <div id="snifferTab" class="tab-panel">
@@ -338,6 +340,83 @@ OpenWrt / iStoreOS
             </div>
           </section>
         </div>
+
+        <div id="stbDiscoveryTab" class="tab-panel" hidden>
+          <section class="card">
+            <div class="section-title">
+              <h2>STB 开机捕获</h2>
+              <span id="stbDiscoveryBadge" class="chip neutral">就绪</span>
+            </div>
+            <p class="task-description">填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统将自动捕获 STB 开机与运营商 EPG 门户的 TCP 交互，解析完整频道表（频道名称、组播地址、FCC 参数等）。需要 <code>tcpdump</code> 可用且应用容器具有 <code>NET_RAW</code> 能力。</p>
+            <div class="form-grid">
+              <label>
+                机顶盒 IP
+                <input id="stbDiscoveryIp" type="text" placeholder="例如 10.193.235.26" autocomplete="off">
+              </label>
+              <label>
+                抓包网卡
+                <input id="stbDiscoveryIface" type="text" placeholder="any（留空则自动）" autocomplete="off">
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="stbDiscoveryStartBtn" class="primary" type="button">开始捕获</button>
+              <button id="stbDiscoveryStopBtn" class="secondary" type="button" disabled>停止 &amp; 分析</button>
+              <button id="stbDiscoveryResetBtn" class="secondary" type="button">重置</button>
+            </div>
+            <div id="stbDiscoveryStatus" class="result-box muted" style="margin-top:12px">等待开始…</div>
+          </section>
+
+          <section class="card" id="stbDiscoveryResultSection" hidden>
+            <div class="section-title">
+              <h2>发现的频道</h2>
+              <span id="stbDiscoveryCountBadge" class="chip neutral">0 个</span>
+            </div>
+            <div class="form-actions">
+              <button id="stbDiscoveryImportBtn" class="primary" type="button">导入到频道表</button>
+            </div>
+            <div class="table-wrap" style="margin-top:12px">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:50px">频道号</th>
+                    <th>频道名称</th>
+                    <th>组播地址</th>
+                    <th style="width:50px">高清</th>
+                    <th style="width:50px">回看</th>
+                  </tr>
+                </thead>
+                <tbody id="stbDiscoveryTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>已导入频道表</h2>
+              <span id="operatorChannelCountBadge" class="chip neutral">0 个</span>
+            </div>
+            <p class="task-description">导入后，嗅探到的流会自动按组播地址匹配频道名称。已导入的频道表在重启后仍然有效。</p>
+            <div class="form-actions">
+              <button id="operatorChannelRefreshBtn" class="secondary" type="button">刷新</button>
+              <button id="operatorChannelClearBtn" class="secondary" type="button">清空</button>
+            </div>
+            <div class="table-wrap" style="margin-top:12px" id="operatorChannelTableWrap" hidden>
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:50px">频道号</th>
+                    <th>频道名称</th>
+                    <th>组播地址</th>
+                    <th style="width:50px">高清</th>
+                  </tr>
+                </thead>
+                <tbody id="operatorChannelTableBody"></tbody>
+              </table>
+            </div>
+            <div id="operatorChannelEmpty" class="result-box muted">尚未导入运营商频道表。</div>
+          </section>
+        </div>
+
       </section>
     </main>
   </div>

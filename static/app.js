@@ -92,6 +92,8 @@ function showTab(tabName) {
   $("workbenchPage").hidden = false;
   $("snifferTab").hidden = tabName !== "sniffer";
   $("scheduleTab").hidden = tabName !== "schedule";
+  $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
+  if (tabName === "stbDiscovery") loadOperatorChannels();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-tab]").forEach((item) => {
     item.classList.toggle("active", item.dataset.tab === tabName);
@@ -1000,3 +1002,171 @@ $("clearLogMemoryBtn").addEventListener("click", async () => {
 });
 
 bootstrap().catch((err) => alert(err.message));
+
+// ===== STB Discovery Tab =====
+
+let stbDiscoveryPollTimer = null;
+
+const STB_STATUS_LABELS = {
+  idle: "就绪",
+  capturing: "捕获中…",
+  analyzing: "分析中…",
+  done: "完成",
+  error: "出错",
+};
+const STB_STATUS_CHIP = {
+  idle: "neutral",
+  capturing: "ok",
+  analyzing: "warning",
+  done: "ok",
+  error: "error",
+};
+
+function renderStbDiscoveryStatus(state) {
+  const status = state.status || "idle";
+  const badge = $("stbDiscoveryBadge");
+  badge.textContent = STB_STATUS_LABELS[status] || status;
+  badge.className = `chip ${STB_STATUS_CHIP[status] || "neutral"}`;
+
+  const box = $("stbDiscoveryStatus");
+  const isCapturing = status === "capturing";
+  const isAnalyzing = status === "analyzing";
+  const isDone = status === "done";
+  const isError = status === "error";
+
+  $("stbDiscoveryStartBtn").disabled = isCapturing || isAnalyzing;
+  $("stbDiscoveryStopBtn").disabled = !isCapturing;
+  $("stbDiscoveryResetBtn").disabled = isCapturing || isAnalyzing;
+
+  if (isCapturing) {
+    const elapsed = state.started_at ? Math.round(Date.now() / 1000 - state.started_at) : 0;
+    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒）…请立即重启机顶盒。`;
+    box.className = "result-box ok";
+  } else if (isAnalyzing) {
+    box.textContent = "正在分析 pcap 数据，提取频道信息…";
+    box.className = "result-box warning";
+  } else if (isDone) {
+    const n = state.channel_count || 0;
+    box.textContent = n > 0 ? `捕获完成，共发现 ${n} 个频道。` : "捕获完成，未发现频道。请确认机顶盒已完成开机流程。";
+    box.className = n > 0 ? "result-box ok" : "result-box warning";
+    renderStbDiscoveryChannels(state.channels || []);
+  } else if (isError) {
+    box.textContent = `捕获出错：${escapeHtml(state.error || "未知错误")}`;
+    box.className = "result-box error";
+  } else {
+    box.textContent = "等待开始…";
+    box.className = "result-box muted";
+  }
+}
+
+function renderStbDiscoveryChannels(channels) {
+  const section = $("stbDiscoveryResultSection");
+  const tbody = $("stbDiscoveryTableBody");
+  const badge = $("stbDiscoveryCountBadge");
+  if (!channels.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  badge.textContent = `${channels.length} 个`;
+  tbody.innerHTML = channels.map((ch) => `
+    <tr>
+      <td>${escapeHtml(String(ch.num || ""))}</td>
+      <td>${escapeHtml(ch.name || "")}</td>
+      <td class="mono">${escapeHtml(ch.ip || "")}:${escapeHtml(String(ch.port || ""))}</td>
+      <td>${ch.is_hd ? "✓" : ""}</td>
+      <td>${ch.time_shift ? "✓" : ""}</td>
+    </tr>`).join("");
+}
+
+function startStbDiscoveryPoll() {
+  stopStbDiscoveryPoll();
+  stbDiscoveryPollTimer = setInterval(async () => {
+    try {
+      const data = await requestJson("/api/stb_discovery/status");
+      renderStbDiscoveryStatus(data);
+      if (data.status !== "capturing" && data.status !== "analyzing") {
+        stopStbDiscoveryPoll();
+      }
+    } catch (_) {}
+  }, 2000);
+}
+
+function stopStbDiscoveryPoll() {
+  if (stbDiscoveryPollTimer) {
+    clearInterval(stbDiscoveryPollTimer);
+    stbDiscoveryPollTimer = null;
+  }
+}
+
+async function loadOperatorChannels() {
+  try {
+    const data = await requestJson("/api/operator_channels");
+    const channels = data.channels || [];
+    const badge = $("operatorChannelCountBadge");
+    const wrap = $("operatorChannelTableWrap");
+    const empty = $("operatorChannelEmpty");
+    badge.textContent = `${channels.length} 个`;
+    if (!channels.length) {
+      wrap.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    wrap.hidden = false;
+    $("operatorChannelTableBody").innerHTML = channels.map((ch) => `
+      <tr>
+        <td>${escapeHtml(String(ch.channel_num ?? ""))}</td>
+        <td>${escapeHtml(ch.name || "")}</td>
+        <td class="mono">${escapeHtml(ch.host || "")}:${escapeHtml(String(ch.port || ""))}</td>
+        <td>${ch.is_hd ? "✓" : ""}</td>
+      </tr>`).join("");
+  } catch (err) { console.warn("loadOperatorChannels:", err.message); }
+}
+
+$("stbDiscoveryStartBtn").addEventListener("click", async () => {
+  const ip = ($("stbDiscoveryIp").value || "").trim();
+  const iface = ($("stbDiscoveryIface").value || "").trim() || "any";
+  if (!ip) { alert("请填写机顶盒 IP 地址"); return; }
+  try {
+    const data = await requestJson("/api/stb_discovery/start", {method: "POST", body: JSON.stringify({stb_ip: ip, interface: iface})});
+    renderStbDiscoveryStatus(data);
+    startStbDiscoveryPoll();
+  } catch (err) { alert(err.message); }
+});
+
+$("stbDiscoveryStopBtn").addEventListener("click", async () => {
+  try {
+    const data = await requestJson("/api/stb_discovery/stop", {method: "POST", body: "{}"});
+    renderStbDiscoveryStatus(data);
+    if (data.status === "analyzing") startStbDiscoveryPoll();
+    else stopStbDiscoveryPoll();
+  } catch (err) { alert(err.message); }
+});
+
+$("stbDiscoveryResetBtn").addEventListener("click", async () => {
+  try {
+    stopStbDiscoveryPoll();
+    const data = await requestJson("/api/stb_discovery/reset", {method: "POST", body: "{}"});
+    renderStbDiscoveryStatus(data);
+    $("stbDiscoveryResultSection").hidden = true;
+  } catch (err) { alert(err.message); }
+});
+
+$("stbDiscoveryImportBtn").addEventListener("click", async () => {
+  try {
+    const data = await requestJson("/api/stb_discovery/import", {method: "POST", body: "{}"});
+    alert(`已导入 ${data.imported} 个频道到频道表。`);
+    loadOperatorChannels();
+  } catch (err) { alert(err.message); }
+});
+
+$("operatorChannelRefreshBtn").addEventListener("click", loadOperatorChannels);
+
+$("operatorChannelClearBtn").addEventListener("click", async () => {
+  if (!confirm("确定要清空运营商频道表吗？")) return;
+  try {
+    await requestJson("/api/operator_channels", {method: "DELETE"});
+    loadOperatorChannels();
+  } catch (err) { alert(err.message); }
+});

@@ -40,6 +40,7 @@ from config import (
     SETTINGS_FILE,
     STB_TOKEN_FILE,
     CUSTOM_SOURCES_FILE,
+    OPERATOR_CHANNELS_FILE,
     WAITRESS_THREADS,
     WEB_HOST,
     WEB_PORT,
@@ -50,7 +51,8 @@ from services.export_service import ExportService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
-from services.storage_service import ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, SettingsStore, StbTokenStore
+from services.stb_discovery_service import StbDiscoveryService
+from services.storage_service import ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
 from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
@@ -59,6 +61,8 @@ settings_store = SettingsStore(SETTINGS_FILE)
 channel_store = ChannelStore(CHANNELS_FILE)
 fcc_store = FccStore(FCC_FILE)
 custom_sources_store = CustomSourcesStore(CUSTOM_SOURCES_FILE)
+operator_channel_store = OperatorChannelStore(OPERATOR_CHANNELS_FILE)
+stb_discovery_service = StbDiscoveryService(logger)
 token_store = StbTokenStore(STB_TOKEN_FILE)
 discovery_store = DiscoveryStore(DISCOVERY_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
@@ -246,12 +250,27 @@ def persist_auto_channel_if_changed(item: dict[str, Any], stored: dict[str, Any]
 def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings or settings_store.load()
     discovered = discovery_store.load()
+    operator_channels = operator_channel_store.load()
     enriched: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         item = dict(row)
         key = str(item.get("key") or f"{item.get('host', '')}:{item.get('port', '')}")
+        # Operator channel list takes priority as auto_name source when no name is set
+        op_ch = operator_channels.get(key)
+        if op_ch and op_ch.get("name"):
+            op_name = str(op_ch["name"]).strip()
+            if not str(item.get("name", "")).strip():
+                item["name"] = op_name
+            if not str(item.get("auto_name", "")).strip():
+                item["auto_name"] = op_name
+                item["auto_name_source"] = "operator_channel_list"
+            # Propagate FCC info if missing
+            if op_ch.get("fcc_ip") and not str(item.get("fcc_ip", "")).strip():
+                item["fcc_ip"] = op_ch["fcc_ip"]
+            if op_ch.get("fcc_port") and not item.get("fcc_port"):
+                item["fcc_port"] = op_ch["fcc_port"]
         discovery = discovered.get(key, {})
         if not str(item.get("name", "")).strip() and discovery.get("name"):
             item["name"] = str(discovery.get("name", "")).strip()
@@ -831,6 +850,96 @@ def api_epg_refresh():
         return api_error(str(exc), 400)
     except Exception as exc:
         logger.error(f"启动 EPG 刷新失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.get("/api/operator_channels")
+def api_operator_channels_get():
+    channels = operator_channel_store.load()
+    items = sorted(channels.values(), key=lambda x: x.get("channel_num") or 9999)
+    return api_success({"channels": items, "count": len(items)})
+
+
+@app.post("/api/operator_channels/import")
+def api_operator_channels_import():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("请求体格式不正确")
+    channels = data.get("channels")
+    if not isinstance(channels, list):
+        return api_error("channels 必须是数组")
+    try:
+        count = operator_channel_store.import_channels(channels)
+        logger.info(f"运营商频道表导入完成：共 {count} 个频道")
+        return api_success({"imported": count})
+    except Exception as exc:
+        logger.error(f"运营商频道表导入失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.delete("/api/operator_channels")
+def api_operator_channels_clear():
+    operator_channel_store.clear()
+    logger.info("运营商频道表已清空")
+    return api_success({"cleared": True})
+
+
+@app.get("/api/stb_discovery/status")
+def api_stb_discovery_status():
+    return api_success(stb_discovery_service.status())
+
+
+@app.post("/api/stb_discovery/start")
+def api_stb_discovery_start():
+    data = request.get_json(silent=True) or {}
+    stb_ip = str(data.get("stb_ip", "")).strip()
+    interface = str(data.get("interface", "any")).strip() or "any"
+    if not stb_ip:
+        return api_error("请填写机顶盒 IP 地址")
+    if not valid_ip_or_host(stb_ip):
+        return api_error("IP 地址格式不正确")
+    rt = stb_discovery_service.runtime_check()
+    if not rt["ok"]:
+        return api_error("；".join(rt["errors"]), 500)
+    try:
+        stb_discovery_service.start(stb_ip, interface)
+        return api_success(stb_discovery_service.status())
+    except RuntimeError as exc:
+        return api_error(str(exc))
+    except Exception as exc:
+        logger.error(f"启动 STB 捕获失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/stb_discovery/stop")
+def api_stb_discovery_stop():
+    try:
+        state = stb_discovery_service.stop()
+        return api_success(state)
+    except Exception as exc:
+        logger.error(f"停止 STB 捕获失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/stb_discovery/reset")
+def api_stb_discovery_reset():
+    stb_discovery_service.reset()
+    return api_success(stb_discovery_service.status())
+
+
+@app.post("/api/stb_discovery/import")
+def api_stb_discovery_import():
+    """Import channels discovered from the last STB boot capture."""
+    state = stb_discovery_service.status()
+    channels = state.get("channels") or []
+    if not channels:
+        return api_error("没有可导入的频道，请先完成 STB 开机捕获")
+    try:
+        count = operator_channel_store.import_channels(channels)
+        logger.info(f"已从 STB 开机捕获导入 {count} 个频道")
+        return api_success({"imported": count})
+    except Exception as exc:
+        logger.error(f"导入 STB 捕获频道失败：{exc}")
         return api_error(str(exc), 500)
 
 

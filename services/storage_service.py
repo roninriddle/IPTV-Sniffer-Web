@@ -343,3 +343,63 @@ class CustomSourcesStore:
             raw.setdefault("deleted_builtin", {})[source_type] = lst
             _atomic_dump_json(self.path, raw)
             return True
+
+
+class OperatorChannelStore:
+    """Persists operator-provided channel list (ip:port -> channel info)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.RLock()
+        self._cache: dict[str, dict[str, Any]] | None = None
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            if self._cache is None:
+                data = _safe_load_json(self.path, {})
+                self._cache = data if isinstance(data, dict) else {}
+            return dict(self._cache)
+
+    def get(self, key: str) -> dict[str, Any] | None:
+        return self.load().get(key)
+
+    def import_channels(self, channels: list[dict[str, Any]]) -> int:
+        """Bulk-import a list of channel dicts. Returns count of imported entries."""
+        saved = 0
+        with self._lock:
+            data: dict[str, dict[str, Any]] = {}
+            for ch in channels:
+                ip = str(ch.get("ip", "")).strip()
+                port = ch.get("port")
+                name = str(ch.get("name", "")).strip()
+                if not ip or not port or not name:
+                    continue
+                try:
+                    port_int = int(port)
+                except (TypeError, ValueError):
+                    continue
+                key = f"{ip}:{port_int}"
+                data[key] = {
+                    "key": key,
+                    "host": ip,
+                    "port": port_int,
+                    "name": name,
+                    "channel_num": ch.get("num"),
+                    "is_hd": ch.get("is_hd", False),
+                    "time_shift": ch.get("time_shift", False),
+                    "fcc_ip": str(ch.get("fcc_ip", "")).strip(),
+                    "fcc_port": ch.get("fcc_port"),
+                    "fec_port": ch.get("fec_port"),
+                    "channel_id": str(ch.get("channel_id", "")).strip(),
+                    "source": "operator_channel_list",
+                }
+                saved += 1
+            self._cache = data
+            _atomic_dump_json(self.path, data)
+        return saved
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache = {}
+            _atomic_dump_json(self.path, {})
+
