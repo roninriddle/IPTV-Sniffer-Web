@@ -128,7 +128,7 @@ OpenWrt / iStoreOS
               <h3>自动补全</h3>
               <span id="epgBadge" class="chip neutral">EPG 未加载</span>
             </div>
-            <div class="form-grid auto-grid">
+            <div class="auto-grid">
               <label class="checkbox-label">
                 <input id="autoProbe" type="checkbox" checked>
                 自动识别技术信息
@@ -137,39 +137,39 @@ OpenWrt / iStoreOS
                 <input id="autoEpg" type="checkbox" checked>
                 自动补全 EPG
               </label>
-              <div class="logo-mode-cell">
-                <div class="logo-mode-header">
-                  <span>EPG 来源</span>
-                  <div class="mode-toggle-btns">
-                    <button type="button" id="epgAutoBtn" class="mode-btn">自动</button><button type="button" id="epgManualBtn" class="mode-btn">手动</button>
-                  </div>
-                </div>
-                <div class="source-select-row">
-                  <select id="epgPreset"></select>
-                  <button type="button" id="manageEpgSourcesBtn" class="secondary xs-btn" style="display:none">管理</button>
+              <div class="mode-toggle-cell">
+                <span>EPG 来源</span>
+                <div class="mode-toggle-btns">
+                  <button type="button" id="epgAutoBtn" class="mode-btn">自动</button><button type="button" id="epgManualBtn" class="mode-btn">手动</button>
                 </div>
               </div>
-              <label id="epgUrlLabel" class="wide-field">
+              <div class="mode-toggle-cell">
+                <span>台标来源</span>
+                <div class="mode-toggle-btns">
+                  <button type="button" id="logoAutoBtn" class="mode-btn">自动</button><button type="button" id="logoManualBtn" class="mode-btn">手动</button>
+                </div>
+              </div>
+              <button id="refreshEpgBtn" class="secondary" type="button">刷新 EPG</button>
+            </div>
+            <div id="epgManualRow" class="manual-source-row" hidden>
+              <div class="source-select-group">
+                <select id="epgPreset"></select>
+                <button type="button" id="manageEpgSourcesBtn" class="secondary xs-btn">管理</button>
+              </div>
+              <label id="epgUrlLabel">
                 XMLTV EPG 地址
                 <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
               </label>
-              <div class="logo-mode-cell">
-                <div class="logo-mode-header">
-                  <span>台标来源</span>
-                  <div class="mode-toggle-btns">
-                    <button type="button" id="logoAutoBtn" class="mode-btn">自动</button><button type="button" id="logoManualBtn" class="mode-btn">手动</button>
-                  </div>
-                </div>
-                <div class="source-select-row">
-                  <select id="logoPreset"></select>
-                  <button type="button" id="manageLogoSourcesBtn" class="secondary xs-btn" style="display:none">管理</button>
-                </div>
+            </div>
+            <div id="logoManualRow" class="manual-source-row" hidden>
+              <div class="source-select-group">
+                <select id="logoPreset"></select>
+                <button type="button" id="manageLogoSourcesBtn" class="secondary xs-btn">管理</button>
               </div>
-              <label id="logoUrlLabel" class="wide-field">
+              <label id="logoUrlLabel">
                 台标 M3U 地址
                 <input id="logoUrl" type="url" placeholder="https://example.com/TVlist.m3u">
               </label>
-              <button id="refreshEpgBtn" class="secondary" type="button">刷新 EPG</button>
             </div>
             <span id="epgDetectStatus" class="muted small" hidden></span>
             <div class="button-row">

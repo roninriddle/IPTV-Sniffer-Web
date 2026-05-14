@@ -200,10 +200,7 @@ function setEpgMode(auto) {
   state.epgAuto = auto;
   $("epgAutoBtn").classList.toggle("active", auto);
   $("epgManualBtn").classList.toggle("active", !auto);
-  $("epgPreset").hidden = auto;
-  $("epgUrlLabel").hidden = auto;
-  const manageBtn = $("manageEpgSourcesBtn");
-  if (manageBtn) manageBtn.style.display = auto ? "none" : "";
+  $("epgManualRow").hidden = auto;
   if (auto) triggerEpgDetect();
 }
 
@@ -233,10 +230,7 @@ function setLogoMode(auto) {
   state.logoAuto = auto;
   $("logoAutoBtn").classList.toggle("active", auto);
   $("logoManualBtn").classList.toggle("active", !auto);
-  $("logoPreset").hidden = auto;
-  $("logoUrlLabel").hidden = auto;
-  const manageBtn = $("manageLogoSourcesBtn");
-  if (manageBtn) manageBtn.style.display = auto ? "none" : "";
+  $("logoManualRow").hidden = auto;
 }
 
 let _sourcesModalType = "epg";
