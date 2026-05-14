@@ -34,12 +34,6 @@ DEFAULT_PATH_MODE = os.environ.get("PATH_MODE", "rtp")
 DEFAULT_CAPTURE_SECONDS = int(os.environ.get("CAPTURE_SECONDS", "30"))
 EPG_SOURCES = [
     {
-        "id": "112114",
-        "name": "112114 XMLTV",
-        "url": "https://epg.112114.xyz/pp.xml.gz",
-        "homepage": "https://epg.112114.xyz/",
-    },
-    {
         "id": "51zmt",
         "name": "老张的 EPG / 51zmt",
         "url": "http://epg.51zmt.top:8000/e.xml.gz",

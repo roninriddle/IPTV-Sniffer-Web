@@ -15,7 +15,6 @@ v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一
 
 EPG 与台标来源参考并致谢：
 
-- [`epg.112114.xyz`](https://epg.112114.xyz/)：XMLTV EPG 数据；
 - [`epg.51zmt.top`](https://epg.51zmt.top:8001/)：老张的 EPG / 51zmt 数据；
 - [`wanglindl/TVlogo`](https://github.com/wanglindl/TVlogo)：频道台标 M3U 资源。
 
@@ -168,7 +167,7 @@ M3U / TXT 会保留原始分类，并额外生成：
 ```text
 RTP2HTTPD_HOST=
 RTP2HTTPD_PORT=5140
-EPG_URL=https://epg.112114.xyz/pp.xml.gz
+EPG_URL=http://epg.51zmt.top:8000/e.xml.gz
 LOGO_URL=https://raw.githubusercontent.com/wanglindl/TVlogo/main/TVlist.m3u
 CAPTURE_SECONDS=30
 MIN_PACKET_COUNT=3
