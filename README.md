@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.7.2
+# IPTV Sniffer Web v0.7.3
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、频道整理与 `rtp2httpd` 播放列表统一工作台。
 
@@ -32,7 +32,6 @@ EPG 与台标来源参考并致谢：
 - 抓包后使用 `ffprobe` 自动识别编码、分辨率、帧率和流内频道名，并生成 4K / 高清 / 普通频道分组；
 - 支持 XMLTV EPG 与 TVlogo 缓存匹配，导出时写入 `tvg-id` / `tvg-name` / `tvg-logo`；
 - 有效候选右侧自动显示 `rtp2httpd` JPEG 截图，点击可放大；
-- 预览入口使用 `rtp2httpd` 内置播放器 `/player` 和直连流地址；
 - 导出直连 M3U、rtp2httpd 外部源 M3U、JSON、TXT、CSV。
 
 ---
@@ -183,6 +182,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.7.3`：导出按钮提交页面当前 rtp2httpd 配置（修复未保存设置时回退 rtp:// 的问题）；表格新增高清频道徽标；导出结果统计补充高清频道计数；版本检查改用 Tags API（修复仓库无 Release 时 404）；Docker 镜像标签统一加 v 前缀与 Hub 对齐；删除 README 中已移除的播放预览描述；
 - `v0.7.2`：修复 TXT / CSV 在未配置 rtp2httpd 时生成非法播放地址（回退为 rtp:// 直链）；README 核心特性与导出说明补充高清频道分组；移除 docker-compose.yml 中与 Dockerfile HEALTHCHECK 重复的 healthcheck 定义；
 - `v0.7.1`：`stream_quality_group` 新增高清频道分组（720p / 1080p 不再归入普通频道）；docker-compose.yml 删除与代码默认值重复的环境变量，TZ 改为 Asia/Shanghai，新增 healthcheck；
 - `v0.7.0`：修复 `auto_probe_done` 集合在 `capture/start` 时未清空的 Bug（导致多次抓包后已探测流不会重新探测）；后台富集循环由固定 5 秒改为抓包中 5 秒、空闲时 15 秒，减少不必要的 CPU 占用；

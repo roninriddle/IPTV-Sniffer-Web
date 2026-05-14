@@ -242,6 +242,7 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 .badge.neutral { color: #384152; background: #edf1f5; }
 .badge.info { color: #1749cc; background: #e8efff; }
 .badge.ultra { color: #6b2fb3; background: #f3eaff; }
+.badge.hd { color: #0f6e45; background: #e0f4ea; }
 .badge.danger { color: var(--danger); background: #fde8ea; }
 .probe-meta { display: grid; gap: 4px; min-width: 160px; font-size: 12px; }
 .probe-meta span { color: var(--muted); }

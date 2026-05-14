@@ -90,13 +90,15 @@ def _version_tuple(v: str) -> tuple[int, ...]:
 def _do_version_check() -> None:
     try:
         req = Request(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            f"https://api.github.com/repos/{GITHUB_REPO}/tags",
             headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": "application/vnd.github+json"},
         )
         with urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        tag = str(data.get("tag_name", "")).strip()
-        release_url = str(data.get("html_url", "")).strip()
+            tags = json.loads(resp.read())
+        if not tags:
+            return
+        tag = str(tags[0].get("name", "")).strip()
+        release_url = f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}"
         clean = tag.lstrip("v")
         update_available = bool(clean and _version_tuple(clean) > _version_tuple(APP_VERSION))
         with _version_check_lock:
@@ -108,7 +110,7 @@ def _do_version_check() -> None:
                 "release_url": release_url,
             })
         if update_available:
-            logger.info(f"发现新版本 v{clean}（当前 v{APP_VERSION}），发布地址：{release_url}")
+            logger.info(f"发现新版本 v{clean}（当前 v{APP_VERSION}），标签地址：{release_url}")
     except Exception as exc:
         with _version_check_lock:
             _version_check.update({"checked_at": int(time.time()), "error": str(exc)})
@@ -984,7 +986,7 @@ def api_export():
         rows = merge_streams_with_channels()
     if not isinstance(rows, list):
         return api_error("channels 必须是数组")
-    settings = settings_store.load()
+    settings = {**settings_store.load(), **{k: v for k, v in data.items() if k != "channels"}}
     try:
         rows = enrich_channel_rows(rows, settings)
         result = export_service.export(rows, settings)

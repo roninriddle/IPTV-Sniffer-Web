@@ -1,7 +1,7 @@
 services:
   iptv-sniffer-web:
     build: .
-    image: iptv-sniffer-web:0.7.2
+    image: iptv-sniffer-web:v0.7.3
     container_name: iptv-sniffer-web
     network_mode: host
     cap_add:

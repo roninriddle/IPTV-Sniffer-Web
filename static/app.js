@@ -481,7 +481,9 @@ function preserveRowEdits(streams) {
 function probeBadge(stream) {
   const status = stream.probe_status || "not_probed";
   if (status === "ok") {
-    return stream.quality_group === "4K高清" ? '<span class="badge ultra">4K高清</span>' : '<span class="badge info">普通频道</span>';
+    if (stream.quality_group === "4K高清") return '<span class="badge ultra">4K高清</span>';
+    if (stream.quality_group === "高清频道") return '<span class="badge hd">高清频道</span>';
+    return '<span class="badge info">普通频道</span>';
   }
   if (status === "partial") return '<span class="badge wait">信息不完整</span>';
   if (status === "failed") return '<span class="badge danger">识别失败</span>';
@@ -831,10 +833,11 @@ $("streamsTableBody").addEventListener("focusout", () => {
 });
 $("exportBtn").addEventListener("click", async () => {
   try {
-    const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
+    const body = {...formSettings(), channels: streamRowsFromDom()};
+    const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify(body)});
     showExportDownloads(data.files);
     $("exportResult").className = "result-box";
-    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；已生成直连 M3U、rtp2httpd 源地址 M3U、JSON、TXT、CSV；4K高清分组 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，普通频道分组 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
+    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
   } catch (err) { alert(err.message); }
 });
 $("logsBtn").addEventListener("click", openLogs);
