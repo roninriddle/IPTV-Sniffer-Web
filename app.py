@@ -589,7 +589,8 @@ def start_auto_enrichment_loop() -> None:
                 merge_streams_with_channels()
             except Exception as exc:
                 logger.warning(f"自动补全后台任务异常：{exc}")
-            time.sleep(5)
+            capturing = capture_service.status().get("state") == "running"
+            time.sleep(5 if capturing else 15)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -737,6 +738,7 @@ def api_capture_start():
         settings_store.save(data)
         with auto_probe_lock:
             auto_probe_pending.clear()
+            auto_probe_done.clear()
         status = capture_service.start(data)
         return api_success(status)
     except ValueError as exc:
