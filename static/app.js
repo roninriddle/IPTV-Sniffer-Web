@@ -177,17 +177,20 @@ function renderEpgStatus(epg) {
 
 async function loadInterfaces() {
   const data = await requestJson("/api/interfaces");
-  const select = $("interface");
-  const current = select.value;
-  select.innerHTML = "";
-  for (const name of data.interfaces || []) {
-    const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name === "any" ? "any（所有接口，测试用）" : name;
-    select.appendChild(option);
-  }
-  if ([...select.options].some((option) => option.value === current)) {
-    select.value = current;
+  for (const id of ["interface", "stbDiscoveryIface"]) {
+    const select = $(id);
+    if (!select) continue;
+    const current = select.value;
+    select.innerHTML = "";
+    for (const name of data.interfaces || []) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name === "any" ? "any（所有接口，测试用）" : name;
+      select.appendChild(option);
+    }
+    if ([...select.options].some((option) => option.value === current)) {
+      select.value = current;
+    }
   }
 }
 
@@ -803,15 +806,22 @@ function renderChannelList(channels) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>';
     return;
   }
-  tbody.innerHTML = channels.map((ch) => `
+  tbody.innerHTML = channels.map((ch) => {
+    const addr = ch.key || `${ch.host || ""}:${ch.port ?? ""}`;
+    const quality = (ch.quality_group && ch.quality_group !== "未识别")
+      ? ch.quality_group
+      : ((ch.resolution_label && ch.resolution_label !== "未识别") ? ch.resolution_label : "-");
+    const epg = ch.tvg_id || "-";
+    return `
     <tr data-key="${escapeHtml(ch.key || "")}">
       <td><input type="checkbox" class="cl-check"></td>
       <td>${escapeHtml(ch.name || "")}</td>
-      <td class="mono small">${escapeHtml(ch.host || "")}:${escapeHtml(String(ch.port || ""))}</td>
+      <td class="mono small">${escapeHtml(addr)}</td>
       <td>${escapeHtml(ch.category || "")}</td>
-      <td>${escapeHtml(ch.quality_group && ch.quality_group !== "未识别" ? ch.quality_group : (ch.resolution_label && ch.resolution_label !== "未识别" ? ch.resolution_label : ""))}</td>
-      <td class="mono small">${escapeHtml(ch.tvg_id || "")}</td>
-    </tr>`).join("");
+      <td>${escapeHtml(quality)}</td>
+      <td class="mono small">${escapeHtml(epg)}</td>
+    </tr>`;
+  }).join("");
 }
 
 async function loadScheduleEpgSources() {
