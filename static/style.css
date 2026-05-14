@@ -247,6 +247,15 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 .probe-meta { display: grid; gap: 4px; min-width: 160px; font-size: 12px; }
 .probe-meta span { color: var(--muted); }
 .probe-note { color: var(--muted); line-height: 1.45; max-width: 190px; }
+.probe-meta--clickable { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin: -2px -4px; transition: background .12s; }
+.probe-meta--clickable:hover { background: rgba(31, 94, 255, .06); }
+.probe-detail-dialog { width: min(520px, 100%); }
+.probe-detail-body { display: grid; gap: 8px; overflow-y: auto; max-height: calc(100vh - 140px); }
+.pd-section { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); }
+.pd-title { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
+.pd-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; align-items: baseline; }
+.pd-k { color: var(--muted); white-space: nowrap; }
+.pd-addr { font-family: monospace; font-size: 13px; color: var(--muted); }
 .preview-play-btn { white-space: nowrap; }
 
 .preview-cell { display: grid; gap: 8px; align-items: start; }
@@ -315,7 +324,9 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 }
 .source-name { font-weight: 600; flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-url { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.source-row .source-del-btn { flex: 0 0 auto; margin-left: auto; }
+.source-row .source-del-btn,
+.source-row .source-restore-btn { flex: 0 0 auto; margin-left: auto; }
+.source-row--deleted { opacity: 0.55; }
 .sources-add-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--line); }
 .sources-add-row input { flex: 1 1 140px; min-width: 0; }
 .xs-btn { min-height: 28px; padding: 0 9px; font-size: 12px; }

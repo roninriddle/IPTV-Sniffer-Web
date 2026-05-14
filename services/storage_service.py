@@ -262,18 +262,27 @@ class StbTokenStore:
 
 
 class CustomSourcesStore:
-    """Persists user-added EPG and logo sources."""
+    """Persists user-added EPG and logo sources plus hidden built-in IDs."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.RLock()
 
-    def load(self) -> dict[str, list[dict[str, Any]]]:
+    def _load_raw(self) -> dict[str, Any]:
+        raw = _safe_load_json(self.path, {})
+        return raw if isinstance(raw, dict) else {}
+
+    def load(self) -> dict[str, Any]:
         with self._lock:
-            data = _safe_load_json(self.path, {})
-            if not isinstance(data, dict):
-                data = {}
-            return {"epg": list(data.get("epg") or []), "logo": list(data.get("logo") or [])}
+            raw = self._load_raw()
+            return {
+                "epg": list(raw.get("epg") or []),
+                "logo": list(raw.get("logo") or []),
+                "deleted_builtin": {
+                    "epg": list((raw.get("deleted_builtin") or {}).get("epg") or []),
+                    "logo": list((raw.get("deleted_builtin") or {}).get("logo") or []),
+                },
+            }
 
     def add(self, source_type: str, name: str, url: str) -> dict[str, Any]:
         if source_type not in ("epg", "logo"):
@@ -285,24 +294,52 @@ class CustomSourcesStore:
         if not url.startswith(("http://", "https://")):
             raise ValueError("地址必须以 http:// 或 https:// 开头")
         with self._lock:
-            data = self.load()
-            existing_urls = {s["url"] for s in data[source_type]}
+            raw = self._load_raw()
+            existing_urls = {s["url"] for s in (raw.get(source_type) or [])}
             if url in existing_urls:
                 raise ValueError("该地址已存在")
             import uuid
             entry = {"id": str(uuid.uuid4())[:8], "name": name, "url": url}
-            data[source_type].append(entry)
-            _atomic_dump_json(self.path, data)
+            raw.setdefault(source_type, []).append(entry)
+            _atomic_dump_json(self.path, raw)
             return entry
 
     def delete(self, source_type: str, source_id: str) -> bool:
         if source_type not in ("epg", "logo"):
             return False
         with self._lock:
-            data = self.load()
-            before = len(data[source_type])
-            data[source_type] = [s for s in data[source_type] if s.get("id") != source_id]
-            if len(data[source_type]) == before:
+            raw = self._load_raw()
+            lst = list(raw.get(source_type) or [])
+            filtered = [s for s in lst if s.get("id") != source_id]
+            if len(filtered) == len(lst):
                 return False
-            _atomic_dump_json(self.path, data)
+            raw[source_type] = filtered
+            _atomic_dump_json(self.path, raw)
+            return True
+
+    def delete_builtin(self, source_type: str, source_id: str) -> bool:
+        if source_type not in ("epg", "logo"):
+            return False
+        with self._lock:
+            raw = self._load_raw()
+            db = raw.setdefault("deleted_builtin", {})
+            lst = list(db.get(source_type) or [])
+            if source_id not in lst:
+                lst.append(source_id)
+                db[source_type] = lst
+                _atomic_dump_json(self.path, raw)
+            return True
+
+    def restore_builtin(self, source_type: str, source_id: str) -> bool:
+        if source_type not in ("epg", "logo"):
+            return False
+        with self._lock:
+            raw = self._load_raw()
+            db = raw.get("deleted_builtin") or {}
+            lst = list(db.get(source_type) or [])
+            if source_id not in lst:
+                return False
+            lst.remove(source_id)
+            raw.setdefault("deleted_builtin", {})[source_type] = lst
+            _atomic_dump_json(self.path, raw)
             return True

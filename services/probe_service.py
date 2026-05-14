@@ -65,6 +65,11 @@ class ProbeService:
             "detected_name": stored.get("detected_name", ""),
             "detected_name_source": stored.get("detected_name_source", ""),
             "probed_at": stored.get("probed_at"),
+            "service_provider": stored.get("service_provider", ""),
+            "format_bit_rate": stored.get("format_bit_rate"),
+            "nb_streams": stored.get("nb_streams", 0),
+            "nb_programs": stored.get("nb_programs", 0),
+            "audio_streams": stored.get("audio_streams", []),
         }
         merged.update({k: v for k, v in cached.items() if v not in (None, "") or k in {"width", "height"}})
         return merged
@@ -98,7 +103,7 @@ class ProbeService:
             "-v", "error",
             "-probesize", str(PROBE_SIZE_BYTES),
             "-analyzeduration", str(PROBE_ANALYZE_DURATION_US),
-            "-show_entries", "stream=codec_name,width,height,r_frame_rate:program=program_id,program_num:program_tags=service_name,service_provider:format_tags=service_name,title",
+            "-show_entries", "stream=codec_name,codec_type,width,height,r_frame_rate,bit_rate,sample_rate,channels,channel_layout:program=program_id,program_num:program_tags=service_name,service_provider:format=bit_rate,nb_streams,nb_programs:format_tags=service_name,title",
             "-of", "json",
             url,
         ]
@@ -152,6 +157,46 @@ class ProbeService:
         detected_name = self._extract_service_name(payload)
         resolution_label = resolution_label_from_size(width, height)
         quality_group = stream_quality_group(width, height)
+        format_payload = payload.get("format") or {}
+        try:
+            format_bit_rate = int(format_payload.get("bit_rate") or 0) or None
+        except (TypeError, ValueError):
+            format_bit_rate = None
+        try:
+            nb_streams_count = int(format_payload.get("nb_streams") or 0)
+        except (TypeError, ValueError):
+            nb_streams_count = 0
+        try:
+            nb_programs_count = int(format_payload.get("nb_programs") or 0)
+        except (TypeError, ValueError):
+            nb_programs_count = 0
+        service_provider = ""
+        for _prog in payload.get("programs") or []:
+            if not isinstance(_prog, dict):
+                continue
+            _ptags = _prog.get("tags") if isinstance(_prog.get("tags"), dict) else {}
+            _sp = str(_ptags.get("service_provider", "")).strip()
+            if _sp and _sp.lower() not in {"unknown", ""}:
+                service_provider = _sp
+                break
+        audio_streams: list[dict[str, Any]] = []
+        for _s in streams:
+            if not isinstance(_s, dict) or str(_s.get("codec_type", "")).lower() != "audio":
+                continue
+            try:
+                _sr = int(_s.get("sample_rate") or 0) or None
+            except (TypeError, ValueError):
+                _sr = None
+            try:
+                _ch = int(_s.get("channels") or 0) or None
+            except (TypeError, ValueError):
+                _ch = None
+            audio_streams.append({
+                "codec_name": str(_s.get("codec_name", "")).strip(),
+                "sample_rate": _sr,
+                "channels": _ch,
+                "channel_layout": str(_s.get("channel_layout", "")).strip(),
+            })
         result = {
             "key": key,
             "probe_status": "ok" if width > 0 and height > 0 else "partial",
@@ -166,6 +211,11 @@ class ProbeService:
             "detected_name_source": "ffprobe_service_name" if detected_name else "",
             "probed_at": int(time.time()),
             "probe_elapsed_ms": int((time.time() - started) * 1000),
+            "service_provider": service_provider,
+            "format_bit_rate": format_bit_rate,
+            "nb_streams": nb_streams_count,
+            "nb_programs": nb_programs_count,
+            "audio_streams": audio_streams,
         }
         self._remember(key, result)
         self.logger.info(
@@ -188,6 +238,11 @@ class ProbeService:
             "detected_name_source": "",
             "probed_at": int(time.time()),
             "probe_elapsed_ms": int((time.time() - started) * 1000),
+            "service_provider": "",
+            "format_bit_rate": None,
+            "nb_streams": 0,
+            "nb_programs": 0,
+            "audio_streams": [],
         }
 
     def _remember(self, key: str, result: dict[str, Any]) -> None:

@@ -208,6 +208,9 @@ def fill_channel_name_from_metadata(item: dict[str, Any], allow_epg_name: bool =
             item["auto_name_source"] = str(item.get("auto_name_source") or "auto")
         item["name"] = epg_name
         item["category"] = classify_channel_name(epg_name)
+        current_name = epg_name
+    if not current_name and auto_name:
+        item["name"] = auto_name
     return item
 
 
@@ -735,9 +738,14 @@ def api_epg_status():
 @app.get("/api/epg/sources")
 def api_epg_sources():
     custom = custom_sources_store.load()
-    epg_sources = [{**s, "builtin": True} for s in EPG_SOURCES] + custom.get("epg", [])
-    logo_sources = [{**s, "builtin": True} for s in LOGO_SOURCES] + custom.get("logo", [])
-    return api_success({"epg_sources": epg_sources, "logo_sources": logo_sources})
+    deleted = custom.get("deleted_builtin", {})
+    deleted_epg = set(deleted.get("epg") or [])
+    deleted_logo = set(deleted.get("logo") or [])
+    epg_sources = [{**s, "builtin": True} for s in EPG_SOURCES if s["id"] not in deleted_epg] + custom.get("epg", [])
+    logo_sources = [{**s, "builtin": True} for s in LOGO_SOURCES if s["id"] not in deleted_logo] + custom.get("logo", [])
+    all_epg = [{**s, "builtin": True, "deleted": s["id"] in deleted_epg} for s in EPG_SOURCES] + custom.get("epg", [])
+    all_logo = [{**s, "builtin": True, "deleted": s["id"] in deleted_logo} for s in LOGO_SOURCES] + custom.get("logo", [])
+    return api_success({"epg_sources": epg_sources, "logo_sources": logo_sources, "all_epg_sources": all_epg, "all_logo_sources": all_logo})
 
 
 @app.get("/api/sources/custom")
@@ -764,6 +772,20 @@ def api_sources_custom_delete(source_type: str, source_id: str):
     return api_error("未找到该来源", 404)
 
 
+@app.delete("/api/sources/builtin/<source_type>/<source_id>")
+def api_sources_builtin_delete(source_type: str, source_id: str):
+    if custom_sources_store.delete_builtin(source_type, source_id):
+        return api_success()
+    return api_error("来源类型不正确", 400)
+
+
+@app.post("/api/sources/builtin/<source_type>/<source_id>/restore")
+def api_sources_builtin_restore(source_type: str, source_id: str):
+    if custom_sources_store.restore_builtin(source_type, source_id):
+        return api_success()
+    return api_error("未找到该内置来源记录", 404)
+
+
 @app.post("/api/epg/detect-best")
 def api_epg_detect_best():
     with _epg_detect_lock:
@@ -771,7 +793,9 @@ def api_epg_detect_best():
     if current["status"] == "detecting":
         return api_success(current)
     custom = custom_sources_store.load()
-    all_sources = EPG_SOURCES + custom.get("epg", [])
+    deleted_epg = set((custom.get("deleted_builtin") or {}).get("epg") or [])
+    active_builtin = [s for s in EPG_SOURCES if s["id"] not in deleted_epg]
+    all_sources = active_builtin + custom.get("epg", [])
     threading.Thread(target=_do_epg_detect_best, args=(all_sources,), daemon=True).start()
     with _epg_detect_lock:
         _epg_detect_state["status"] = "detecting"

@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.7.4
+# IPTV Sniffer Web v0.7.5
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、频道整理与 `rtp2httpd` 播放列表统一工作台。
 
@@ -182,6 +182,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.7.5`：流信息列点击弹出详情窗口，显示音频流、节目码率、运营商、EPG 字段和识别时间；ffprobe 探测补充音频流编码/采样率/声道、节目总码率、流总数和节目数字段；支持内置 EPG/台标来源删除与恢复；频道名输入框从 auto_name 自动回填；
 - `v0.7.4`：截图/HLS 源地址由硬编码 udp:// 改为读取 path_mode（修复 RTP 流截图失败）；移除无人调用的旧 HLS 代理接口与 /api/preview 接口及相关死代码；抓包元数据解析补充 udp:// 协议支持（修复机顶盒用 udp:// 格式时频道名不自动识别的问题）；EPG 自动来源页面加载时不再重新触发检测（修复刷新后覆盖用户保存来源）；EPG gzip 检测改用 zlib 增量解压（修复 4MB 截断导致误判失败）；"删除勾选"改为"隐藏勾选"并持久化到 localStorage（重置候选流后恢复）；移除 index.html 中失效的 112114.xyz 链接；自定义来源地址限制为 http/https 协议；
 - `v0.7.3`：导出按钮提交页面当前 rtp2httpd 配置（修复未保存设置时回退 rtp:// 的问题）；表格新增高清频道徽标；导出结果统计补充高清频道计数；版本检查改用 Tags API（修复仓库无 Release 时 404）；Docker 镜像标签统一加 v 前缀与 Hub 对齐；删除 README 中已移除的播放预览描述；
 - `v0.7.2`：修复 TXT / CSV 在未配置 rtp2httpd 时生成非法播放地址（回退为 rtp:// 直链）；README 核心特性与导出说明补充高清频道分组；移除 docker-compose.yml 中与 Dockerfile HEALTHCHECK 重复的 healthcheck 定义；

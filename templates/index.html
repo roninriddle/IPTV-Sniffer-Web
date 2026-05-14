@@ -363,6 +363,16 @@ OpenWrt / iStoreOS
     <option value="其它频道">
   </datalist>
 
+  <div id="probeDetailModal" class="preview-modal" hidden>
+    <div class="preview-dialog probe-detail-dialog" role="dialog" aria-modal="true">
+      <div class="preview-header">
+        <div><h2 id="probeDetailTitle">流信息详情</h2></div>
+        <button id="closeProbeDetailBtn" class="secondary" type="button">关闭</button>
+      </div>
+      <div id="probeDetailBody" class="probe-detail-body"></div>
+    </div>
+  </div>
+
   <div id="snapshotModal" class="snapshot-modal" hidden>
     <button id="closeSnapshotBtn" class="snapshot-close" type="button">关闭</button>
     <img id="snapshotLarge" alt="频道截图放大预览">

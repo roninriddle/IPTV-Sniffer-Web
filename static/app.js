@@ -16,6 +16,8 @@ const state = {
   streams: [],
   epgSources: [],
   logoSources: [],
+  allEpgSources: [],
+  allLogoSources: [],
   ignoredKeys: _loadIgnoredKeys(),
   logoAuto: true,
   epgAuto: true,
@@ -259,21 +261,27 @@ function closeSourcesModal() {
   $("sourcesModal").hidden = true;
 }
 
-async function renderSourcesList() {
+function renderSourcesList() {
   const type = _sourcesModalType;
-  const sources = type === "epg" ? state.epgSources : state.logoSources;
+  const sources = type === "epg" ? state.allEpgSources : state.allLogoSources;
   const list = $("sourcesList");
   if (!sources.length) {
     list.innerHTML = `<div class="sources-empty">暂无来源</div>`;
     return;
   }
-  list.innerHTML = sources.map((s) => `
-    <div class="source-row" data-id="${escapeHtml(s.id)}" data-builtin="${s.builtin ? "1" : "0"}">
-      <span class="source-name">${escapeHtml(s.name)}</span>
-      <span class="source-url muted small">${escapeHtml(s.url)}</span>
-      ${s.builtin ? `<span class="chip neutral" style="font-size:11px">内置</span>` : `<button class="secondary xs-btn source-del-btn" type="button" data-id="${escapeHtml(s.id)}">删除</button>`}
-    </div>
-  `).join("");
+  list.innerHTML = sources.map((s) => {
+    const nameHtml = `<span class="source-name${s.deleted ? " muted" : ""}">${escapeHtml(s.name)}</span>`;
+    const urlHtml = `<span class="source-url muted small">${escapeHtml(s.url)}</span>`;
+    let action;
+    if (s.builtin) {
+      action = s.deleted
+        ? `<button class="secondary xs-btn source-restore-btn" type="button" data-id="${escapeHtml(s.id)}">恢复</button>`
+        : `<button class="secondary xs-btn source-del-btn" type="button" data-id="${escapeHtml(s.id)}" data-builtin="1">删除</button>`;
+    } else {
+      action = `<button class="secondary xs-btn source-del-btn" type="button" data-id="${escapeHtml(s.id)}" data-builtin="0">删除</button>`;
+    }
+    return `<div class="source-row${s.deleted ? " source-row--deleted" : ""}" data-id="${escapeHtml(s.id)}">${nameHtml}${urlHtml}${action}</div>`;
+  }).join("");
 }
 
 async function addCustomSource() {
@@ -300,10 +308,28 @@ async function deleteCustomSource(id) {
   } catch (err) { alert(err.message); }
 }
 
+async function deleteBuiltin(id) {
+  try {
+    await requestJson(`/api/sources/builtin/${_sourcesModalType}/${id}`, {method: "DELETE"});
+    await loadEpgSources();
+    renderSourcesList();
+  } catch (err) { alert(err.message); }
+}
+
+async function restoreBuiltin(id) {
+  try {
+    await requestJson(`/api/sources/builtin/${_sourcesModalType}/${id}/restore`, {method: "POST", body: "{}"});
+    await loadEpgSources();
+    renderSourcesList();
+  } catch (err) { alert(err.message); }
+}
+
 async function loadEpgSources() {
   const data = await requestJson("/api/epg/sources");
   state.epgSources = data.epg_sources || [];
   state.logoSources = data.logo_sources || [];
+  state.allEpgSources = data.all_epg_sources || [];
+  state.allLogoSources = data.all_logo_sources || [];
   populatePreset($("epgPreset"), state.epgSources);
   populatePreset($("logoPreset"), state.logoSources);
 }
@@ -507,7 +533,7 @@ function streamInfoHtml(stream) {
   const detectedName = stream.detected_name && stream.detected_name !== stream.auto_name ? `<span>流内名称：${escapeHtml(stream.detected_name)}</span>` : "";
   const epgName = stream.tvg_name || stream.tvg_id ? `<span>EPG：${escapeHtml(stream.tvg_name || "-")} / ${escapeHtml(stream.tvg_id || "-")}</span>` : "";
   const message = stream.probe_message ? `<div class="probe-note">${escapeHtml(stream.probe_message)}</div>` : "";
-  return `<div class="probe-meta">${probeBadge(stream)}${autoName}${detectedName}${epgName}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
+  return `<div class="probe-meta probe-meta--clickable" data-probe-key="${escapeHtml(stream.key)}" title="点击查看完整流信息">${probeBadge(stream)}${autoName}${detectedName}${epgName}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
 }
 
 function previewHtml(stream) {
@@ -585,7 +611,7 @@ function renderStreams(streams) {
       <td>${escapeHtml(stream.packets)}</td>
       <td>${candidateBadge}</td>
       <td>${snapshotHtml(stream)}</td>
-      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="${stream.auto_name || stream.tvg_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
+      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || stream.auto_name || "")}" placeholder="${stream.auto_name || stream.tvg_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
       <td><input class="channel-category" type="text" list="categoryDatalist" value="${escapeHtml(stream.category || "其它频道")}"></td>
       <td>${streamInfoHtml(stream)}</td>
       <td>${previewHtml(stream)}</td>
@@ -603,6 +629,72 @@ function openSnapshot(url, title) {
 function closeSnapshot() {
   $("snapshotModal").hidden = true;
   $("snapshotLarge").removeAttribute("src");
+}
+
+function buildProbeDetailHtml(stream) {
+  const parts = [];
+  parts.push(`<div class="pd-section"><span class="pd-addr">${escapeHtml(stream.host)}:${escapeHtml(String(stream.port))}</span></div>`);
+  const codec = stream.codec_name || "-";
+  const res = stream.width && stream.height ? `${stream.width}×${stream.height}` : (stream.resolution_label || "未识别");
+  const fps = stream.frame_rate || "-";
+  let bitrate = "-";
+  if (stream.format_bit_rate) bitrate = `${(stream.format_bit_rate / 1_000_000).toFixed(2)} Mbps`;
+  parts.push(`<div class="pd-section"><div class="pd-title">清晰度 / 编码</div><div class="pd-grid">
+    <span class="pd-k">判定</span><span>${probeBadge(stream)}</span>
+    <span class="pd-k">编码</span><span>${escapeHtml(codec)}</span>
+    <span class="pd-k">分辨率</span><span>${escapeHtml(res)}</span>
+    <span class="pd-k">帧率</span><span>${escapeHtml(fps)}</span>
+    <span class="pd-k">码率</span><span>${escapeHtml(bitrate)}</span>
+  </div></div>`);
+  if (stream.audio_streams?.length) {
+    const rows = stream.audio_streams.map((a, i) => {
+      const info = [a.codec_name, a.sample_rate ? `${a.sample_rate} Hz` : null, a.channel_layout || (a.channels ? `${a.channels}ch` : null)].filter(Boolean).join(" · ");
+      return `<span class="pd-k">音频流 ${i + 1}</span><span>${escapeHtml(info || "-")}</span>`;
+    }).join("");
+    parts.push(`<div class="pd-section"><div class="pd-title">音频流</div><div class="pd-grid">${rows}</div></div>`);
+  }
+  const svcName = stream.detected_name || stream.auto_name;
+  if (svcName || stream.service_provider || stream.nb_programs || stream.nb_streams) {
+    const rows = [
+      svcName ? `<span class="pd-k">频道名</span><span>${escapeHtml(svcName)}</span>` : "",
+      stream.service_provider ? `<span class="pd-k">运营商</span><span>${escapeHtml(stream.service_provider)}</span>` : "",
+      stream.nb_programs ? `<span class="pd-k">节目数</span><span>${stream.nb_programs}</span>` : "",
+      stream.nb_streams ? `<span class="pd-k">流数量</span><span>${stream.nb_streams}</span>` : "",
+    ].filter(Boolean).join("");
+    parts.push(`<div class="pd-section"><div class="pd-title">节目信息</div><div class="pd-grid">${rows}</div></div>`);
+  }
+  if (stream.tvg_id || stream.tvg_name || stream.tvg_logo || stream.epg_source) {
+    const rows = [
+      stream.tvg_id ? `<span class="pd-k">tvg-id</span><span>${escapeHtml(stream.tvg_id)}</span>` : "",
+      stream.tvg_name ? `<span class="pd-k">tvg-name</span><span>${escapeHtml(stream.tvg_name)}</span>` : "",
+      stream.tvg_logo ? `<span class="pd-k">台标</span><span style="overflow-wrap:anywhere">${escapeHtml(stream.tvg_logo)}</span>` : "",
+      stream.epg_source ? `<span class="pd-k">EPG来源</span><span style="overflow-wrap:anywhere">${escapeHtml(stream.epg_source)}</span>` : "",
+    ].filter(Boolean).join("");
+    parts.push(`<div class="pd-section"><div class="pd-title">EPG / 台标</div><div class="pd-grid">${rows}</div></div>`);
+  }
+  if (stream.fcc_ip && stream.fcc_port) {
+    parts.push(`<div class="pd-section"><div class="pd-title">FCC</div><div class="pd-grid">
+      <span class="pd-k">FCC服务器</span><span>${escapeHtml(stream.fcc_ip)}:${escapeHtml(String(stream.fcc_port))}</span>
+    </div></div>`);
+  }
+  const probedAt = stream.probed_at ? new Date(stream.probed_at * 1000).toLocaleString("zh-CN") : "-";
+  parts.push(`<div class="pd-section"><div class="pd-title">识别状态</div><div class="pd-grid">
+    <span class="pd-k">状态</span><span>${escapeHtml(stream.probe_message || "未识别")}</span>
+    <span class="pd-k">识别时间</span><span>${escapeHtml(probedAt)}</span>
+  </div></div>`);
+  return parts.join("");
+}
+
+function openProbeDetail(key) {
+  const stream = state.streams.find((s) => s.key === key);
+  if (!stream) return;
+  $("probeDetailTitle").textContent = stream.name || stream.key;
+  $("probeDetailBody").innerHTML = buildProbeDetailHtml(stream);
+  $("probeDetailModal").hidden = false;
+}
+
+function closeProbeDetail() {
+  $("probeDetailModal").hidden = true;
 }
 
 async function refreshStatusAndStreams() {
@@ -860,12 +952,26 @@ $("sourcesModal").addEventListener("click", (event) => {
 });
 $("sourcesAddBtn").addEventListener("click", addCustomSource);
 $("sourcesList").addEventListener("click", (event) => {
-  const btn = event.target.closest(".source-del-btn");
-  if (btn) deleteCustomSource(btn.dataset.id);
+  const delBtn = event.target.closest(".source-del-btn");
+  if (delBtn) {
+    if (delBtn.dataset.builtin === "1") deleteBuiltin(delBtn.dataset.id);
+    else deleteCustomSource(delBtn.dataset.id);
+    return;
+  }
+  const restoreBtn = event.target.closest(".source-restore-btn");
+  if (restoreBtn) restoreBuiltin(restoreBtn.dataset.id);
 });
 $("closeSnapshotBtn").addEventListener("click", closeSnapshot);
 $("snapshotModal").addEventListener("click", (event) => {
   if (event.target.id === "snapshotModal") closeSnapshot();
+});
+$("closeProbeDetailBtn").addEventListener("click", closeProbeDetail);
+$("probeDetailModal").addEventListener("click", (event) => {
+  if (event.target.id === "probeDetailModal") closeProbeDetail();
+});
+$("streamsTableBody").addEventListener("click", (event) => {
+  const meta = event.target.closest(".probe-meta--clickable");
+  if (meta?.dataset.probeKey) openProbeDetail(meta.dataset.probeKey);
 });
 $("clearLogMemoryBtn").addEventListener("click", async () => {
   try {
