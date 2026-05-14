@@ -232,6 +232,15 @@ th:nth-child(8), td:nth-child(8) { width: 220px; }
 th:nth-child(9), td:nth-child(9) { width: 248px; }
 tr:last-child td { border-bottom: 0; }
 td.empty { color: var(--muted); text-align: center; padding: 20px; }
+td.mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Channel list table has 6 cols: checkbox / name / address / category / quality / EPG */
+.cl-table { min-width: 700px; }
+.cl-table th:nth-child(1), .cl-table td:nth-child(1) { width: 42px; }
+.cl-table th:nth-child(2), .cl-table td:nth-child(2) { width: auto; }
+.cl-table th:nth-child(3), .cl-table td:nth-child(3) { width: 170px; }
+.cl-table th:nth-child(4), .cl-table td:nth-child(4) { width: 90px; }
+.cl-table th:nth-child(5), .cl-table td:nth-child(5) { width: 90px; }
+.cl-table th:nth-child(6), .cl-table td:nth-child(6) { width: 130px; }
 td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
 .channel-name { min-width: 144px; }
 .channel-category { min-width: 92px; }

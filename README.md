@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.0
+# IPTV Sniffer Web v0.9.1
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
