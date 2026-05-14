@@ -70,6 +70,11 @@ class ProbeService:
             "nb_streams": stored.get("nb_streams", 0),
             "nb_programs": stored.get("nb_programs", 0),
             "audio_streams": stored.get("audio_streams", []),
+            "video_profile": stored.get("video_profile", ""),
+            "video_level": stored.get("video_level"),
+            "pix_fmt": stored.get("pix_fmt", ""),
+            "field_order": stored.get("field_order", ""),
+            "avg_frame_rate": stored.get("avg_frame_rate", ""),
         }
         merged.update({k: v for k, v in cached.items() if v not in (None, "") or k in {"width", "height"}})
         return merged
@@ -103,7 +108,7 @@ class ProbeService:
             "-v", "error",
             "-probesize", str(PROBE_SIZE_BYTES),
             "-analyzeduration", str(PROBE_ANALYZE_DURATION_US),
-            "-show_entries", "stream=codec_name,codec_type,width,height,r_frame_rate,bit_rate,sample_rate,channels,channel_layout:program=program_id,program_num:program_tags=service_name,service_provider:format=bit_rate,nb_streams,nb_programs:format_tags=service_name,title",
+            "-show_entries", "stream=codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,bit_rate,sample_rate,channels,channel_layout,profile,level,pix_fmt,field_order:program=program_id,program_num:program_tags=service_name,service_provider:format=bit_rate,nb_streams,nb_programs:format_tags=service_name,title",
             "-of", "json",
             url,
         ]
@@ -154,6 +159,14 @@ class ProbeService:
             width, height = 0, 0
         codec_name = str(stream.get("codec_name") or "").strip()
         frame_rate = str(stream.get("r_frame_rate") or "").strip()
+        avg_frame_rate = str(stream.get("avg_frame_rate") or "").strip()
+        video_profile = str(stream.get("profile") or "").strip()
+        try:
+            video_level = int(stream.get("level") or 0) or None
+        except (TypeError, ValueError):
+            video_level = None
+        pix_fmt = str(stream.get("pix_fmt") or "").strip()
+        field_order = str(stream.get("field_order") or "").strip()
         detected_name = self._extract_service_name(payload)
         resolution_label = resolution_label_from_size(width, height)
         quality_group = stream_quality_group(width, height)
@@ -221,6 +234,11 @@ class ProbeService:
             "nb_streams": nb_streams_count,
             "nb_programs": nb_programs_count,
             "audio_streams": audio_streams,
+            "video_profile": video_profile,
+            "video_level": video_level,
+            "pix_fmt": pix_fmt,
+            "field_order": field_order,
+            "avg_frame_rate": avg_frame_rate,
         }
         self._remember(key, result)
         self.logger.info(
@@ -248,6 +266,11 @@ class ProbeService:
             "nb_streams": 0,
             "nb_programs": 0,
             "audio_streams": [],
+            "video_profile": "",
+            "video_level": None,
+            "pix_fmt": "",
+            "field_order": "",
+            "avg_frame_rate": "",
         }
 
     def _remember(self, key: str, result: dict[str, Any]) -> None:

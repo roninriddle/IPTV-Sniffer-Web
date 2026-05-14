@@ -639,13 +639,25 @@ function buildProbeDetailHtml(stream) {
   const fps = stream.frame_rate || "-";
   let bitrate = "-";
   if (stream.format_bit_rate) bitrate = `${(stream.format_bit_rate / 1_000_000).toFixed(2)} Mbps`;
-  parts.push(`<div class="pd-section"><div class="pd-title">清晰度 / 编码</div><div class="pd-grid">
-    <span class="pd-k">判定</span><span>${probeBadge(stream)}</span>
-    <span class="pd-k">编码</span><span>${escapeHtml(codec)}</span>
-    <span class="pd-k">分辨率</span><span>${escapeHtml(res)}</span>
-    <span class="pd-k">帧率</span><span>${escapeHtml(fps)}</span>
-    <span class="pd-k">码率</span><span>${escapeHtml(bitrate)}</span>
-  </div></div>`);
+  const fieldOrderMap = {"progressive": "逐行", "tt": "隔行（上场优先）", "bb": "隔行（下场优先）", "tb": "隔行", "bt": "隔行"};
+  const scanType = stream.field_order ? (fieldOrderMap[stream.field_order] || stream.field_order) : null;
+  let profileStr = null;
+  if (stream.video_profile) {
+    const lvl = stream.video_level ? ` ${Math.floor(stream.video_level / 10)}.${stream.video_level % 10}` : "";
+    profileStr = `${stream.video_profile}${lvl}`;
+  }
+  const pixStr = stream.pix_fmt ? (stream.pix_fmt.includes("10") ? "10bit（可能 HDR）" : "8bit") : null;
+  const codecRows = [
+    `<span class="pd-k">判定</span><span>${probeBadge(stream)}</span>`,
+    `<span class="pd-k">编码</span><span>${escapeHtml(codec)}</span>`,
+    profileStr ? `<span class="pd-k">规格</span><span>${escapeHtml(profileStr)}</span>` : "",
+    `<span class="pd-k">分辨率</span><span>${escapeHtml(res)}</span>`,
+    scanType ? `<span class="pd-k">扫描方式</span><span>${escapeHtml(scanType)}</span>` : "",
+    `<span class="pd-k">帧率</span><span>${escapeHtml(fps)}</span>`,
+    pixStr ? `<span class="pd-k">色深</span><span>${escapeHtml(pixStr)}</span>` : "",
+    `<span class="pd-k">码率</span><span>${escapeHtml(bitrate)}</span>`,
+  ].filter(Boolean).join("");
+  parts.push(`<div class="pd-section"><div class="pd-title">清晰度 / 编码</div><div class="pd-grid">${codecRows}</div></div>`);
   if (stream.audio_streams?.length) {
     const rows = stream.audio_streams.map((a, i) => {
       const kbps = a.bit_rate ? `${Math.round(a.bit_rate / 1000)} kbps` : null;
