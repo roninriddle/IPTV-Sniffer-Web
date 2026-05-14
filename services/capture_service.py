@@ -195,9 +195,9 @@ class CaptureService:
         interfaces = self.list_interfaces()
         if interface not in interfaces:
             raise ValueError("抓包网卡无效，请刷新接口列表后重试")
-        if not valid_ip_or_host(http_host):
+        if http_host and not valid_ip_or_host(http_host):
             raise ValueError("rtp2httpd 地址格式不正确")
-        if not 1 <= http_port <= 65535:
+        if http_host and not 1 <= http_port <= 65535:
             raise ValueError("端口必须位于 1-65535")
         if path_mode not in {"rtp", "udp"}:
             raise ValueError("路径模式只能是 rtp 或 udp")
