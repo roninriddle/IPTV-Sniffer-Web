@@ -643,7 +643,11 @@ function buildProbeDetailHtml(stream) {
   const scanType = stream.field_order ? (fieldOrderMap[stream.field_order] || stream.field_order) : null;
   let profileStr = null;
   if (stream.video_profile) {
-    const lvl = stream.video_level ? ` ${Math.floor(stream.video_level / 10)}.${stream.video_level % 10}` : "";
+    let lvl = "";
+    if (stream.video_level) {
+      const isHevc = (stream.codec_name || "").toLowerCase() === "hevc";
+      lvl = " " + (isHevc ? (stream.video_level / 30).toFixed(1) : `${Math.floor(stream.video_level / 10)}.${stream.video_level % 10}`);
+    }
     profileStr = `${stream.video_profile}${lvl}`;
   }
   const pixStr = stream.pix_fmt ? (stream.pix_fmt.includes("10") ? "10bit（可能 HDR）" : "8bit") : null;
