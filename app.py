@@ -981,25 +981,29 @@ def api_snapshot(host: str, port: int):
         return Response(cached[1], mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
     path_mode = str(settings_store.load().get("path_mode", "rtp")).strip().lower()
     scheme = "rtp" if path_mode == "rtp" else "udp"
-    source = f"{scheme}://{host}:{port}?timeout=8000000"
+    source = f"{scheme}://{host}:{port}?timeout=12000000"
     cmd = [
         "ffmpeg", "-y",
-        "-analyzeduration", "2000000",
-        "-probesize", "2000000",
+        "-analyzeduration", "8000000",
+        "-probesize", "12000000",
         "-i", source,
         "-frames:v", "1",
         "-f", "image2",
         "-vcodec", "mjpeg",
+        "-q:v", "4",
         "pipe:1",
     ]
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=22)
     except subprocess.TimeoutExpired:
         return api_error("截图超时", 504)
     except OSError as exc:
         return api_error(f"ffmpeg 执行失败：{exc}", 500)
     if proc.returncode != 0 or not proc.stdout:
-        return api_error("无法从流中截图", 502)
+        stderr_tail = (proc.stderr or b"").decode(errors="replace").strip().splitlines()
+        msg = stderr_tail[-1] if stderr_tail else "ffmpeg 无输出"
+        logger.warning(f"截图失败：{key}，{msg}")
+        return api_error(f"无法从流中截图：{msg}", 502)
     _snapshot_cache[key] = (now, proc.stdout)
     return Response(proc.stdout, mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
 
