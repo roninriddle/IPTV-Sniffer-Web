@@ -250,12 +250,26 @@ def persist_auto_channel_if_changed(item: dict[str, Any], stored: dict[str, Any]
 def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings or settings_store.load()
     discovered = discovery_store.load()
+    operator_channels = operator_channel_store.load()
     enriched: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         item = dict(row)
         key = str(item.get("key") or f"{item.get('host', '')}:{item.get('port', '')}")
+        # Operator channel list — most accurate source, takes priority when no manual name set
+        op_ch = operator_channels.get(key)
+        if op_ch and op_ch.get("name"):
+            op_name = str(op_ch["name"]).strip()
+            if not str(item.get("name", "")).strip():
+                item["name"] = op_name
+            if not str(item.get("auto_name", "")).strip():
+                item["auto_name"] = op_name
+                item["auto_name_source"] = "operator_channel_list"
+            if op_ch.get("fcc_ip") and not str(item.get("fcc_ip", "")).strip():
+                item["fcc_ip"] = op_ch["fcc_ip"]
+            if op_ch.get("fcc_port") and not item.get("fcc_port"):
+                item["fcc_port"] = op_ch["fcc_port"]
         discovery = discovered.get(key, {})
         if not str(item.get("name", "")).strip() and discovery.get("name"):
             item["name"] = str(discovery.get("name", "")).strip()

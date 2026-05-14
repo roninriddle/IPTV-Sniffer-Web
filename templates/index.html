@@ -21,6 +21,7 @@
         <button class="nav-pill" data-tab="channelList" type="button">频道列表</button>
         <button class="nav-pill" data-tab="schedule" type="button">定时 EPG</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
+        <button id="refreshInterfacesBtn" class="secondary" type="button">刷新接口</button>
         <button id="logsBtn" class="primary" type="button">实时日志</button>
       </div>
     </div>
@@ -123,21 +124,6 @@ OpenWrt / iStoreOS
                 嗅探时长（秒）
                 <input id="duration" type="number" min="0" value="30" placeholder="0 = 手动停止">
               </label>
-              <label>
-                rtp2httpd 地址
-                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
-              </label>
-              <label>
-                rtp2httpd 端口
-                <input id="httpPort" type="number" min="1" max="65535" value="5140">
-              </label>
-              <label>
-                播放路径
-                <select id="pathMode">
-                  <option value="rtp">/rtp/</option>
-                  <option value="udp">/udp/</option>
-                </select>
-              </label>
             </div>
             <div class="section-subtitle">
               <h3>自动补全</h3>
@@ -192,7 +178,6 @@ OpenWrt / iStoreOS
               <button id="stopBtn" class="danger" type="button" disabled>停止抓包</button>
               <button id="resetBtn" class="secondary" type="button">重置候选流</button>
               <button id="saveSettingsBtn" class="secondary" type="button">保存默认设置</button>
-              <button id="refreshInterfacesBtn" class="secondary" type="button">刷新接口</button>
             </div>
           </section>
 
@@ -367,6 +352,27 @@ OpenWrt / iStoreOS
             <div class="section-title">
               <h2>导出结果</h2>
               <span class="muted">原分类保留；额外生成"4K高清"、"高清频道"与"普通频道"三个清晰度分组。不勾选则导出全部频道。</span>
+            </div>
+            <div class="section-subtitle">
+              <h3>rtp2httpd 配置</h3>
+              <span class="muted small">仅导出 rtp2httpd 格式地址时需要填写；留空则直连 M3U 回退为 rtp:// 源地址</span>
+            </div>
+            <div class="form-grid">
+              <label>
+                rtp2httpd 地址
+                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
+              </label>
+              <label>
+                rtp2httpd 端口
+                <input id="httpPort" type="number" min="1" max="65535" value="5140">
+              </label>
+              <label>
+                播放路径
+                <select id="pathMode">
+                  <option value="rtp">/rtp/</option>
+                  <option value="udp">/udp/</option>
+                </select>
+              </label>
             </div>
             <div class="button-row">
               <button id="clExportBtn" class="primary" type="button">生成播放列表</button>
