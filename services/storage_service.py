@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,38 @@ class FccStore:
             data[key] = payload
             _atomic_dump_json(self.path, data)
             return True
+
+    def bulk_save(self, records: list[dict[str, Any]]) -> int:
+        """Write multiple FCC records in a single lock acquisition. Returns saved count."""
+        saved = 0
+        now = time.time()
+        with self._lock:
+            data = self.load()
+            for record in records:
+                key = str(record.get("key", "")).strip()
+                fcc_ip = str(record.get("fcc_ip", "")).strip()
+                try:
+                    fcc_port = int(record.get("fcc_port"))
+                except (TypeError, ValueError):
+                    continue
+                if not key or not valid_ip_or_host(fcc_ip) or not 1 <= fcc_port <= 65535:
+                    continue
+                current = data.get(key, {})
+                data[key] = {
+                    "key": key,
+                    "host": str(record.get("host", current.get("host", ""))).strip(),
+                    "port": ChannelStore._safe_port(record.get("port", current.get("port"))),
+                    "fcc_ip": fcc_ip,
+                    "fcc_port": fcc_port,
+                    "source_url": str(record.get("source_url", current.get("source_url", ""))).strip(),
+                    "raw_field": str(record.get("raw_field", current.get("raw_field", ""))).strip(),
+                    "first_seen": current.get("first_seen") or now,
+                    "last_seen": now,
+                }
+                saved += 1
+            if saved:
+                _atomic_dump_json(self.path, data)
+        return saved
 
 
 class DiscoveryStore:

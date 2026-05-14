@@ -860,6 +860,58 @@ def api_operator_channels_get():
     return api_success({"channels": items, "count": len(items)})
 
 
+def _do_operator_import(channels: list[dict]) -> dict:
+    """Import operator channels: store lookup table, bulk-write FCC, bulk-save channel records with EPG."""
+    count = operator_channel_store.import_channels(channels)
+
+    # Bulk-write FCC records (single file write)
+    fcc_records = [
+        {"key": f"{ch['ip']}:{ch['port']}", "host": ch["ip"], "port": ch["port"],
+         "fcc_ip": ch["fcc_ip"], "fcc_port": ch["fcc_port"]}
+        for ch in channels
+        if ch.get("fcc_ip") and ch.get("fcc_port") and ch.get("ip") and ch.get("port")
+    ]
+    fcc_saved = fcc_store.bulk_save(fcc_records)
+
+    # Bulk-save channel records so EPG enrichment runs immediately
+    settings = settings_store.load()
+    rows = [
+        {
+            "key": f"{ch['ip']}:{ch['port']}",
+            "host": ch["ip"],
+            "port": ch["port"],
+            "name": ch.get("name", ""),
+            "category": classify_channel_name(ch.get("name", "")),
+            "packets": 0,
+            "fcc_ip": ch.get("fcc_ip", ""),
+            "fcc_port": ch.get("fcc_port"),
+        }
+        for ch in channels
+        if ch.get("ip") and ch.get("port") and ch.get("name")
+    ]
+    enriched = enrich_channel_rows(rows, settings)
+    # Only save rows that don't already have a user-modified name
+    existing = channel_store.load()
+    to_save = []
+    for row in enriched:
+        key = str(row.get("key", ""))
+        stored = existing.get(key)
+        # Skip if user has manually set a name different from the operator name
+        if stored and str(stored.get("name", "")).strip():
+            op_name = str(row.get("auto_name", "")).strip()
+            stored_name = str(stored.get("name", "")).strip()
+            if stored_name and stored_name != op_name:
+                continue
+        to_save.append(row)
+    ch_result = channel_store.save_rows(to_save) if to_save else {"saved": 0, "deleted": 0, "total": 0}
+
+    return {
+        "imported": count,
+        "fcc_saved": fcc_saved,
+        "channels_saved": ch_result.get("saved", 0),
+    }
+
+
 @app.post("/api/operator_channels/import")
 def api_operator_channels_import():
     data = request.get_json(silent=True) or {}
@@ -869,9 +921,9 @@ def api_operator_channels_import():
     if not isinstance(channels, list):
         return api_error("channels 必须是数组")
     try:
-        count = operator_channel_store.import_channels(channels)
-        logger.info(f"运营商频道表导入完成：共 {count} 个频道")
-        return api_success({"imported": count})
+        result = _do_operator_import(channels)
+        logger.info(f"运营商频道表导入完成：{result['imported']} 个频道，FCC {result['fcc_saved']} 条，频道记录 {result['channels_saved']} 条（含 EPG 匹配）")
+        return api_success(result)
     except Exception as exc:
         logger.error(f"运营商频道表导入失败：{exc}")
         return api_error(str(exc), 500)
@@ -935,9 +987,9 @@ def api_stb_discovery_import():
     if not channels:
         return api_error("没有可导入的频道，请先完成 STB 开机捕获")
     try:
-        count = operator_channel_store.import_channels(channels)
-        logger.info(f"已从 STB 开机捕获导入 {count} 个频道")
-        return api_success({"imported": count})
+        result = _do_operator_import(channels)
+        logger.info(f"已从 STB 开机捕获导入 {result['imported']} 个频道，FCC {result['fcc_saved']} 条，频道记录 {result['channels_saved']} 条（含 EPG 匹配）")
+        return api_success(result)
     except Exception as exc:
         logger.error(f"导入 STB 捕获频道失败：{exc}")
         return api_error(str(exc), 500)

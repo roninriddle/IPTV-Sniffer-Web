@@ -809,7 +809,7 @@ async function checkVersion() {
 async function bootstrap() {
   await Promise.all([loadHealth(), loadInterfaces(), loadEpgSources()]);
   await loadSettings();
-  await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
+  await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion(), loadOperatorChannels()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
   startPolling(initialState === "running");
