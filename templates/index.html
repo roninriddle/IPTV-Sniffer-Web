@@ -120,8 +120,7 @@ OpenWrt / iStoreOS
               </label>
               <label>
                 嗅探时长（秒）
-                <input id="duration" type="number" min="0" value="30">
-                <small>0 表示手动停止</small>
+                <input id="duration" type="number" min="0" value="30" placeholder="0 = 手动停止">
               </label>
             </div>
             <div class="section-subtitle">
@@ -359,26 +358,11 @@ OpenWrt / iStoreOS
     </div>
   </div>
 
-  <div id="previewModal" class="preview-modal" hidden>
-    <div class="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
-      <div class="preview-header">
-        <div>
-          <div class="eyebrow">实时预览</div>
-          <h2 id="previewTitle">频道预览</h2>
-        </div>
-        <button id="closePreviewBtn" class="secondary" type="button">关闭</button>
-      </div>
-      <div class="preview-actions">
-        <a id="previewPlayerLink" class="download" href="#" target="_blank" rel="noreferrer">打开 rtp2httpd 播放器</a>
-        <a id="previewDirectLink" class="download" href="#" target="_blank" rel="noreferrer">打开直连流</a>
-      </div>
-      <img id="previewSnapshot" class="preview-snapshot" alt="频道截图预览">
-      <video id="previewVideo" class="preview-frame" controls autoplay muted playsinline hidden></video>
-      <iframe id="previewFrame" class="preview-frame" title="rtp2httpd 播放器预览"></iframe>
-      <div id="previewStatus" class="preview-status muted">等待播放</div>
-      <a id="previewExternalLink" class="preview-source" href="#" target="_blank" rel="noreferrer"></a>
-    </div>
-  </div>
+  <datalist id="categoryDatalist">
+    <option value="央视频道">
+    <option value="卫视频道">
+    <option value="其它频道">
+  </datalist>
 
   <div id="snapshotModal" class="snapshot-modal" hidden>
     <button id="closeSnapshotBtn" class="snapshot-close" type="button">关闭</button>
@@ -390,7 +374,6 @@ OpenWrt / iStoreOS
     <span>适用：OpenWrt / iStoreOS / 飞牛 NAS / Linux Docker</span>
   </footer>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

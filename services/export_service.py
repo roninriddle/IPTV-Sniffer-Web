@@ -199,7 +199,7 @@ class ExportService:
         tvg_name = (channel.tvg_name or channel.name).replace('"', "'")
         tvg_id = (channel.tvg_id or channel.tvg_name or channel.name).replace('"', "'")
         tvg_logo = channel.tvg_logo.replace('"', "%22")
-        if url_mode == "source":
+        if url_mode == "source" or not http_host:
             url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
         else:
             url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)

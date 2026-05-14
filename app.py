@@ -1127,7 +1127,6 @@ def api_snapshot(host: str, port: int):
         "-probesize", "2000000",
         "-i", source,
         "-frames:v", "1",
-        "-vf", "scale=640:-2",
         "-f", "image2",
         "-vcodec", "mjpeg",
         "pipe:1",

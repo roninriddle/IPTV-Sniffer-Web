@@ -225,9 +225,9 @@ th:nth-child(2), td:nth-child(2) { width: 184px; }
 td:nth-child(2) code { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 th:nth-child(3), td:nth-child(3) { width: 64px; }
 th:nth-child(4), td:nth-child(4) { width: 78px; }
-th:nth-child(5), td:nth-child(5) { width: 78px; }
+th:nth-child(5), td:nth-child(5) { width: 172px; }
 th:nth-child(6), td:nth-child(6) { width: 160px; }
-th:nth-child(7), td:nth-child(7) { width: 108px; }
+th:nth-child(7), td:nth-child(7) { width: 96px; }
 th:nth-child(8), td:nth-child(8) { width: 220px; }
 th:nth-child(9), td:nth-child(9) { width: 248px; }
 tr:last-child td { border-bottom: 0; }
@@ -251,9 +251,9 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 .preview-cell { display: grid; gap: 8px; align-items: start; }
 .preview-link { display: block; width: 100%; line-height: 1.45; overflow-wrap: anywhere; word-break: break-word; }
 .snapshot-thumb-btn {
-  width: 96px;
-  height: 56px;
-  min-height: 56px;
+  width: 160px;
+  height: 90px;
+  min-height: 90px;
   padding: 0;
   overflow: hidden;
   background: #08101f;

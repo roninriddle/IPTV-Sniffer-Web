@@ -147,15 +147,18 @@ function renderEpgStatus(epg) {
   if (epg.refreshing) {
     badge.className = "chip warning";
     badge.textContent = "EPG 刷新中";
+  } else if ((epg.channels ?? 0) > 0) {
+    badge.className = epg.last_error ? "chip warning" : "chip ok";
+    badge.textContent = `EPG ${epg.channels} 个频道 / 台标 ${epg.logos ?? 0}`;
+    badge.title = epg.last_error || "";
   } else if (epg.last_error) {
     badge.className = "chip danger";
-    badge.textContent = "EPG 异常";
-  } else if ((epg.channels ?? 0) > 0) {
-    badge.className = "chip ok";
-    badge.textContent = `EPG ${epg.channels} 个频道 / 台标 ${epg.logos ?? 0}`;
+    badge.textContent = "EPG 加载失败";
+    badge.title = epg.last_error;
   } else {
     badge.className = "chip neutral";
     badge.textContent = "EPG 未加载";
+    badge.title = "";
   }
 }
 
@@ -499,15 +502,7 @@ function streamInfoHtml(stream) {
 
 function previewHtml(stream) {
   if (!stream.preview_url) return '<span class="muted">-</span>';
-  const title = stream.name || stream.key;
-  return `<div class="preview-cell">
-    <button class="secondary preview-play-btn"
-      data-stream-url="${escapeHtml(stream.preview_url)}"
-      data-snapshot-url="${escapeHtml(stream.snapshot_url || "")}"
-      data-player-url="${escapeHtml(stream.player_url || "")}"
-      data-title="${escapeHtml(title)}">播放预览</button>
-    <a class="preview-link" href="${escapeHtml(stream.preview_url)}" target="_blank" rel="noreferrer">${escapeHtml(stream.preview_url)}</a>
-  </div>`;
+  return `<a class="preview-link" href="${escapeHtml(stream.preview_url)}" target="_blank" rel="noreferrer">${escapeHtml(stream.preview_url)}</a>`;
 }
 
 function snapshotHtml(stream) {
@@ -581,94 +576,13 @@ function renderStreams(streams) {
       <td>${candidateBadge}</td>
       <td>${snapshotHtml(stream)}</td>
       <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || "")}" placeholder="${stream.auto_name || stream.tvg_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
-      <td>
-        <select class="channel-category">
-          <option value="央视频道" ${stream.category === "央视频道" ? "selected" : ""}>央视频道</option>
-          <option value="卫视频道" ${stream.category === "卫视频道" ? "selected" : ""}>卫视频道</option>
-          <option value="其它频道" ${!stream.category || stream.category === "其它频道" ? "selected" : ""}>其它频道</option>
-        </select>
-      </td>
+      <td><input class="channel-category" type="text" list="categoryDatalist" value="${escapeHtml(stream.category || "其它频道")}"></td>
       <td>${streamInfoHtml(stream)}</td>
       <td>${previewHtml(stream)}</td>
     </tr>`;
   }).join("");
 }
 
-let _hlsPlayer = null;
-let _hlsStreamKey = null;
-
-function startDirectStream(host, port) {
-  const video = $("previewVideo");
-  stopDirectStream();
-  _hlsStreamKey = `${host}:${port}`;
-  const hlsSrc = `/api/stream/${host}/${port}/hls/index.m3u8`;
-  video.hidden = false;
-  if (typeof Hls !== "undefined" && Hls.isSupported()) {
-    _hlsPlayer = new Hls({lowLatencyMode: true, backBufferLength: 10, maxBufferLength: 20});
-    _hlsPlayer.loadSource(hlsSrc);
-    _hlsPlayer.attachMedia(video);
-    _hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-    _hlsPlayer.on(Hls.Events.ERROR, (_, data) => {
-      if (data.fatal) $("previewStatus").textContent = `直接播放失败：${data.details}`;
-    });
-  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    video.src = hlsSrc;
-    video.play().catch(() => {});
-  } else {
-    video.hidden = true;
-    $("previewStatus").textContent = "当前浏览器不支持 HLS 播放";
-  }
-}
-
-function stopDirectStream() {
-  if (_hlsPlayer) {
-    _hlsPlayer.destroy();
-    _hlsPlayer = null;
-  }
-  const video = $("previewVideo");
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-  video.hidden = true;
-  if (_hlsStreamKey) {
-    const parts = _hlsStreamKey.split(":");
-    fetch(`/api/stream/${parts[0]}/${parts[1]}/hls`, {method: "DELETE"}).catch(() => {});
-    _hlsStreamKey = null;
-  }
-}
-
-function stopPreview() {
-  stopDirectStream();
-  $("previewFrame").removeAttribute("src");
-  $("previewFrame").hidden = true;
-  $("previewSnapshot").removeAttribute("src");
-}
-
-function openPreview(streamUrl, playerUrl, title, snapshotUrl) {
-  $("previewTitle").textContent = title || "频道预览";
-  $("previewExternalLink").href = streamUrl;
-  $("previewExternalLink").textContent = streamUrl;
-  $("previewDirectLink").href = streamUrl;
-  $("previewPlayerLink").href = playerUrl || "#";
-  $("previewPlayerLink").hidden = !playerUrl;
-  $("previewSnapshot").src = snapshotUrl || "";
-  $("previewSnapshot").hidden = !snapshotUrl;
-  // Direct HLS stream (ffmpeg proxy)
-  const m = streamUrl.match(/\/\/([^/:]+):(\d+)/);
-  if (m) {
-    startDirectStream(m[1], Number(m[2]));
-    $("previewStatus").textContent = "直接播放加载中，请稍候（约 4 秒）…";
-  }
-  // rtp2httpd iframe fallback
-  $("previewFrame").hidden = !playerUrl;
-  if (playerUrl) $("previewFrame").src = playerUrl;
-  $("previewModal").hidden = false;
-}
-
-function closePreview() {
-  stopPreview();
-  $("previewModal").hidden = true;
-}
 
 function openSnapshot(url, title) {
   $("snapshotLarge").src = url;
@@ -907,20 +821,8 @@ $("applyBatchCategoryBtn").addEventListener("click", () => {
   });
 });
 $("streamsTableBody").addEventListener("click", (event) => {
-  const previewButton = event.target.closest(".preview-play-btn");
-  if (previewButton) {
-    openPreview(
-      previewButton.dataset.streamUrl,
-      previewButton.dataset.playerUrl,
-      previewButton.dataset.title,
-      previewButton.dataset.snapshotUrl,
-    );
-    return;
-  }
   const snapshotButton = event.target.closest(".snapshot-thumb-btn");
-  if (snapshotButton) {
-    openSnapshot(snapshotButton.dataset.snapshotUrl, snapshotButton.dataset.title);
-  }
+  if (snapshotButton) openSnapshot(snapshotButton.dataset.snapshotUrl, snapshotButton.dataset.title);
 });
 $("streamsTableBody").addEventListener("focusout", () => {
   setTimeout(() => {
@@ -947,10 +849,6 @@ $("sourcesAddBtn").addEventListener("click", addCustomSource);
 $("sourcesList").addEventListener("click", (event) => {
   const btn = event.target.closest(".source-del-btn");
   if (btn) deleteCustomSource(btn.dataset.id);
-});
-$("closePreviewBtn").addEventListener("click", closePreview);
-$("previewModal").addEventListener("click", (event) => {
-  if (event.target.id === "previewModal") closePreview();
 });
 $("closeSnapshotBtn").addEventListener("click", closeSnapshot);
 $("snapshotModal").addEventListener("click", (event) => {

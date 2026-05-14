@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.6.8
+# IPTV Sniffer Web v0.6.9
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、频道整理与 `rtp2httpd` 播放列表统一工作台。
 
@@ -182,6 +182,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.6.9`：移除实时播放预览按钮（功能暂不可用）；截图保持原始分辨率并放大缩略图；频道分类改为文本输入框（含 datalist 提示）；直连 M3U 在未配置 rtp2httpd 时自动回退为 rtp:// 直链；EPG 有频道数据时不再遮蔽为"异常"；时长输入提示移入 placeholder；
 - `v0.6.8`：移除 112114.xyz EPG 来源（长期不可用）；修复 EPG 检测状态文字撑高行高的布局问题；抓包启动时不再强制校验 rtp2httpd 地址，仅在导出时校验；
 - `v0.6.7`：新增浏览器直接播放组播流（ffmpeg → HLS 代理，无需 rtp2httpd）；EPG/台标来源支持自助增删；新增"同 IP 保留最多包流"过滤；EPG 自动探测最优来源；抓包期间加快页面刷新频率；rtp2httpd 配置移至导出区；修复 HTML 属性中 Unicode 智能引号导致 DOM 查询失效的 Bug；
 - `v0.6.6`：修复 CCTV/卫视频道被误归入"其它频道"的分类 Bug（识别名称后优先用名称重新分类）；截图改为 Flask + ffmpeg 直接从组播流抓帧，无需 rtp2httpd 即可显示；台标来源改为自动/手动切换，默认自动隐藏详细配置；频道列表改为按最新发现倒序排列；新增"删除勾选"功能；版本更新检测徽章；
