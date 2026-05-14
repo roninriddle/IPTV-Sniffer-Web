@@ -18,9 +18,9 @@
         <button class="nav-pill active" data-page="home" type="button">使用说明</button>
         <button class="nav-pill" data-tab="stbDiscovery" type="button">运营商频道</button>
         <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
+        <button class="nav-pill" data-tab="channelList" type="button">频道列表</button>
         <button class="nav-pill" data-tab="schedule" type="button">定时 EPG</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
-        <button id="refreshInterfacesBtn" class="secondary" type="button">刷新接口</button>
         <button id="logsBtn" class="primary" type="button">实时日志</button>
       </div>
     </div>
@@ -51,7 +51,8 @@
             <p>容器只能抓到宿主机实际可见的 IPTV 流量。推荐使用交换机镜像机顶盒端口，或让 IPTV 流量真实经过运行 Docker 的设备。</p>
           </div>
           <div class="home-actions">
-            <button class="primary" data-tab="sniffer" type="button">进入嗅探整理</button>
+            <button class="primary" data-tab="stbDiscovery" type="button">运营商频道发现</button>
+            <button class="secondary" data-tab="channelList" type="button">查看频道列表</button>
             <button class="secondary" data-tab="schedule" type="button">配置定时 EPG</button>
           </div>
         </div>
@@ -88,27 +89,25 @@ OpenWrt / iStoreOS
 
         <section class="home-steps">
           <article>
-            <strong>1. 嗅探整理</strong>
-            <span>设置抓包网卡和 rtp2httpd 地址，切换机顶盒频道，系统会先过滤无效组播，再自动识别编码、分辨率、截图和 EPG。</span>
+            <strong>1. 运营商频道发现（主入口）</strong>
+            <span>填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统自动从 STB 开机 TCP 流量中解析运营商 EPG 门户的完整频道表（频道名、组播地址、FCC 参数），一键「导入到频道列表」。</span>
           </article>
           <article>
-            <strong>2. 人工补全</strong>
-            <span>自动识别失败时，只补频道名称和分类即可；表格会在编辑时暂停重绘，避免输入被打断。</span>
+            <strong>2. 嗅探整理（补充入口）</strong>
+            <span>设置抓包网卡和 rtp2httpd 地址，切换机顶盒频道，系统过滤无效组播、自动识别编码/分辨率/截图和 EPG，点击「导入到频道列表」将嗅探结果并入频道列表。</span>
           </article>
           <article>
-            <strong>3. 定时 EPG</strong>
-            <span>定时任务只更新已经指定的 M3U 清单的 EPG 和台标，不再自动抓包，不会改动你的频道源地址。</span>
+            <strong>3. 频道列表与导出</strong>
+            <span>在「频道列表」中查看所有已导入的频道，可勾选特定频道后点击「生成播放列表」，一键输出直连 M3U、源地址 M3U、JSON、TXT、CSV 等格式。</span>
+          </article>
+          <article>
+            <strong>4. 定时 EPG 刷新</strong>
+            <span>在「定时 EPG」中管理 XMLTV EPG 来源，可手动或定时刷新全部来源，保持频道 EPG 与台标信息持续更新，匹配结果在导出时自动写入 tvg-id / tvg-logo 字段。</span>
           </article>
         </section>
       </section>
 
       <section id="workbenchPage" class="workbench-page" hidden>
-        <nav class="tabs" aria-label="工作区切换">
-          <button class="tab-button active" data-tab="stbDiscovery" type="button">运营商频道</button>
-          <button class="tab-button" data-tab="sniffer" type="button">嗅探整理</button>
-          <button class="tab-button" data-tab="schedule" type="button">定时 EPG</button>
-        </nav>
-
         <div id="snifferTab" class="tab-panel" hidden>
           <section class="card">
             <div class="section-title">
@@ -123,6 +122,21 @@ OpenWrt / iStoreOS
               <label>
                 嗅探时长（秒）
                 <input id="duration" type="number" min="0" value="30" placeholder="0 = 手动停止">
+              </label>
+              <label>
+                rtp2httpd 地址
+                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
+              </label>
+              <label>
+                rtp2httpd 端口
+                <input id="httpPort" type="number" min="1" max="65535" value="5140">
+              </label>
+              <label>
+                播放路径
+                <select id="pathMode">
+                  <option value="rtp">/rtp/</option>
+                  <option value="udp">/udp/</option>
+                </select>
               </label>
             </div>
             <div class="section-subtitle">
@@ -178,6 +192,7 @@ OpenWrt / iStoreOS
               <button id="stopBtn" class="danger" type="button" disabled>停止抓包</button>
               <button id="resetBtn" class="secondary" type="button">重置候选流</button>
               <button id="saveSettingsBtn" class="secondary" type="button">保存默认设置</button>
+              <button id="refreshInterfacesBtn" class="secondary" type="button">刷新接口</button>
             </div>
           </section>
 
@@ -205,7 +220,7 @@ OpenWrt / iStoreOS
               <span class="muted">低包数、系统发现端口、503/失败且未命名的流会自动折叠。</span>
             </div>
             <div class="toolbar">
-              <button id="saveChannelsBtn" class="secondary" type="button">保存频道草稿</button>
+              <button id="importToChannelListBtn" class="primary" type="button">导入到频道列表</button>
               <button id="autoClassifyBtn" class="secondary" type="button">按名称自动分类</button>
               <button id="deleteCheckedBtn" class="danger" type="button" title="隐藏勾选的候选流；重置候选流后恢复">隐藏勾选</button>
               <label class="checkbox-label toolbar-check">
@@ -241,55 +256,30 @@ OpenWrt / iStoreOS
             </div>
           </section>
 
-          <section class="card">
-            <div class="section-title">
-              <h2>导出结果</h2>
-              <span class="muted">原分类保留；同时额外复制到"4K高清"、"高清频道"与"普通频道"三个清晰度分组。</span>
-            </div>
-            <div class="section-subtitle">
-              <h3>rtp2httpd 配置</h3>
-              <span class="muted small">仅导出 rtp2httpd 格式地址时需要填写</span>
-            </div>
-            <div class="form-grid">
-              <label>
-                rtp2httpd 地址
-                <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
-              </label>
-              <label>
-                rtp2httpd 端口
-                <input id="httpPort" type="number" min="1" max="65535" value="5140">
-              </label>
-              <label>
-                播放路径
-                <select id="pathMode">
-                  <option value="rtp">/rtp/</option>
-                  <option value="udp">/udp/</option>
-                </select>
-              </label>
-            </div>
-            <div class="button-row">
-              <button id="exportBtn" class="primary" type="button">生成播放列表</button>
-              <a id="downloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
-              <a id="downloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
-              <a id="downloadJson" class="download disabled" href="#">下载 JSON</a>
-              <a id="downloadTxt" class="download disabled" href="#">下载 TXT</a>
-              <a id="downloadCsv" class="download disabled" href="#">下载 CSV</a>
-            </div>
-            <div id="exportResult" class="result-box muted">尚未生成导出文件。源地址 M3U 可作为 rtp2httpd external-m3u；JSON 保留 live/source 结构，便于后续二次转换。</div>
-          </section>
         </div>
 
         <div id="scheduleTab" class="tab-panel" hidden>
           <section class="card">
             <div class="section-title">
-              <h2>定时 EPG</h2>
+              <h2>EPG 来源</h2>
+              <span class="muted">所有活跃来源均可手动刷新；定时任务启用后会自动全量刷新。</span>
+            </div>
+            <div class="button-row">
+              <button id="refreshAllEpgBtn" class="primary" type="button">立即刷新全部</button>
+            </div>
+            <div id="scheduleEpgSourceList" style="margin-top:12px"></div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>定时刷新计划</h2>
               <span id="scheduleBadge" class="chip neutral">未启用</span>
             </div>
-            <p class="task-description">定时任务会按周期读取下面指定的 M3U，刷新 XMLTV EPG 与台标匹配结果，然后输出 <span class="mono">scheduled-epg.m3u</span>。它只更新清单元数据，不会自动抓包，也不会改变频道播放地址。</p>
+            <p class="task-description">启用后将按周期自动刷新所有活跃 EPG 来源的频道数据，用于嗅探结果与频道列表的 EPG 自动匹配。</p>
             <div class="form-grid schedule-grid">
               <label class="checkbox-label">
                 <input id="scheduleEnabled" type="checkbox">
-                启用定时 EPG
+                启用定时刷新
               </label>
               <label>
                 执行周期
@@ -311,33 +301,13 @@ OpenWrt / iStoreOS
                 执行分钟
                 <input id="scheduleMinute" type="number" min="0" max="59" value="0">
               </label>
-              <label class="wide-field span-2">
-                要更新的 M3U 地址
-                <input id="scheduleM3uUrl" type="url" placeholder="http://example.com/channels.m3u">
-              </label>
-              <label>
-                输出文件
-                <input id="scheduleOutputName" type="text" value="scheduled-epg.m3u" readonly>
-              </label>
             </div>
             <div class="button-row">
               <button id="saveScheduleBtn" class="primary" type="button">保存定时任务</button>
-              <button id="runScheduleNowBtn" class="secondary" type="button">立即更新一次</button>
+              <button id="runScheduleNowBtn" class="secondary" type="button">立即执行一次</button>
               <button id="disableScheduleBtn" class="secondary" type="button">停用任务</button>
-              <a id="downloadScheduledM3u" class="download disabled" href="#">下载更新后的 M3U</a>
             </div>
             <div id="schedulePanel" class="status-panel muted">定时 EPG 未启用。</div>
-          </section>
-
-          <section class="card">
-            <div class="section-title">
-              <h2>EPG 与台标来源</h2>
-              <span class="muted">同一组来源也会用于嗅探页的自动补全。</span>
-            </div>
-            <div class="source-links">
-              <a href="https://epg.51zmt.top:8001/" target="_blank" rel="noreferrer">epg.51zmt.top</a>
-              <a href="https://github.com/wanglindl/TVlogo" target="_blank" rel="noreferrer">wanglindl/TVlogo</a>
-            </div>
           </section>
         </div>
 
@@ -372,7 +342,7 @@ OpenWrt / iStoreOS
               <span id="stbDiscoveryCountBadge" class="chip neutral">0 个</span>
             </div>
             <div class="form-actions">
-              <button id="stbDiscoveryImportBtn" class="primary" type="button">导入到频道表</button>
+              <button id="stbDiscoveryImportBtn" class="primary" type="button">导入到频道列表</button>
             </div>
             <div class="table-wrap" style="margin-top:12px">
               <table>
@@ -390,30 +360,53 @@ OpenWrt / iStoreOS
             </div>
           </section>
 
+        </div>
+
+        <div id="channelListTab" class="tab-panel" hidden>
           <section class="card">
             <div class="section-title">
-              <h2>已导入频道表</h2>
-              <span id="operatorChannelCountBadge" class="chip neutral">0 个</span>
+              <h2>导出结果</h2>
+              <span class="muted">原分类保留；额外生成"4K高清"、"高清频道"与"普通频道"三个清晰度分组。不勾选则导出全部频道。</span>
             </div>
-            <p class="task-description">导入后，嗅探到的流会自动按组播地址匹配频道名称。已导入的频道表在重启后仍然有效。</p>
-            <div class="form-actions">
-              <button id="operatorChannelRefreshBtn" class="secondary" type="button">刷新</button>
-              <button id="operatorChannelClearBtn" class="secondary" type="button">清空</button>
+            <div class="button-row">
+              <button id="clExportBtn" class="primary" type="button">生成播放列表</button>
+              <a id="clDownloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
+              <a id="clDownloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
+              <a id="clDownloadJson" class="download disabled" href="#">下载 JSON</a>
+              <a id="clDownloadTxt" class="download disabled" href="#">下载 TXT</a>
+              <a id="clDownloadCsv" class="download disabled" href="#">下载 CSV</a>
             </div>
-            <div class="table-wrap" style="margin-top:12px" id="operatorChannelTableWrap" hidden>
+            <div id="clExportResult" class="result-box muted">勾选频道后点击「生成播放列表」；不勾选则导出全部。源地址 M3U 可作为 rtp2httpd external-m3u。</div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>频道列表</h2>
+              <span id="clChannelCount" class="chip neutral">0 个</span>
+            </div>
+            <div class="toolbar">
+              <button id="clSelectAllBtn" class="secondary" type="button">全选</button>
+              <button id="clClearSelBtn" class="secondary" type="button">取消全选</button>
+              <button id="clDeleteSelectedBtn" class="danger" type="button">删除选中</button>
+              <button id="clRefreshBtn" class="secondary" type="button">刷新</button>
+            </div>
+            <div class="table-wrap" style="margin-top:12px">
               <table>
                 <thead>
                   <tr>
-                    <th style="width:50px">频道号</th>
+                    <th style="width:36px"><input type="checkbox" id="clSelectAll"></th>
                     <th>频道名称</th>
                     <th>组播地址</th>
-                    <th style="width:50px">高清</th>
+                    <th>分类</th>
+                    <th>清晰度</th>
+                    <th>EPG 标识</th>
                   </tr>
                 </thead>
-                <tbody id="operatorChannelTableBody"></tbody>
+                <tbody id="clChannelTableBody">
+                  <tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>
+                </tbody>
               </table>
             </div>
-            <div id="operatorChannelEmpty" class="result-box muted">尚未导入运营商频道表。</div>
           </section>
         </div>
 

@@ -1,17 +1,17 @@
-# IPTV Sniffer Web v0.7.5
+# IPTV Sniffer Web v0.8.3
 
-适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、频道整理与 `rtp2httpd` 播放列表统一工作台。
+适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
 v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一 Web 图形化工作台：
 
 - [`zzzz0317/beijing-unicom-iptv-playlist`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist)：参考其多源播放列表、代理地址转换与 M3U 生成思路；
 - [`zzzz0317/beijing-unicom-iptv-playlist-sniffer`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist-sniffer)：参考其对机顶盒 `channelAcquire` 请求和 `UserToken` 的嗅探方式。
 
-特别感谢以上项目作者的公开实现与整理工作。本项目在其基础上重新组织为容器化 Web 应用，在统一页面内完成组播候选发现、FCC 字段记录、UserToken 记录、截图预览、流信息自动识别、多格式导出和定时 EPG 清单更新。
+特别感谢以上项目作者的公开实现与整理工作。
 
 另参考并致谢：
 
-- [`CGG888/SrcBox`](https://github.com/CGG888/SrcBox)：参考其对 FCC 快速换台、UDP/RTP/IGMP 多协议流识别以及 XMLTV EPG 模糊匹配的工程实现思路，用于优化本项目的 FCC 嗅探正则（补充 `udp://` 支持）与搜索窗口扩展。
+- [`CGG888/SrcBox`](https://github.com/CGG888/SrcBox)：参考其对 FCC 快速换台、UDP/RTP/IGMP 多协议流识别以及 XMLTV EPG 模糊匹配的工程实现思路。
 
 EPG 与台标来源参考并致谢：
 
@@ -22,11 +22,10 @@ EPG 与台标来源参考并致谢：
 
 ## 核心特性
 
-- 网页选择接口后实时嗅探 IPTV 组播流；
-- 首页为使用说明，工作区分为“嗅探整理”和“定时 EPG”两个 tab；
-- 定时任务支持按小时或按天更新指定 M3U 的 EPG 与台标清单；
-- 自动过滤 mDNS、SSDP、链路控制组播、低包数和无效候选；
-- 抓包文本中优先自动读取频道名和频道号，识别失败时保留人工补全；
+- **运营商频道发现（主入口）**：填写机顶盒 IP，重启机顶盒，系统自动从 STB 开机 TCP 流量中解析运营商 EPG 门户的完整频道表，一键导入频道名称、组播地址与 FCC 参数；
+- **嗅探整理（补充入口）**：网页选择接口后实时嗅探 IPTV 组播流，自动过滤无效组播，自动识别编码、分辨率、截图和 EPG，嗅探结果可导入频道列表；
+- **频道列表**：统一管理所有已导入的频道，支持勾选特定频道后生成播放列表；
+- **定时 EPG 刷新**：定时自动刷新所有配置的 EPG 来源，保持频道 EPG 与台标信息持续更新；
 - 抓包时解析 `ChannelFCCIP` / `ChannelFCCPort`，保存到 `data/fcc.json`；
 - 抓包时识别 `POST /bj_stb/V1/STB/channelAcquire` 中的 `UserToken`，保存到 `data/playlist_token.json`；
 - 抓包后使用 `ffprobe` 自动识别编码、分辨率、帧率和流内频道名，并生成 4K / 高清 / 普通频道分组；
@@ -76,24 +75,14 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 ?fcc=FCC服务器IP:FCC服务器端口
 ```
 
-该格式与 rtp2httpd 官方 URL 说明一致。
-
 ---
 
 ## 页面流程
 
-1. 首页先确认抓包拓扑；
-2. 进入“嗅探整理”，选择抓包接口；
-3. 填写 `rtp2httpd` 地址、端口和路径模式；
-4. 点击”继续抓包”，在机顶盒上逐个切台；每次抓包结束后可再次点击”继续抓包”累积频道，”重置候选流”可清零重来；
-5. 等待候选流、自动频道名、FCC、token、截图、流信息和 EPG 匹配结果自动出现在页面；
-6. 自动频道名不准确时，在频道名称输入框中人工修正；
-7. 保存草稿并生成播放列表；
-8. 进入“定时 EPG”，填写要更新的 M3U 地址，按小时或按天生成更新后的 `scheduled-epg.m3u`。
-
-未命名频道不会进入导出文件。
-
-定时 EPG 任务只读取指定的 M3U，刷新 XMLTV EPG 与台标匹配结果，然后输出 `scheduled-epg.m3u`；它不会自动抓包，也不会改变频道播放地址。
+1. **运营商频道发现（推荐）**：填写机顶盒 IP，点击「开始捕获」后重启机顶盒；系统自动解析频道表，点击「导入到频道列表」；
+2. **嗅探整理（可选补充）**：选择抓包网卡，填写 `rtp2httpd` 地址、端口和路径模式；点击「继续抓包」切台；点击「导入到频道列表」；
+3. 进入「频道列表」，勾选需要的频道，点击「生成播放列表」下载各格式文件；
+4. 在「定时 EPG」中配置定时刷新计划，保持 EPG 信息持续更新。
 
 ---
 
@@ -103,7 +92,6 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 - `channels-direct.m3u`：可直接导入播放器的 HTTP 播放地址；
 - `channels-rtp2httpd-source.m3u`：保留 `rtp://` / `udp://` 源地址，可作为 rtp2httpd `external-m3u`；
-- `scheduled-epg.m3u`：定时 EPG 任务输出的更新后 M3U；
 - `channels.json`：保留 `live` 源结构与 EPG 字段，便于二次转换或迁移；
 - `channels.txt`：常见 IPTV 软件可用的 TXT 格式；
 - `channels.csv`：频道、清晰度、EPG、FCC、源地址和播放地址明细。
@@ -121,8 +109,9 @@ M3U / TXT 会保留原始分类，并额外生成：
 ## 持久化文件
 
 - `data/settings.json`：页面默认参数；
-- `data/channels.json`：频道草稿与探测结果；
+- `data/channels.json`：频道列表（所有已导入的频道）；
 - `data/discovered_channels.json`：抓包自动识别到的频道名与频道号；
+- `data/operator_channels.json`：运营商频道发现导入的频道表；
 - `data/epg_cache.json`：XMLTV EPG 缓存与匹配索引；
 - `data/fcc.json`：按组播地址记录的 FCC 服务器；
 - `data/playlist_token.json`：嗅探到的 channelAcquire UserToken；
@@ -136,27 +125,37 @@ M3U / TXT 会保留原始分类，并额外生成：
 |---|---|---|
 | GET | `/api/version` | 应用名称与版本 |
 | GET | `/api/health` | 抓包与 ffprobe 运行检查 |
-| GET | `/api/metrics` | 运行指标、自动频道名、FCC 数、token 数、EPG 状态 |
+| GET | `/api/metrics` | 运行指标、FCC 数、token 数、EPG 状态 |
 | GET | `/api/interfaces` | 获取可抓包接口 |
 | GET | `/api/settings` | 获取默认设置 |
 | POST | `/api/settings` | 保存默认设置 |
 | GET | `/api/schedule` | 获取定时任务状态 |
-| POST | `/api/schedule` | 保存或停用定时 EPG 任务 |
-| POST | `/api/schedule/run-now` | 立即更新一次指定 M3U 的 EPG 清单 |
+| POST | `/api/schedule` | 保存或停用定时 EPG 刷新任务 |
+| POST | `/api/schedule/run-now` | 立即刷新所有 EPG 来源 |
 | POST | `/api/capture/start` | 继续抓包（不清空已发现流，可多次追加） |
 | POST | `/api/capture/stop` | 停止抓包 |
 | POST | `/api/capture/reset` | 重置候选流（清空所有已发现流） |
 | GET | `/api/streams` | 获取候选流 |
+| GET | `/api/channels` | 获取频道列表 |
+| POST | `/api/channels/save` | 导入频道到频道列表 |
+| POST | `/api/channels/delete` | 从频道列表删除指定频道（传 keys 数组） |
 | GET | `/api/fcc` | 获取 FCC 记录 |
 | GET | `/api/stb-token` | 获取最近的 channelAcquire token 摘要 |
 | GET | `/api/discovery` | 获取自动识别的频道名记录 |
-| GET | `/api/epg/status` | 获取 EPG 缓存状态 |
-| POST | `/api/epg/refresh` | 刷新 XMLTV EPG 缓存 |
-| POST | `/api/channels/save` | 保存频道草稿 |
+| GET | `/api/epg/status` | 获取 EPG 缓存状态（含各来源统计） |
+| GET | `/api/epg/sources` | 获取 EPG 与台标来源列表 |
+| POST | `/api/epg/refresh` | 刷新单个 XMLTV EPG 来源 |
+| POST | `/api/epg/refresh-all` | 立即刷新所有活跃 EPG 来源 |
 | POST | `/api/probe` | 内部自动流信息识别 |
 | POST | `/api/probe/batch` | 内部批量流信息识别 |
 | POST | `/api/export` | 生成导出文件 |
 | GET | `/api/download/<filename>` | 下载导出文件 |
+| GET | `/api/stb_discovery/status` | 获取 STB 开机捕获状态 |
+| POST | `/api/stb_discovery/start` | 启动 STB 开机捕获 |
+| POST | `/api/stb_discovery/stop` | 停止捕获并分析 |
+| POST | `/api/stb_discovery/import` | 将发现的频道导入到频道列表 |
+| POST | `/api/stb_discovery/reset` | 重置捕获状态 |
+| GET | `/api/operator_channels` | 获取运营商频道表 |
 | GET | `/api/logs` | 获取实时日志 |
 | GET | `/api/logs/download` | 下载完整日志 |
 
@@ -182,23 +181,10 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
-- `v0.7.5`：流信息列点击弹出详情窗口，显示音频流、节目码率、运营商、EPG 字段和识别时间；ffprobe 探测补充音频流编码/采样率/声道、节目总码率、流总数和节目数字段；支持内置 EPG/台标来源删除与恢复；频道名输入框从 auto_name 自动回填；
-- `v0.7.4`：截图/HLS 源地址由硬编码 udp:// 改为读取 path_mode（修复 RTP 流截图失败）；移除无人调用的旧 HLS 代理接口与 /api/preview 接口及相关死代码；抓包元数据解析补充 udp:// 协议支持（修复机顶盒用 udp:// 格式时频道名不自动识别的问题）；EPG 自动来源页面加载时不再重新触发检测（修复刷新后覆盖用户保存来源）；EPG gzip 检测改用 zlib 增量解压（修复 4MB 截断导致误判失败）；"删除勾选"改为"隐藏勾选"并持久化到 localStorage（重置候选流后恢复）；移除 index.html 中失效的 112114.xyz 链接；自定义来源地址限制为 http/https 协议；
-- `v0.7.3`：导出按钮提交页面当前 rtp2httpd 配置（修复未保存设置时回退 rtp:// 的问题）；表格新增高清频道徽标；导出结果统计补充高清频道计数；版本检查改用 Tags API（修复仓库无 Release 时 404）；Docker 镜像标签统一加 v 前缀与 Hub 对齐；删除 README 中已移除的播放预览描述；
-- `v0.7.2`：修复 TXT / CSV 在未配置 rtp2httpd 时生成非法播放地址（回退为 rtp:// 直链）；README 核心特性与导出说明补充高清频道分组；移除 docker-compose.yml 中与 Dockerfile HEALTHCHECK 重复的 healthcheck 定义；
-- `v0.7.1`：`stream_quality_group` 新增高清频道分组（720p / 1080p 不再归入普通频道）；docker-compose.yml 删除与代码默认值重复的环境变量，TZ 改为 Asia/Shanghai，新增 healthcheck；
-- `v0.7.0`：修复 `auto_probe_done` 集合在 `capture/start` 时未清空的 Bug（导致多次抓包后已探测流不会重新探测）；后台富集循环由固定 5 秒改为抓包中 5 秒、空闲时 15 秒，减少不必要的 CPU 占用；
-- `v0.6.9`：移除实时播放预览按钮（功能暂不可用）；截图保持原始分辨率并放大缩略图；频道分类改为文本输入框（含 datalist 提示）；直连 M3U 在未配置 rtp2httpd 时自动回退为 rtp:// 直链；EPG 有频道数据时不再遮蔽为"异常"；时长输入提示移入 placeholder；
-- `v0.6.8`：移除 112114.xyz EPG 来源（长期不可用）；修复 EPG 检测状态文字撑高行高的布局问题；抓包启动时不再强制校验 rtp2httpd 地址，仅在导出时校验；
-- `v0.6.7`：新增浏览器直接播放组播流（ffmpeg → HLS 代理，无需 rtp2httpd）；EPG/台标来源支持自助增删；新增"同 IP 保留最多包流"过滤；EPG 自动探测最优来源；抓包期间加快页面刷新频率；rtp2httpd 配置移至导出区；修复 HTML 属性中 Unicode 智能引号导致 DOM 查询失效的 Bug；
-- `v0.6.6`：修复 CCTV/卫视频道被误归入"其它频道"的分类 Bug（识别名称后优先用名称重新分类）；截图改为 Flask + ffmpeg 直接从组播流抓帧，无需 rtp2httpd 即可显示；台标来源改为自动/手动切换，默认自动隐藏详细配置；频道列表改为按最新发现倒序排列；新增"删除勾选"功能；版本更新检测徽章；
-- `v0.6.5`：抓包改为"继续抓包"累积模式，多次 30 秒抓包的频道自动叠加，"重置候选流"清零；修复跨次抓包缓冲区污染、EPG 分类双重赋值、output_name 边界校验错误和变量名遮蔽等 Bug；删除从未被调用的 auto-classify 端点；前端启动改为并行加载；
-- `v0.6.4`：重做首页与双 tab 工作区，定时任务改为指定 M3U 的 EPG/台标清单更新；抓包后自动识别流信息并用流内名称或 EPG 名称回填频道名，移除手动检测按钮；
-- `v0.6.3`：整理 EPG 与台标来源，优化页面比例、日志侧栏与编辑时表格刷新行为；
-- `v0.6.2`：优化自动抓流补全链路，抓包自动读取频道名和频道号，后台自动识别流技术信息，并支持 XMLTV EPG 缓存、自动匹配和导出字段补全；
-- `v0.6.1`：新增按小时/按天的自动嗅探定时任务；README 明确重构来源与致谢；JSON 导出文件改为 `channels.json`；
-- `v0.6`：基于上述两个开源项目思路重构为统一 Web 工作台，新增 channelAcquire UserToken 记录、JSON 导出，并整合 FCC、截图预览和 rtp2httpd 外部 M3U 工作流；
-- `v0.5.3`：默认 rtp2httpd 5140 端口，左侧常驻日志面板，使用 rtp2httpd 播放器/截图能力；
-- `v0.5.2`：前移噪声组播过滤，失败未命名流自动隐藏，优化页面比例；
-- `v0.5.1`：优化候选流自动过滤、表格布局和两种 M3U 导出；
-- `v0.5`：新增 4K / 普通频道检测与清晰度汇总导出。
+- `v0.8.3`：新增「频道列表」独立页面，运营商频道与嗅探结果均通过「导入到频道列表」汇入；导出功能移至频道列表，支持勾选特定频道导出；「定时 EPG」重做为 EPG 来源管理与定时刷新，删除 M3U 更新功能；运营商频道发现移除自动名称内嵌，「刷新接口」按钮移至嗅探整理；README 同步更新；
+- `v0.8.2`：STB 开机捕获页面（运营商频道发现）；运营商频道表持久化；EPG 匹配覆盖所有已配置来源；批量写入 FCC 记录；多来源 EPG 索引合并；
+- `v0.8.0`：STB 开机抓包 TCP 重组与频道解析（getchannellistHWCU.jsp / VSP JSON）；运营商频道导入自动批量写入 FCC；
+- `v0.7.5`：流信息列点击弹出详情窗口；ffprobe 探测补充音频流、节目码率等字段；内置 EPG/台标来源支持删除与恢复；
+- `v0.7.0–v0.7.4`：多项 Bug 修复与性能优化，包括 auto_probe_done 清空 Bug、截图协议修复、EPG 自动来源检测优化等；
+- `v0.6.4–v0.6.9`：首页重做、双 Tab 工作区、定时任务、累积抓包模式、多种 EPG/台标来源管理等；
+- `v0.6`：基于上述两个开源项目思路重构为统一 Web 工作台。

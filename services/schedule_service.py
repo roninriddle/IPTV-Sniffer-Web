@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Periodic EPG updater for an existing M3U playlist."""
+"""Periodic EPG source refresh scheduler."""
 from __future__ import annotations
 
 import threading
@@ -29,8 +29,6 @@ class ScheduleService:
             "every": 1,
             "hour": 3,
             "minute": 0,
-            "m3u_url": "",
-            "output_name": "scheduled-epg.m3u",
             "next_run_at": None,
             "last_run_at": None,
             "last_message": "定时 EPG 未启用",
@@ -49,7 +47,7 @@ class ScheduleService:
             self._thread.start()
         status = self.status()
         if status["enabled"]:
-            self.logger.info(f"定时 EPG 任务已启用：{self._describe(status)}")
+            self.logger.info(f"定时 EPG 刷新任务已启用：{self._describe(status)}")
 
     def load_from_settings(self, reset_next: bool = False) -> dict[str, Any]:
         settings = self.settings_store.load()
@@ -61,8 +59,6 @@ class ScheduleService:
                 "every": schedule["schedule_every"],
                 "hour": schedule["schedule_hour"],
                 "minute": schedule["schedule_minute"],
-                "m3u_url": schedule["schedule_m3u_url"],
-                "output_name": schedule["schedule_output_name"],
             })
             if reset_next:
                 self._state["next_run_at"] = self._compute_next_run(schedule)
@@ -87,25 +83,19 @@ class ScheduleService:
                 "every": schedule["schedule_every"],
                 "hour": schedule["schedule_hour"],
                 "minute": schedule["schedule_minute"],
-                "m3u_url": schedule["schedule_m3u_url"],
-                "output_name": schedule["schedule_output_name"],
                 "next_run_at": self._compute_next_run(schedule),
                 "last_error": None,
-                "last_message": "定时 EPG 已启用" if schedule["schedule_enabled"] else "定时 EPG 未启用",
+                "last_message": "定时 EPG 刷新已启用" if schedule["schedule_enabled"] else "定时 EPG 未启用",
             })
         if schedule["schedule_enabled"]:
-            self.logger.info(f"定时 EPG 任务已保存：{self._describe(self.status())}")
+            self.logger.info(f"定时 EPG 刷新任务已保存：{self._describe(self.status())}")
         else:
-            self.logger.info("定时 EPG 任务已停用")
+            self.logger.info("定时 EPG 刷新任务已停用")
         return self.status()
 
     def run_now(self) -> dict[str, Any]:
         settings = self.settings_store.load()
-        schedule = self._normalize(settings, strict=True)
-        if not schedule.get("schedule_m3u_url"):
-            raise ValueError("立即更新前请先填写并保存 M3U 地址")
-        if not str(settings.get("epg_url", "")).strip():
-            raise ValueError("立即更新前请先选择 XMLTV EPG 来源")
+        schedule = self._normalize(settings, strict=False)
         return self._execute(settings, schedule, manual=True)
 
     def status(self) -> dict[str, Any]:
@@ -144,26 +134,26 @@ class ScheduleService:
             self._state["running"] = True
             self._state["last_run_at"] = int(time.time())
             self._state["last_error"] = None
-            self._state["last_message"] = "正在更新 M3U 的 EPG 清单"
+            self._state["last_message"] = "正在刷新 EPG 来源"
             if schedule.get("schedule_enabled"):
                 self._state["next_run_at"] = self._compute_next_run(schedule, after=time.time())
         try:
-            self.logger.info("定时 EPG 任务触发，开始更新指定 M3U 清单")
+            self.logger.info("定时 EPG 任务触发，开始刷新所有 EPG 来源")
             result = self.task_runner({**settings, **schedule})
             with self._lock:
                 self._state["last_result"] = result
                 self._state["last_error"] = None
-                self._state["last_message"] = "M3U EPG 清单已更新"
+                self._state["last_message"] = "EPG 来源刷新完成"
             self.logger.info(
-                "定时 EPG 更新完成："
-                f"频道 {result.get('count', 0)} 个，匹配 {result.get('matched', 0)} 个，输出 {result.get('file', '-')}"
+                f"定时 EPG 刷新完成：{result.get('count', 0)} 个来源，"
+                f"合计 {result.get('total_channels', 0)} 个频道"
             )
         except Exception as exc:
             message = str(exc)
             with self._lock:
                 self._state["last_error"] = message
-                self._state["last_message"] = "M3U EPG 清单更新失败"
-            self.logger.warning(f"定时 EPG 更新失败：{message}")
+                self._state["last_message"] = "EPG 来源刷新失败"
+            self.logger.warning(f"定时 EPG 刷新失败：{message}")
         finally:
             with self._lock:
                 self._state["running"] = False
@@ -188,23 +178,12 @@ class ScheduleService:
             raise ValueError("按天定时的间隔必须在 1-30 天之间")
         if not 0 <= hour <= 23 or not 0 <= minute <= 59:
             raise ValueError("定时执行时间必须位于 00:00-23:59")
-        m3u_url = str(data.get("schedule_m3u_url", "")).strip()
-        output_name = str(data.get("schedule_output_name", "scheduled-epg.m3u")).strip() or "scheduled-epg.m3u"
-        if output_name != "scheduled-epg.m3u":
-            output_name = "scheduled-epg.m3u"
-        if strict and enabled:
-            if not m3u_url:
-                raise ValueError("启用定时 EPG 前请填写要更新的 M3U 地址")
-            if not str(data.get("epg_url", "")).strip():
-                raise ValueError("启用定时 EPG 前请先选择 XMLTV EPG 来源")
         return {
             "schedule_enabled": enabled,
             "schedule_unit": unit,
             "schedule_every": every,
             "schedule_hour": hour,
             "schedule_minute": minute,
-            "schedule_m3u_url": m3u_url,
-            "schedule_output_name": output_name,
         }
 
     def _compute_next_run(self, schedule: dict[str, Any], after: float | None = None) -> int | None:
@@ -247,4 +226,4 @@ class ScheduleService:
             if status.get("unit") == "hours"
             else f"每 {status.get('every')} 天 {int(status.get('hour', 0)):02d}:{int(status.get('minute', 0)):02d} 执行"
         )
-        return f"{prefix}，更新 {status.get('m3u_url') or '-'}，下次 {status.get('next_run_text', '-')}"
+        return f"{prefix}，下次 {status.get('next_run_text', '-')}"

@@ -79,6 +79,10 @@ class EpgService:
         }
         self._index: dict[str, dict[str, Any]] = {}
         self._logo_index: dict[str, dict[str, Any]] = {}
+        # Per-source channel/logo lists — keyed by URL, merged into _index at rebuild time
+        self._source_channels: dict[str, list[dict[str, Any]]] = {}
+        self._source_logos: dict[str, list[dict[str, Any]]] = {}
+        self._source_refresh_times: dict[str, float] = {}
         self._load_cache()
 
     def _load_cache(self) -> None:
@@ -99,27 +103,56 @@ class EpgService:
         }
         with self._lock:
             self._cache = payload
+            url = payload.get("url", "")
+            if url and payload.get("channels"):
+                self._source_channels[url] = payload["channels"]
+                if payload.get("last_refresh"):
+                    self._source_refresh_times[url] = float(payload["last_refresh"])
+            if url and payload.get("logos"):
+                self._source_logos[url] = payload["logos"]
             self._rebuild_index_locked()
 
     def _save_cache_locked(self) -> None:
         _atomic_dump_json(self.cache_path, self._cache)
 
     def _rebuild_index_locked(self) -> None:
+        # Merge channels from all known sources; primary source (_cache url) has first-write priority
         index: dict[str, dict[str, Any]] = {}
-        for channel in self._cache.get("channels", []):
-            names = [str(channel.get("name", "")), *(str(item) for item in channel.get("names", []) or [])]
-            for name in names:
-                normalized = normalize_channel_name(name)
-                if normalized and normalized not in index:
-                    index[normalized] = channel
+        primary_url = self._cache.get("url", "")
+        # Build ordered list: primary source first, then rest
+        all_channel_lists: list[list[dict[str, Any]]] = []
+        if primary_url and primary_url in self._source_channels:
+            all_channel_lists.append(self._source_channels[primary_url])
+        for url, channels in self._source_channels.items():
+            if url != primary_url:
+                all_channel_lists.append(channels)
+        # Fall back to _cache if _source_channels not yet populated
+        if not all_channel_lists:
+            all_channel_lists = [self._cache.get("channels", [])]
+        for channels in all_channel_lists:
+            for channel in channels:
+                names = [str(channel.get("name", "")), *(str(item) for item in channel.get("names", []) or [])]
+                for name in names:
+                    normalized = normalize_channel_name(name)
+                    if normalized and normalized not in index:
+                        index[normalized] = channel
         self._index = index
         logo_index: dict[str, dict[str, Any]] = {}
-        for logo in self._cache.get("logos", []):
-            names = [str(logo.get("name", "")), *(str(item) for item in logo.get("names", []) or [])]
-            for name in names:
-                normalized = normalize_channel_name(name)
-                if normalized and normalized not in logo_index:
-                    logo_index[normalized] = logo
+        all_logo_lists: list[list[dict[str, Any]]] = []
+        if primary_url and primary_url in self._source_logos:
+            all_logo_lists.append(self._source_logos[primary_url])
+        for url, logos in self._source_logos.items():
+            if url != primary_url:
+                all_logo_lists.append(logos)
+        if not all_logo_lists:
+            all_logo_lists = [self._cache.get("logos", [])]
+        for logos in all_logo_lists:
+            for logo in logos:
+                names = [str(logo.get("name", "")), *(str(item) for item in logo.get("names", []) or [])]
+                for name in names:
+                    normalized = normalize_channel_name(name)
+                    if normalized and normalized not in logo_index:
+                        logo_index[normalized] = logo
         self._logo_index = logo_index
 
     def start_auto_refresh(self, settings_store: Any) -> None:
@@ -187,9 +220,13 @@ class EpgService:
             }
             with self._lock:
                 self._cache = payload
+                self._source_channels[url] = channels
+                self._source_refresh_times[url] = float(payload["last_refresh"])
+                if logos:
+                    self._source_logos[url] = logos
                 self._rebuild_index_locked()
                 self._save_cache_locked()
-            self.logger.info(f"EPG 刷新完成：{url}，频道 {len(channels)} 个，台标 {len(logos)} 个")
+            self.logger.info(f"EPG 刷新完成：{url}，频道 {len(channels)} 个，台标 {len(logos)} 个，已合并来源 {len(self._source_channels)} 个")
             return self.status()
         except Exception as exc:
             message = str(exc)
@@ -263,6 +300,16 @@ class EpgService:
     def count(self) -> int:
         with self._lock:
             return len(self._cache.get("channels", []) or [])
+
+    def source_stats(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            result = {}
+            for url, channels in self._source_channels.items():
+                result[url] = {
+                    "channels": len(channels),
+                    "last_refresh": self._source_refresh_times.get(url),
+                }
+            return result
 
     def status(self, summary: bool = False) -> dict[str, Any]:
         with self._lock:

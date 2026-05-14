@@ -14,6 +14,7 @@ const state = {
   poller: null,
   logPoller: null,
   streams: [],
+  channelList: [],
   epgSources: [],
   logoSources: [],
   allEpgSources: [],
@@ -69,9 +70,11 @@ function formSettings() {
 
 function formScheduleSettings() {
   return {
-    ...formSettings(),
-    schedule_m3u_url: $("scheduleM3uUrl").value.trim(),
-    schedule_output_name: $("scheduleOutputName").value.trim() || "scheduled-epg.m3u",
+    auto_epg: $("autoEpg").checked,
+    epg_url: state.epgAuto
+      ? (state.detectedEpgUrl || $("epgUrl").value.trim() || state.epgSources[0]?.url || "")
+      : $("epgUrl").value.trim(),
+    logo_url: state.logoAuto ? (state.logoSources[0]?.url || "") : $("logoUrl").value.trim(),
     schedule_enabled: $("scheduleEnabled").checked,
     schedule_unit: $("scheduleUnit").value,
     schedule_every: Number($("scheduleEvery").value || 1),
@@ -93,7 +96,9 @@ function showTab(tabName) {
   $("snifferTab").hidden = tabName !== "sniffer";
   $("scheduleTab").hidden = tabName !== "schedule";
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
-  if (tabName === "stbDiscovery") loadOperatorChannels();
+  $("channelListTab").hidden = tabName !== "channelList";
+  if (tabName === "channelList") loadChannelList();
+  if (tabName === "schedule") loadScheduleEpgSources();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-tab]").forEach((item) => {
     item.classList.toggle("active", item.dataset.tab === tabName);
@@ -139,10 +144,6 @@ function renderMetrics(metrics, tokenData) {
   $("discoveredChannels").textContent = metrics.discovered_channels ?? 0;
   $("fccRecords").textContent = metrics.fcc_records ?? 0;
   $("stbTokens").textContent = metrics.stb_tokens ?? 0;
-  if (metrics.output_files?.["scheduled-epg.m3u"]) {
-    $("downloadScheduledM3u").href = "/api/download/scheduled-epg.m3u";
-    $("downloadScheduledM3u").classList.remove("disabled");
-  }
   const latest = tokenData?.latest;
   if (latest) {
     const endpoint = latest.dip && latest.dport ? `${latest.dip}:${latest.dport}` : "-";
@@ -355,8 +356,6 @@ async function loadSettings() {
   const knownLogoUrls = new Set(state.logoSources.map((s) => s.url));
   const savedLogoUrl = data.logo_url || "";
   setLogoMode(!savedLogoUrl || knownLogoUrls.has(savedLogoUrl));
-  $("scheduleM3uUrl").value = data.schedule_m3u_url || "";
-  $("scheduleOutputName").value = data.schedule_output_name || "scheduled-epg.m3u";
   $("scheduleEnabled").checked = Boolean(data.schedule_enabled);
   $("scheduleUnit").value = data.schedule_unit || "days";
   $("scheduleEvery").value = data.schedule_every ?? 1;
@@ -397,18 +396,15 @@ function renderSchedule(schedule) {
     ? `每 ${escapeHtml(schedule.every || 1)} 小时`
     : `每 ${escapeHtml(schedule.every || 1)} 天 ${String(schedule.hour ?? 0).padStart(2, "0")}:${String(schedule.minute ?? 0).padStart(2, "0")}`;
   const lines = [
-    `<strong>${escapeHtml(schedule.last_message || (schedule.enabled ? "定时任务已启用" : "定时任务未启用"))}</strong>`,
+    `<strong>${escapeHtml(schedule.last_message || (schedule.enabled ? "定时刷新已启用" : "定时刷新未启用"))}</strong>`,
     `模式：<span class="mono">${mode}</span>`,
-    `M3U：<span class="mono">${escapeHtml(schedule.m3u_url || "-")}</span>`,
     `下次执行：<span class="mono">${escapeHtml(schedule.next_run_text || "-")}</span>`,
     `上次执行：<span class="mono">${escapeHtml(schedule.last_run_text || "-")}</span>`,
   ];
   if (schedule.last_result) {
-    lines.push(`上次结果：${escapeHtml(schedule.last_result.count ?? 0)} 个频道，匹配 ${escapeHtml(schedule.last_result.matched ?? 0)} 个，输出 <span class="mono">${escapeHtml(schedule.last_result.file || "-")}</span>`);
-    if (schedule.last_result.file) {
-      $("downloadScheduledM3u").href = `/api/download/${schedule.last_result.file}`;
-      $("downloadScheduledM3u").classList.remove("disabled");
-    }
+    const r = schedule.last_result;
+    lines.push(`上次结果：刷新 ${escapeHtml(r.count ?? 0)} 个来源，合计 ${escapeHtml(r.total_channels ?? 0)} 个频道`);
+    if (r.errors?.length) lines.push(`失败 ${r.errors.length} 个来源`);
   }
   if (schedule.last_error) lines.push(`错误：${escapeHtml(schedule.last_error)}`);
   $("schedulePanel").innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
@@ -776,13 +772,13 @@ function closeLogs() {
   if (state.logPoller) clearInterval(state.logPoller);
 }
 
-function showExportDownloads(files) {
+function showClExportDownloads(files) {
   const map = {
-    direct_m3u: $("downloadDirectM3u"),
-    source_m3u: $("downloadSourceM3u"),
-    json: $("downloadJson"),
-    txt: $("downloadTxt"),
-    csv: $("downloadCsv"),
+    direct_m3u: $("clDownloadDirectM3u"),
+    source_m3u: $("clDownloadSourceM3u"),
+    json: $("clDownloadJson"),
+    txt: $("clDownloadTxt"),
+    csv: $("clDownloadCsv"),
   };
   for (const [key, link] of Object.entries(map)) {
     if (files?.[key]) {
@@ -790,6 +786,60 @@ function showExportDownloads(files) {
       link.classList.remove("disabled");
     }
   }
+}
+
+async function loadChannelList() {
+  try {
+    const data = await requestJson("/api/channels");
+    state.channelList = data.channels || [];
+    renderChannelList(state.channelList);
+  } catch (err) { console.warn("loadChannelList:", err.message); }
+}
+
+function renderChannelList(channels) {
+  $("clChannelCount").textContent = `${channels.length} 个`;
+  const tbody = $("clChannelTableBody");
+  if (!channels.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = channels.map((ch) => `
+    <tr data-key="${escapeHtml(ch.key || "")}">
+      <td><input type="checkbox" class="cl-check"></td>
+      <td>${escapeHtml(ch.name || "")}</td>
+      <td class="mono small">${escapeHtml(ch.host || "")}:${escapeHtml(String(ch.port || ""))}</td>
+      <td>${escapeHtml(ch.category || "")}</td>
+      <td>${escapeHtml(ch.quality_group && ch.quality_group !== "未识别" ? ch.quality_group : (ch.resolution_label && ch.resolution_label !== "未识别" ? ch.resolution_label : ""))}</td>
+      <td class="mono small">${escapeHtml(ch.tvg_id || "")}</td>
+    </tr>`).join("");
+}
+
+async function loadScheduleEpgSources() {
+  try {
+    await loadEpgSources();
+    const epgStatus = await requestJson("/api/epg/status");
+    const sourceStats = epgStatus.source_stats || {};
+    renderScheduleEpgSources(state.epgSources, sourceStats);
+  } catch (err) { console.warn("loadScheduleEpgSources:", err.message); }
+}
+
+function renderScheduleEpgSources(sources, stats) {
+  const list = $("scheduleEpgSourceList");
+  if (!sources.length) {
+    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无配置的 EPG 来源。在嗅探整理页面可添加来源。</div>';
+    return;
+  }
+  list.innerHTML = sources.map((src) => {
+    const s = stats[src.url] || {};
+    const lastRefresh = s.last_refresh ? new Date(s.last_refresh * 1000).toLocaleString("zh-CN") : "从未刷新";
+    const channelCount = s.channels != null ? `　${s.channels} 个频道` : "";
+    return `<div class="epg-source-row">
+      <span class="epg-source-name">${escapeHtml(src.name)}</span>
+      <span class="muted small" style="overflow-wrap:anywhere">${escapeHtml(src.url)}</span>
+      <span class="muted small">${escapeHtml(lastRefresh)}${escapeHtml(channelCount)}</span>
+      <button class="secondary xs-btn epg-src-refresh-btn" data-epg-url="${escapeHtml(src.url)}" type="button">刷新</button>
+    </div>`;
+  }).join("");
 }
 
 async function checkVersion() {
@@ -809,7 +859,7 @@ async function checkVersion() {
 async function bootstrap() {
   await Promise.all([loadHealth(), loadInterfaces(), loadEpgSources()]);
   await loadSettings();
-  await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion(), loadOperatorChannels()]);
+  await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
   startPolling(initialState === "running");
@@ -890,10 +940,11 @@ $("resetBtn").addEventListener("click", async () => {
     await refreshStatusAndStreams();
   } catch (err) { alert(err.message); }
 });
-$("saveChannelsBtn").addEventListener("click", async () => {
+$("importToChannelListBtn").addEventListener("click", async () => {
   try {
     const data = await requestJson("/api/channels/save", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
-    alert(`频道草稿已保存：${data.saved} 条更新，${data.deleted} 条删除`);
+    alert(`已导入 ${data.saved} 个频道到频道列表。`);
+    showTab("channelList");
   } catch (err) { alert(err.message); }
 });
 $("autoClassifyBtn").addEventListener("click", async () => {
@@ -952,14 +1003,64 @@ $("streamsTableBody").addEventListener("focusout", () => {
     if (!tableHasEditingFocus()) renderStreams(state.streams);
   }, 80);
 });
-$("exportBtn").addEventListener("click", async () => {
+$("clExportBtn").addEventListener("click", async () => {
   try {
-    const body = {...formSettings(), channels: streamRowsFromDom()};
+    const selectedKeys = new Set([...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
+      .filter((row) => row.querySelector(".cl-check")?.checked)
+      .map((row) => row.dataset.key));
+    const channels = selectedKeys.size > 0
+      ? (state.channelList || []).filter((ch) => selectedKeys.has(ch.key))
+      : (state.channelList || []);
+    const body = {...formSettings(), channels};
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify(body)});
-    showExportDownloads(data.files);
-    $("exportResult").className = "result-box";
-    $("exportResult").textContent = `导出完成：共 ${data.count} 个原始频道；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
+    showClExportDownloads(data.files);
+    $("clExportResult").className = "result-box";
+    $("clExportResult").textContent = `导出完成：共 ${data.count} 个频道；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
   } catch (err) { alert(err.message); }
+});
+$("clSelectAll").addEventListener("change", function() {
+  document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = this.checked; });
+});
+$("clSelectAllBtn").addEventListener("click", () => {
+  document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = true; });
+  $("clSelectAll").checked = true;
+});
+$("clClearSelBtn").addEventListener("click", () => {
+  document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = false; });
+  $("clSelectAll").checked = false;
+});
+$("clDeleteSelectedBtn").addEventListener("click", async () => {
+  const selectedKeys = [...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
+    .filter((row) => row.querySelector(".cl-check")?.checked)
+    .map((row) => row.dataset.key);
+  if (!selectedKeys.length) { alert("请先勾选要删除的频道"); return; }
+  if (!confirm(`确定删除选中的 ${selectedKeys.length} 个频道？`)) return;
+  try {
+    await requestJson("/api/channels/delete", {method: "POST", body: JSON.stringify({keys: selectedKeys})});
+    await loadChannelList();
+  } catch (err) { alert(err.message); }
+});
+$("clRefreshBtn").addEventListener("click", () => loadChannelList());
+$("refreshAllEpgBtn").addEventListener("click", async () => {
+  const btn = $("refreshAllEpgBtn");
+  btn.disabled = true; btn.textContent = "刷新中…";
+  try {
+    const result = await requestJson("/api/epg/refresh-all", {method: "POST", body: "{}"});
+    await loadScheduleEpgSources();
+    alert(`已刷新 ${result.count} 个来源，合计 ${result.total_channels} 个频道。`);
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; btn.textContent = "立即刷新全部"; }
+});
+$("scheduleEpgSourceList").addEventListener("click", async (event) => {
+  const btn = event.target.closest(".epg-src-refresh-btn");
+  if (!btn) return;
+  const url = btn.dataset.epgUrl;
+  btn.disabled = true; btn.textContent = "刷新中…";
+  try {
+    await requestJson("/api/epg/refresh", {method: "POST", body: JSON.stringify({epg_url: url})});
+    await loadScheduleEpgSources();
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; btn.textContent = "刷新"; }
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
@@ -1099,30 +1200,6 @@ function stopStbDiscoveryPoll() {
   }
 }
 
-async function loadOperatorChannels() {
-  try {
-    const data = await requestJson("/api/operator_channels");
-    const channels = data.channels || [];
-    const badge = $("operatorChannelCountBadge");
-    const wrap = $("operatorChannelTableWrap");
-    const empty = $("operatorChannelEmpty");
-    badge.textContent = `${channels.length} 个`;
-    if (!channels.length) {
-      wrap.hidden = true;
-      empty.hidden = false;
-      return;
-    }
-    empty.hidden = true;
-    wrap.hidden = false;
-    $("operatorChannelTableBody").innerHTML = channels.map((ch) => `
-      <tr>
-        <td>${escapeHtml(String(ch.channel_num ?? ""))}</td>
-        <td>${escapeHtml(ch.name || "")}</td>
-        <td class="mono">${escapeHtml(ch.host || "")}:${escapeHtml(String(ch.port || ""))}</td>
-        <td>${ch.is_hd ? "✓" : ""}</td>
-      </tr>`).join("");
-  } catch (err) { console.warn("loadOperatorChannels:", err.message); }
-}
 
 $("stbDiscoveryStartBtn").addEventListener("click", async () => {
   const ip = ($("stbDiscoveryIp").value || "").trim();
@@ -1156,17 +1233,7 @@ $("stbDiscoveryResetBtn").addEventListener("click", async () => {
 $("stbDiscoveryImportBtn").addEventListener("click", async () => {
   try {
     const data = await requestJson("/api/stb_discovery/import", {method: "POST", body: "{}"});
-    alert(`已导入 ${data.imported} 个频道到频道表。`);
-    loadOperatorChannels();
-  } catch (err) { alert(err.message); }
-});
-
-$("operatorChannelRefreshBtn").addEventListener("click", loadOperatorChannels);
-
-$("operatorChannelClearBtn").addEventListener("click", async () => {
-  if (!confirm("确定要清空运营商频道表吗？")) return;
-  try {
-    await requestJson("/api/operator_channels", {method: "DELETE"});
-    loadOperatorChannels();
+    alert(`已导入 ${data.imported} 个频道到频道列表。`);
+    showTab("channelList");
   } catch (err) { alert(err.message); }
 });

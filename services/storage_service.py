@@ -132,6 +132,18 @@ class ChannelStore:
             _atomic_dump_json(self.path, data)
             return {"saved": saved, "deleted": deleted, "total": len(data)}
 
+    def delete_keys(self, keys: list[str]) -> int:
+        with self._lock:
+            data = self.load()
+            deleted = 0
+            for key in keys:
+                if str(key) in data:
+                    data.pop(str(key))
+                    deleted += 1
+            if deleted:
+                _atomic_dump_json(self.path, data)
+            return deleted
+
     @staticmethod
     def _safe_port(value: Any) -> int | None:
         if value in (None, ""):

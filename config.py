@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.3"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -95,8 +95,6 @@ DEFAULT_SETTINGS = {
     "auto_epg": True,
     "epg_url": DEFAULT_EPG_URL,
     "logo_url": DEFAULT_LOGO_URL,
-    "schedule_m3u_url": "",
-    "schedule_output_name": "scheduled-epg.m3u",
     "schedule_enabled": False,
     "schedule_unit": "days",
     "schedule_every": 1,

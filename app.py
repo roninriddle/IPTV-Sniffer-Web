@@ -250,27 +250,12 @@ def persist_auto_channel_if_changed(item: dict[str, Any], stored: dict[str, Any]
 def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     settings = settings or settings_store.load()
     discovered = discovery_store.load()
-    operator_channels = operator_channel_store.load()
     enriched: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         item = dict(row)
         key = str(item.get("key") or f"{item.get('host', '')}:{item.get('port', '')}")
-        # Operator channel list takes priority as auto_name source when no name is set
-        op_ch = operator_channels.get(key)
-        if op_ch and op_ch.get("name"):
-            op_name = str(op_ch["name"]).strip()
-            if not str(item.get("name", "")).strip():
-                item["name"] = op_name
-            if not str(item.get("auto_name", "")).strip():
-                item["auto_name"] = op_name
-                item["auto_name_source"] = "operator_channel_list"
-            # Propagate FCC info if missing
-            if op_ch.get("fcc_ip") and not str(item.get("fcc_ip", "")).strip():
-                item["fcc_ip"] = op_ch["fcc_ip"]
-            if op_ch.get("fcc_port") and not item.get("fcc_port"):
-                item["fcc_port"] = op_ch["fcc_port"]
         discovery = discovered.get(key, {})
         if not str(item.get("name", "")).strip() and discovery.get("name"):
             item["name"] = str(discovery.get("name", "")).strip()
@@ -471,59 +456,30 @@ def write_m3u_channels(items: list[dict[str, Any]], epg_url: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def update_scheduled_m3u_epg(settings: dict[str, Any]) -> dict[str, Any]:
-    m3u_url = str(settings.get("schedule_m3u_url", "")).strip()
-    epg_url = str(settings.get("epg_url", "")).strip()
-    logo_url = str(settings.get("logo_url", "")).strip()
-    output_name = str(settings.get("schedule_output_name", "scheduled-epg.m3u")).strip() or "scheduled-epg.m3u"
-    if output_name != "scheduled-epg.m3u":
-        output_name = "scheduled-epg.m3u"
-    if not m3u_url:
-        raise ValueError("M3U 地址不能为空")
-    if not epg_url:
-        raise ValueError("XMLTV EPG 地址不能为空")
-
-    epg_status = epg_service.refresh(epg_url, logo_url)
-    if epg_status.get("last_error") and int(epg_status.get("channels") or 0) == 0:
-        raise RuntimeError(f"EPG 刷新失败：{epg_status.get('last_error')}")
-    text = fetch_text_resource(m3u_url)
-    items = parse_m3u_channels(text)
-    if not items:
-        raise ValueError("指定 M3U 中没有可更新的频道")
-
-    matched = 0
-    for item in items:
-        attrs = dict(item.get("attrs") or {})
-        name = str(attrs.get("tvg-name") or item.get("title") or "").strip()
-        row = {
-            "name": name,
-            "tvg_id": str(attrs.get("tvg-id", "")).strip(),
-            "tvg_name": str(attrs.get("tvg-name", "")).strip(),
-            "tvg_logo": str(attrs.get("tvg-logo", "")).strip(),
-        }
-        epg_service.enrich_item(row, epg_url, only_missing=False)
-        if row.get("tvg_id") or row.get("tvg_logo"):
-            matched += 1
-        if row.get("tvg_id"):
-            attrs["tvg-id"] = row["tvg_id"]
-        if row.get("tvg_name"):
-            attrs["tvg-name"] = row["tvg_name"]
-        if row.get("tvg_logo"):
-            attrs["tvg-logo"] = row["tvg_logo"]
-        if not attrs.get("group-title"):
-            attrs["group-title"] = classify_channel_name(str(item.get("title") or row.get("tvg_name") or name))
-        item["attrs"] = attrs
-
-    target = OUTPUT_DIR / output_name
-    target.write_text(write_m3u_channels(items, epg_url), encoding="utf-8")
+def refresh_all_epg_sources_task(settings: dict[str, Any]) -> dict[str, Any]:
+    custom = custom_sources_store.load()
+    deleted_epg = set((custom.get("deleted_builtin") or {}).get("epg") or [])
+    active_builtin = [s for s in EPG_SOURCES if s["id"] not in deleted_epg]
+    custom_epg = custom.get("epg") or []
+    all_sources = active_builtin + custom_epg
+    if not all_sources:
+        raise ValueError("没有配置 EPG 来源")
+    results = []
+    errors = []
+    for source in all_sources:
+        url = source.get("url", "")
+        name = source.get("name", url)
+        try:
+            status = epg_service.refresh(url)
+            results.append({"name": name, "url": url, "channels": status.get("channels", 0)})
+        except Exception as exc:
+            errors.append({"name": name, "url": url, "error": str(exc)})
+    total = sum(r.get("channels", 0) for r in results)
     return {
-        "count": len(items),
-        "matched": matched,
-        "file": output_name,
-        "download_url": f"/api/download/{output_name}",
-        "m3u_url": m3u_url,
-        "epg_url": epg_url,
-        "updated_at": int(time.time()),
+        "count": len(results),
+        "total_channels": total,
+        "sources": results,
+        "errors": errors,
     }
 
 
@@ -545,7 +501,7 @@ def start_auto_enrichment_loop() -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
-schedule_service = ScheduleService(logger, settings_store, update_scheduled_m3u_epg)
+schedule_service = ScheduleService(logger, settings_store, refresh_all_epg_sources_task)
 
 
 @app.get("/")
@@ -638,6 +594,7 @@ def api_settings_save():
         )
     ):
         epg_service.refresh_async(epg_url, logo_url)
+        _start_extra_epg_refresh(skip_url=epg_url)
     logger.info("已保存网页默认设置")
     return api_success(saved)
 
@@ -751,7 +708,9 @@ def api_discovery():
 
 @app.get("/api/epg/status")
 def api_epg_status():
-    return api_success(epg_service.status())
+    status = epg_service.status()
+    status["source_stats"] = epg_service.source_stats()
+    return api_success(status)
 
 
 @app.get("/api/epg/sources")
@@ -827,6 +786,36 @@ def api_epg_detect_best_status():
         return api_success(dict(_epg_detect_state))
 
 
+def _all_epg_urls() -> list[str]:
+    """Return all configured EPG URLs: built-in + custom."""
+    custom = custom_sources_store.load()
+    urls = [s["url"] for s in EPG_SOURCES]
+    urls += [s["url"] for s in (custom.get("epg") or []) if s.get("url")]
+    seen: set[str] = set()
+    result = []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
+def _start_extra_epg_refresh(skip_url: str = "") -> None:
+    """Fetch all EPG sources other than skip_url into the merged index, in background."""
+    extra = [u for u in _all_epg_urls() if u != skip_url]
+    if not extra:
+        return
+
+    def worker() -> None:
+        for u in extra:
+            try:
+                epg_service.refresh(u)
+            except Exception as exc:
+                logger.warning(f"附加 EPG 来源刷新失败：{u}，{exc}")
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 @app.post("/api/epg/refresh")
 def api_epg_refresh():
     data = request.get_json(silent=True) or {}
@@ -845,11 +834,24 @@ def api_epg_refresh():
     try:
         status = epg_service.refresh_async(url, logo_url)
         logger.info(f"已启动 EPG 刷新：{url}")
+        # Also refresh all other configured EPG sources in background so match() covers all
+        _start_extra_epg_refresh(skip_url=url)
         return api_success(status)
     except ValueError as exc:
         return api_error(str(exc), 400)
     except Exception as exc:
         logger.error(f"启动 EPG 刷新失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/epg/refresh-all")
+def api_epg_refresh_all():
+    try:
+        result = refresh_all_epg_sources_task(settings_store.load())
+        logger.info(f"已触发全量 EPG 来源刷新：{result.get('count', 0)} 个来源")
+        return api_success(result)
+    except Exception as exc:
+        logger.error(f"全量 EPG 刷新失败：{exc}")
         return api_error(str(exc), 500)
 
 
@@ -1003,9 +1005,19 @@ def api_channels_save():
         return api_error("channels 必须是数组")
     rows = enrich_channel_rows(rows)
     result = channel_store.save_rows(rows)
-    logger.info(f"已保存频道草稿：新增或更新 {result['saved']} 条，删除 {result['deleted']} 条")
+    logger.info(f"已导入频道列表：新增或更新 {result['saved']} 条，删除 {result['deleted']} 条")
     return api_success(result)
 
+
+@app.post("/api/channels/delete")
+def api_channels_delete():
+    data = request.get_json(silent=True) or {}
+    keys = data.get("keys", []) if isinstance(data, dict) else []
+    if not isinstance(keys, list):
+        return api_error("keys 必须是数组")
+    deleted = channel_store.delete_keys([str(k) for k in keys if k])
+    logger.info(f"已从频道列表删除 {deleted} 个频道")
+    return api_success({"deleted": deleted})
 
 
 @app.post("/api/probe")
