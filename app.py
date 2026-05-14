@@ -41,6 +41,7 @@ from config import (
     STB_TOKEN_FILE,
     CUSTOM_SOURCES_FILE,
     OPERATOR_CHANNELS_FILE,
+    SNAPSHOTS_FILE,
     WAITRESS_THREADS,
     WEB_HOST,
     WEB_PORT,
@@ -52,7 +53,7 @@ from services.log_service import AppLogger
 from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
 from services.stb_discovery_service import StbDiscoveryService
-from services.storage_service import ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
+from services.storage_service import ChannelSnapshotStore, ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
 from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
@@ -62,6 +63,7 @@ channel_store = ChannelStore(CHANNELS_FILE)
 fcc_store = FccStore(FCC_FILE)
 custom_sources_store = CustomSourcesStore(CUSTOM_SOURCES_FILE)
 operator_channel_store = OperatorChannelStore(OPERATOR_CHANNELS_FILE)
+snapshot_store = ChannelSnapshotStore(SNAPSHOTS_FILE)
 stb_discovery_service = StbDiscoveryService(logger)
 token_store = StbTokenStore(STB_TOKEN_FILE)
 discovery_store = DiscoveryStore(DISCOVERY_FILE)
@@ -473,14 +475,14 @@ def write_m3u_channels(items: list[dict[str, Any]], epg_url: str) -> str:
 def refresh_all_epg_sources_task(settings: dict[str, Any]) -> dict[str, Any]:
     custom = custom_sources_store.load()
     deleted_epg = set((custom.get("deleted_builtin") or {}).get("epg") or [])
-    active_builtin = [s for s in EPG_SOURCES if s["id"] not in deleted_epg]
-    custom_epg = custom.get("epg") or []
-    all_sources = active_builtin + custom_epg
-    if not all_sources:
+    deleted_logo = set((custom.get("deleted_builtin") or {}).get("logo") or [])
+    active_epg = [s for s in EPG_SOURCES if s["id"] not in deleted_epg] + (custom.get("epg") or [])
+    active_logo = [s for s in LOGO_SOURCES if s["id"] not in deleted_logo] + (custom.get("logo") or [])
+    if not active_epg:
         raise ValueError("没有配置 EPG 来源")
     results = []
     errors = []
-    for source in all_sources:
+    for source in active_epg:
         url = source.get("url", "")
         name = source.get("name", url)
         try:
@@ -488,11 +490,23 @@ def refresh_all_epg_sources_task(settings: dict[str, Any]) -> dict[str, Any]:
             results.append({"name": name, "url": url, "channels": status.get("channels", 0)})
         except Exception as exc:
             errors.append({"name": name, "url": url, "error": str(exc)})
+    logo_results = []
+    for source in active_logo:
+        url = source.get("url", "")
+        name = source.get("name", url)
+        try:
+            count = epg_service.refresh_logo(url)
+            logo_results.append({"name": name, "url": url, "logos": count})
+        except Exception as exc:
+            errors.append({"name": name, "url": url, "error": str(exc)})
     total = sum(r.get("channels", 0) for r in results)
+    total_logos = sum(r.get("logos", 0) for r in logo_results)
     return {
         "count": len(results),
         "total_channels": total,
         "sources": results,
+        "logo_sources": logo_results,
+        "total_logos": total_logos,
         "errors": errors,
     }
 
@@ -952,6 +966,59 @@ def api_operator_channels_clear():
     return api_success({"cleared": True})
 
 
+@app.get("/api/channels/snapshots")
+def api_snapshots_list():
+    return api_success({"snapshots": snapshot_store.list_meta()})
+
+
+@app.post("/api/channels/snapshot")
+def api_snapshot_save():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    channels = channel_store.load()
+    if not channels:
+        return api_error("频道列表为空，无法保存快照")
+    if not name:
+        import datetime
+        name = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    meta = snapshot_store.save(name, channels)
+    logger.info(f"已保存频道列表快照「{name}」，共 {meta['count']} 个频道")
+    return api_success(meta)
+
+
+@app.post("/api/channels/snapshots/<snap_id>/restore")
+def api_snapshot_restore(snap_id: str):
+    snap = snapshot_store.get(snap_id)
+    if not snap:
+        return api_error("快照不存在")
+    channels = snap.get("channels") or {}
+    rows = list(channels.values()) if isinstance(channels, dict) else []
+    result = channel_store.save_rows(rows)
+    logger.info(f"已从快照「{snap.get('name')}」恢复 {result['saved']} 个频道")
+    return api_success({"restored": result["saved"], "name": snap.get("name")})
+
+
+@app.delete("/api/channels/snapshots/<snap_id>")
+def api_snapshot_delete(snap_id: str):
+    if snapshot_store.delete(snap_id):
+        logger.info(f"已删除频道列表快照 {snap_id}")
+        return api_success({"deleted": True})
+    return api_error("快照不存在")
+
+
+@app.post("/api/logo/refresh")
+def api_logo_refresh():
+    data = request.get_json(silent=True) or {}
+    logo_url = str(data.get("logo_url", "")).strip()
+    if not logo_url:
+        return api_error("logo_url 不能为空")
+    try:
+        count = epg_service.refresh_logo(logo_url)
+        return api_success({"logos": count, "url": logo_url})
+    except Exception as exc:
+        return api_error(str(exc), 500)
+
+
 @app.get("/api/stb_discovery/status")
 def api_stb_discovery_status():
     return api_success(stb_discovery_service.status())
@@ -1126,7 +1193,8 @@ def api_export():
     settings = {**settings_store.load(), **{k: v for k, v in data.items() if k != "channels"}}
     try:
         rows = enrich_channel_rows(rows, settings)
-        result = export_service.export(rows, settings)
+        operator_channels = operator_channel_store.load()
+        result = export_service.export(rows, settings, operator_channels=operator_channels)
         channel_store.save_rows(rows)
         logger.info(
             "导出完成：共生成 "
@@ -1220,6 +1288,14 @@ def api_logs_download():
     return send_file(LOG_FILE, as_attachment=True, download_name="iptv-sniffer-web.log")
 
 
+def _startup_epg_refresh() -> None:
+    try:
+        result = refresh_all_epg_sources_task(settings_store.load())
+        logger.info(f"启动 EPG 自动刷新完成：{result.get('count', 0)} 个来源，{result.get('total_channels', 0)} 个频道，台标 {result.get('total_logos', 0)} 个")
+    except Exception as exc:
+        logger.warning(f"启动 EPG 自动刷新失败：{exc}")
+
+
 def boot() -> None:
     logger.info(f"应用启动：{APP_NAME} v{APP_VERSION}")
     capture_service.validate_runtime()
@@ -1227,6 +1303,7 @@ def boot() -> None:
     epg_service.start_auto_refresh(settings_store)
     schedule_service.start()
     start_auto_enrichment_loop()
+    threading.Thread(target=_startup_epg_refresh, daemon=True).start()
     _start_version_check_loop()
     logger.info(f"数据目录：{DATA_DIR}")
     logger.info(f"输出目录：{OUTPUT_DIR}")

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.8.5"
+APP_VERSION = "0.9.0"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -24,6 +24,7 @@ DISCOVERY_FILE = DATA_DIR / "discovered_channels.json"
 EPG_CACHE_FILE = DATA_DIR / "epg_cache.json"
 CUSTOM_SOURCES_FILE = DATA_DIR / "custom_sources.json"
 OPERATOR_CHANNELS_FILE = DATA_DIR / "operator_channels.json"
+SNAPSHOTS_FILE = DATA_DIR / "channel_snapshots.json"
 
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8787"))
@@ -100,6 +101,8 @@ DEFAULT_SETTINGS = {
     "schedule_every": 1,
     "schedule_hour": 3,
     "schedule_minute": 0,
+    "catchup_days": 7,
+    "catchup_source_template": "",
 }
 
 for directory in (DATA_DIR, OUTPUT_DIR):

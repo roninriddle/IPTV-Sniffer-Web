@@ -237,6 +237,18 @@ class EpgService:
             self.logger.warning(f"EPG 刷新失败：{url}，{message}")
             return self.status()
 
+    def refresh_logo(self, logo_url: str) -> int:
+        """Fetch a standalone logo M3U source and rebuild the logo index. Returns logo count."""
+        logo_url = str(logo_url or "").strip()
+        if not logo_url:
+            return 0
+        logos = self._fetch_logo_map(logo_url)
+        with self._lock:
+            self._source_logos[logo_url] = logos
+            self._rebuild_index_locked()
+        self.logger.info(f"台标刷新完成：{logo_url}，台标 {len(logos)} 个")
+        return len(logos)
+
     def _fetch(self, url: str) -> bytes:
         request = Request(url, headers={"User-Agent": "IPTV-Sniffer-Web/EPG"})
         with urlopen(request, timeout=EPG_FETCH_TIMEOUT) as response:

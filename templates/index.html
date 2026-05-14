@@ -250,9 +250,27 @@ OpenWrt / iStoreOS
               <span class="muted">所有活跃来源均可手动刷新；定时任务启用后会自动全量刷新。</span>
             </div>
             <div class="button-row">
-              <button id="refreshAllEpgBtn" class="primary" type="button">立即刷新全部</button>
+              <button id="refreshAllEpgBtn" class="primary" type="button">立即刷新全部（含台标）</button>
             </div>
             <div id="scheduleEpgSourceList" style="margin-top:12px"></div>
+            <div class="sources-add-row" style="margin-top:8px">
+              <input id="scheduleEpgAddName" type="text" placeholder="来源名称" style="flex:0 0 120px">
+              <input id="scheduleEpgAddUrl" type="url" placeholder="EPG 地址（.xml 或 .xml.gz）" style="flex:1 1 200px;min-width:0">
+              <button id="scheduleEpgAddBtn" class="secondary" type="button">添加</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>台标来源</h2>
+              <span class="muted">M3U 格式台标文件；全量刷新时一并更新。</span>
+            </div>
+            <div id="scheduleLogoSourceList" style="margin-top:12px"></div>
+            <div class="sources-add-row" style="margin-top:8px">
+              <input id="scheduleLogoAddName" type="text" placeholder="来源名称" style="flex:0 0 120px">
+              <input id="scheduleLogoAddUrl" type="url" placeholder="台标 M3U 地址" style="flex:1 1 200px;min-width:0">
+              <button id="scheduleLogoAddBtn" class="secondary" type="button">添加</button>
+            </div>
           </section>
 
           <section class="card">
@@ -321,6 +339,18 @@ OpenWrt / iStoreOS
             <div id="stbDiscoveryStatus" class="result-box muted" style="margin-top:12px">等待开始…</div>
           </section>
 
+          <section class="card">
+            <div class="section-title">
+              <h2>已保存频道表</h2>
+              <span id="savedOperatorCount" class="chip neutral">0 个</span>
+            </div>
+            <p class="task-description">上次捕获并持久化的运营商频道表，无需重启机顶盒即可重新导入到频道列表。</p>
+            <div class="form-actions">
+              <button id="reimportOperatorBtn" class="primary" type="button" disabled>重新导入到频道列表</button>
+            </div>
+            <div id="reimportOperatorStatus" class="result-box muted" hidden></div>
+          </section>
+
           <section class="card" id="stbDiscoveryResultSection" hidden>
             <div class="section-title">
               <h2>发现的频道</h2>
@@ -374,15 +404,28 @@ OpenWrt / iStoreOS
                 </select>
               </label>
             </div>
-            <div class="button-row">
-              <button id="clExportBtn" class="primary" type="button">生成播放列表</button>
-              <a id="clDownloadDirectM3u" class="download disabled" href="#">下载直连 M3U</a>
-              <a id="clDownloadSourceM3u" class="download disabled" href="#">下载源地址 M3U</a>
-              <a id="clDownloadJson" class="download disabled" href="#">下载 JSON</a>
-              <a id="clDownloadTxt" class="download disabled" href="#">下载 TXT</a>
-              <a id="clDownloadCsv" class="download disabled" href="#">下载 CSV</a>
+            <div class="section-subtitle">
+              <h3>回看（时移）设置</h3>
+              <span class="muted small">仅对运营商频道表中标记支持回看的频道生效；天数设为 0 可禁用</span>
             </div>
-            <div id="clExportResult" class="result-box muted">勾选频道后点击「生成播放列表」；不勾选则导出全部。源地址 M3U 可作为 rtp2httpd external-m3u。</div>
+            <div class="form-grid">
+              <label>
+                回看天数
+                <input id="catchupDays" type="number" min="0" max="30" value="7">
+              </label>
+              <label>
+                catchup-source 模板（可选）
+                <input id="catchupSourceTemplate" type="text" placeholder="http://server/timeshift/{channel_id}">
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="clDownloadDirectM3u" class="secondary" type="button">下载直连 M3U</button>
+              <button id="clDownloadSourceM3u" class="secondary" type="button">下载源地址 M3U</button>
+              <button id="clDownloadJson" class="secondary" type="button">下载 JSON</button>
+              <button id="clDownloadTxt" class="secondary" type="button">下载 TXT</button>
+              <button id="clDownloadCsv" class="secondary" type="button">下载 CSV</button>
+            </div>
+            <div id="clExportResult" class="result-box muted">勾选频道后点击格式按钮直接下载；不勾选则导出全部。源地址 M3U 可作为 rtp2httpd external-m3u。</div>
           </section>
 
           <section class="card">
@@ -413,6 +456,18 @@ OpenWrt / iStoreOS
                 </tbody>
               </table>
             </div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>频道列表快照</h2>
+              <span class="muted small">将当前频道列表保存为命名快照，随时可恢复。</span>
+            </div>
+            <div class="sources-add-row">
+              <input id="snapshotNameInput" type="text" placeholder="快照名称（留空自动生成）" style="flex:1 1 200px;min-width:0">
+              <button id="saveSnapshotBtn" class="secondary" type="button">保存快照</button>
+            </div>
+            <div id="snapshotList" style="margin-top:12px"></div>
           </section>
         </div>
 
@@ -458,6 +513,7 @@ OpenWrt / iStoreOS
 
   <footer class="footer">
     <span>{{ app_name }} v{{ app_version }}</span>
+    <span>作者：Ronin Riddle</span>
     <span>适用：OpenWrt / iStoreOS / 飞牛 NAS / Linux Docker</span>
   </footer>
 

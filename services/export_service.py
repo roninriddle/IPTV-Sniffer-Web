@@ -119,7 +119,7 @@ class ExportService:
             item.port,
         )
 
-    def export(self, rows: list[dict[str, Any]], settings: dict[str, Any]) -> dict[str, Any]:
+    def export(self, rows: list[dict[str, Any]], settings: dict[str, Any], operator_channels: dict[str, Any] | None = None) -> dict[str, Any]:
         channels = self._normalize_channels(rows)
         if not channels:
             raise ValueError("没有填写任何频道名称，未生成输出文件")
@@ -129,14 +129,17 @@ class ExportService:
         if path_mode not in {"rtp", "udp"}:
             path_mode = "rtp"
         epg_url = str(settings.get("epg_url", "") or "").strip()
+        catchup_days = int(settings.get("catchup_days", 7) or 0)
+        catchup_template = str(settings.get("catchup_source_template", "") or "").strip()
+        op_ch = operator_channels or {}
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
         json_path = self.output_dir / "channels.json"
         txt_path = self.output_dir / "channels.txt"
         csv_path = self.output_dir / "channels.csv"
         quality_groups = self._quality_groups(channels)
-        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct", epg_url=epg_url)
-        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source", epg_url=epg_url)
+        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch)
+        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch)
         self._write_playlist_json(channels, json_path, path_mode)
         self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode)
         self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode)
@@ -172,7 +175,11 @@ class ExportService:
         path_mode: str,
         url_mode: str,
         epg_url: str = "",
+        catchup_days: int = 0,
+        catchup_template: str = "",
+        op_ch: dict[str, Any] | None = None,
     ) -> None:
+        op_ch = op_ch or {}
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             if epg_url:
                 safe_epg_url = epg_url.replace('"', "%22")
@@ -180,10 +187,10 @@ class ExportService:
             else:
                 handle.write("#EXTM3U\n")
             for channel in channels:
-                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode)
+                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch)
             for group_name in QUALITY_GROUP_OPTIONS:
                 for channel in quality_groups.get(group_name, []):
-                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode)
+                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch)
 
     def _write_m3u_item(
         self,
@@ -194,6 +201,9 @@ class ExportService:
         http_port: int,
         path_mode: str,
         url_mode: str,
+        catchup_days: int = 0,
+        catchup_template: str = "",
+        op_ch: dict[str, Any] | None = None,
     ) -> None:
         safe_group = group.replace('"', "'")
         tvg_name = (channel.tvg_name or channel.name).replace('"', "'")
@@ -204,7 +214,18 @@ class ExportService:
         else:
             url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
         logo_attr = f' tvg-logo="{tvg_logo}"' if tvg_logo else ""
-        handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}",{channel.name}\n')
+        # Catchup attributes for channels that support time-shift
+        catchup_attr = ""
+        if catchup_days > 0 and op_ch:
+            ch_info = op_ch.get(channel.key) or {}
+            if ch_info.get("time_shift"):
+                catchup_source_attr = ""
+                if catchup_template:
+                    channel_id = ch_info.get("channel_id", "") or tvg_id
+                    safe_cu = catchup_template.replace("{channel_id}", str(channel_id)).replace('"', "%22")
+                    catchup_source_attr = f' catchup-source="{safe_cu}"'
+                catchup_attr = f' catchup="default" catchup-days="{catchup_days}"{catchup_source_attr}'
+        handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{channel.name}\n')
         handle.write(f"{url}\n")
 
     def _write_txt(

@@ -390,6 +390,59 @@ class CustomSourcesStore:
             return True
 
 
+class ChannelSnapshotStore:
+    """Persists named snapshots of the channel list."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.RLock()
+
+    def list_meta(self) -> list[dict[str, Any]]:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict):
+                return []
+            return sorted(
+                [{"id": k, "name": v.get("name", ""), "created_at": v.get("created_at", 0), "count": v.get("count", 0)}
+                 for k, v in data.items() if isinstance(v, dict)],
+                key=lambda x: x["created_at"],
+                reverse=True,
+            )
+
+    def save(self, name: str, channels: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict):
+                data = {}
+            snap_id = f"snap_{int(time.time() * 1000)}"
+            entry = {
+                "id": snap_id,
+                "name": name,
+                "created_at": time.time(),
+                "count": len(channels),
+                "channels": channels,
+            }
+            data[snap_id] = entry
+            _atomic_dump_json(self.path, data)
+            return {"id": snap_id, "name": name, "created_at": entry["created_at"], "count": entry["count"]}
+
+    def get(self, snap_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict):
+                return None
+            return data.get(snap_id)
+
+    def delete(self, snap_id: str) -> bool:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict) or snap_id not in data:
+                return False
+            data.pop(snap_id)
+            _atomic_dump_json(self.path, data)
+            return True
+
+
 class OperatorChannelStore:
     """Persists operator-provided channel list (ip:port -> channel info)."""
 

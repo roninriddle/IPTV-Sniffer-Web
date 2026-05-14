@@ -65,6 +65,8 @@ function formSettings() {
     auto_epg: $("autoEpg").checked,
     epg_url: epgUrl,
     logo_url: logoUrl,
+    catchup_days: Number($("catchupDays")?.value ?? 7),
+    catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
   };
 }
 
@@ -97,8 +99,9 @@ function showTab(tabName) {
   $("scheduleTab").hidden = tabName !== "schedule";
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
   $("channelListTab").hidden = tabName !== "channelList";
-  if (tabName === "channelList") loadChannelList();
+  if (tabName === "channelList") { loadChannelList(); loadSnapshots(); }
   if (tabName === "schedule") loadScheduleEpgSources();
+  if (tabName === "stbDiscovery") loadSavedOperatorCount();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-tab]").forEach((item) => {
     item.classList.toggle("active", item.dataset.tab === tabName);
@@ -364,6 +367,8 @@ async function loadSettings() {
   $("scheduleEvery").value = data.schedule_every ?? 1;
   $("scheduleHour").value = data.schedule_hour ?? 3;
   $("scheduleMinute").value = data.schedule_minute ?? 0;
+  $("catchupDays").value = data.catchup_days ?? 7;
+  $("catchupSourceTemplate").value = data.catchup_source_template || "";
   updateScheduleUnitState();
 }
 
@@ -775,20 +780,28 @@ function closeLogs() {
   if (state.logPoller) clearInterval(state.logPoller);
 }
 
-function showClExportDownloads(files) {
-  const map = {
-    direct_m3u: $("clDownloadDirectM3u"),
-    source_m3u: $("clDownloadSourceM3u"),
-    json: $("clDownloadJson"),
-    txt: $("clDownloadTxt"),
-    csv: $("clDownloadCsv"),
-  };
-  for (const [key, link] of Object.entries(map)) {
-    if (files?.[key]) {
-      link.href = `/api/download/${files[key]}`;
-      link.classList.remove("disabled");
-    }
-  }
+async function doExportDownload(filename, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "生成中…";
+  try {
+    const selectedKeys = new Set([...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
+      .filter((row) => row.querySelector(".cl-check")?.checked)
+      .map((row) => row.dataset.key));
+    const channels = selectedKeys.size > 0
+      ? (state.channelList || []).filter((ch) => selectedKeys.has(ch.key))
+      : (state.channelList || []);
+    const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({...formSettings(), channels})});
+    $("clExportResult").className = "result-box";
+    $("clExportResult").textContent = `${data.count} 个频道；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条。`;
+    const a = document.createElement("a");
+    a.href = `/api/download/${filename}`;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; btn.textContent = origText; }
 }
 
 async function loadChannelList() {
@@ -824,30 +837,90 @@ function renderChannelList(channels) {
   }).join("");
 }
 
+async function loadSavedOperatorCount() {
+  try {
+    const data = await requestJson("/api/operator_channels");
+    $("savedOperatorCount").textContent = `${data.count} 个`;
+    $("reimportOperatorBtn").disabled = !data.count;
+  } catch (_) {}
+}
+
+async function loadSnapshots() {
+  try {
+    const data = await requestJson("/api/channels/snapshots");
+    renderSnapshots(data.snapshots || []);
+  } catch (_) {}
+}
+
+function renderSnapshots(snapshots) {
+  const list = $("snapshotList");
+  if (!snapshots.length) {
+    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无快照。</div>';
+    return;
+  }
+  list.innerHTML = snapshots.map((s) => `
+    <div class="epg-source-row">
+      <span class="epg-source-name">${escapeHtml(s.name)}</span>
+      <span class="muted small">${escapeHtml(new Date(s.created_at * 1000).toLocaleString("zh-CN"))}　${s.count} 个频道</span>
+      <span></span>
+      <button class="secondary xs-btn snap-restore-btn" data-snap-id="${escapeHtml(s.id)}" type="button">恢复</button>
+      <button class="danger xs-btn snap-del-btn" data-snap-id="${escapeHtml(s.id)}" type="button">删除</button>
+    </div>`).join("");
+}
+
 async function loadScheduleEpgSources() {
   try {
     await loadEpgSources();
     const epgStatus = await requestJson("/api/epg/status");
     const sourceStats = epgStatus.source_stats || {};
-    renderScheduleEpgSources(state.epgSources, sourceStats);
+    renderScheduleEpgSources(state.allEpgSources, sourceStats);
+    renderScheduleLogoSources(state.allLogoSources);
   } catch (err) { console.warn("loadScheduleEpgSources:", err.message); }
 }
 
 function renderScheduleEpgSources(sources, stats) {
   const list = $("scheduleEpgSourceList");
   if (!sources.length) {
-    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无配置的 EPG 来源。在嗅探整理页面可添加来源。</div>';
+    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无 EPG 来源。</div>';
     return;
   }
   list.innerHTML = sources.map((src) => {
+    const deleted = src.deleted === true;
     const s = stats[src.url] || {};
     const lastRefresh = s.last_refresh ? new Date(s.last_refresh * 1000).toLocaleString("zh-CN") : "从未刷新";
     const channelCount = s.channels != null ? `　${s.channels} 个频道` : "";
-    return `<div class="epg-source-row">
-      <span class="epg-source-name">${escapeHtml(src.name)}</span>
+    const rowStyle = deleted ? ' style="opacity:0.45"' : "";
+    const actionBtns = deleted
+      ? `<button class="secondary xs-btn epg-src-restore-btn" data-src-type="epg" data-src-id="${escapeHtml(src.id)}" type="button">恢复</button>`
+      : `<button class="secondary xs-btn epg-src-refresh-btn" data-epg-url="${escapeHtml(src.url)}" type="button">刷新</button>
+         <button class="danger xs-btn epg-src-del-btn" data-src-type="epg" data-src-id="${escapeHtml(src.id)}" data-src-builtin="${src.builtin ? "1" : "0"}" type="button">删除</button>`;
+    return `<div class="epg-source-row"${rowStyle}>
+      <span class="epg-source-name">${escapeHtml(src.name)}${deleted ? " <em>(已删除)</em>" : ""}</span>
       <span class="muted small" style="overflow-wrap:anywhere">${escapeHtml(src.url)}</span>
-      <span class="muted small">${escapeHtml(lastRefresh)}${escapeHtml(channelCount)}</span>
-      <button class="secondary xs-btn epg-src-refresh-btn" data-epg-url="${escapeHtml(src.url)}" type="button">刷新</button>
+      <span class="muted small">${deleted ? "" : escapeHtml(lastRefresh) + escapeHtml(channelCount)}</span>
+      ${actionBtns}
+    </div>`;
+  }).join("");
+}
+
+function renderScheduleLogoSources(sources) {
+  const list = $("scheduleLogoSourceList");
+  if (!sources.length) {
+    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无台标来源。</div>';
+    return;
+  }
+  list.innerHTML = sources.map((src) => {
+    const deleted = src.deleted === true;
+    const rowStyle = deleted ? ' style="opacity:0.45"' : "";
+    const actionBtns = deleted
+      ? `<button class="secondary xs-btn epg-src-restore-btn" data-src-type="logo" data-src-id="${escapeHtml(src.id)}" type="button">恢复</button>`
+      : `<button class="secondary xs-btn logo-src-refresh-btn" data-logo-url="${escapeHtml(src.url)}" type="button">刷新</button>
+         <button class="danger xs-btn epg-src-del-btn" data-src-type="logo" data-src-id="${escapeHtml(src.id)}" data-src-builtin="${src.builtin ? "1" : "0"}" type="button">删除</button>`;
+    return `<div class="epg-source-row"${rowStyle}>
+      <span class="epg-source-name">${escapeHtml(src.name)}${deleted ? " <em>(已删除)</em>" : ""}</span>
+      <span class="muted small" style="overflow-wrap:anywhere">${escapeHtml(src.url)}</span>
+      <span class="muted small"></span>
+      ${actionBtns}
     </div>`;
   }).join("");
 }
@@ -1013,21 +1086,11 @@ $("streamsTableBody").addEventListener("focusout", () => {
     if (!tableHasEditingFocus()) renderStreams(state.streams);
   }, 80);
 });
-$("clExportBtn").addEventListener("click", async () => {
-  try {
-    const selectedKeys = new Set([...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
-      .filter((row) => row.querySelector(".cl-check")?.checked)
-      .map((row) => row.dataset.key));
-    const channels = selectedKeys.size > 0
-      ? (state.channelList || []).filter((ch) => selectedKeys.has(ch.key))
-      : (state.channelList || []);
-    const body = {...formSettings(), channels};
-    const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify(body)});
-    showClExportDownloads(data.files);
-    $("clExportResult").className = "result-box";
-    $("clExportResult").textContent = `导出完成：共 ${data.count} 个频道；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条，未识别清晰度 ${data.unclassified_resolution_count ?? 0} 条。`;
-  } catch (err) { alert(err.message); }
-});
+$("clDownloadDirectM3u").addEventListener("click", function() { doExportDownload("channels-direct.m3u", this); });
+$("clDownloadSourceM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-source.m3u", this); });
+$("clDownloadJson").addEventListener("click", function() { doExportDownload("channels.json", this); });
+$("clDownloadTxt").addEventListener("click", function() { doExportDownload("channels.txt", this); });
+$("clDownloadCsv").addEventListener("click", function() { doExportDownload("channels.csv", this); });
 $("clSelectAll").addEventListener("change", function() {
   document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = this.checked; });
 });
@@ -1057,20 +1120,138 @@ $("refreshAllEpgBtn").addEventListener("click", async () => {
   try {
     const result = await requestJson("/api/epg/refresh-all", {method: "POST", body: "{}"});
     await loadScheduleEpgSources();
-    alert(`已刷新 ${result.count} 个来源，合计 ${result.total_channels} 个频道。`);
+    const logoMsg = result.total_logos > 0 ? `，台标 ${result.total_logos} 个` : "";
+    alert(`已刷新 ${result.count} 个 EPG 来源，合计 ${result.total_channels} 个频道${logoMsg}。`);
   } catch (err) { alert(err.message); }
-  finally { btn.disabled = false; btn.textContent = "立即刷新全部"; }
+  finally { btn.disabled = false; btn.textContent = "立即刷新全部（含台标）"; }
 });
 $("scheduleEpgSourceList").addEventListener("click", async (event) => {
-  const btn = event.target.closest(".epg-src-refresh-btn");
-  if (!btn) return;
-  const url = btn.dataset.epgUrl;
-  btn.disabled = true; btn.textContent = "刷新中…";
+  const refreshBtn = event.target.closest(".epg-src-refresh-btn");
+  if (refreshBtn) {
+    const url = refreshBtn.dataset.epgUrl;
+    refreshBtn.disabled = true; refreshBtn.textContent = "刷新中…";
+    try {
+      await requestJson("/api/epg/refresh", {method: "POST", body: JSON.stringify({epg_url: url})});
+      await loadScheduleEpgSources();
+    } catch (err) { alert(err.message); }
+    finally { refreshBtn.disabled = false; refreshBtn.textContent = "刷新"; }
+    return;
+  }
+  const delBtn = event.target.closest(".epg-src-del-btn");
+  if (delBtn) {
+    const type = delBtn.dataset.srcType, id = delBtn.dataset.srcId, builtin = delBtn.dataset.srcBuiltin === "1";
+    if (!confirm("确定删除该来源？")) return;
+    try {
+      if (builtin) await requestJson(`/api/sources/builtin/${type}/${id}`, {method: "DELETE"});
+      else await requestJson(`/api/sources/custom/${type}/${id}`, {method: "DELETE"});
+      await loadScheduleEpgSources();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const restoreBtn = event.target.closest(".epg-src-restore-btn");
+  if (restoreBtn) {
+    const type = restoreBtn.dataset.srcType, id = restoreBtn.dataset.srcId;
+    try {
+      await requestJson(`/api/sources/builtin/${type}/${id}/restore`, {method: "POST", body: "{}"});
+      await loadScheduleEpgSources();
+    } catch (err) { alert(err.message); }
+  }
+});
+$("scheduleLogoSourceList").addEventListener("click", async (event) => {
+  const refreshBtn = event.target.closest(".logo-src-refresh-btn");
+  if (refreshBtn) {
+    const url = refreshBtn.dataset.logoUrl;
+    refreshBtn.disabled = true; refreshBtn.textContent = "刷新中…";
+    try {
+      await requestJson("/api/logo/refresh", {method: "POST", body: JSON.stringify({logo_url: url})});
+      await loadScheduleEpgSources();
+    } catch (err) { alert(err.message); }
+    finally { refreshBtn.disabled = false; refreshBtn.textContent = "刷新"; }
+    return;
+  }
+  const delBtn = event.target.closest(".epg-src-del-btn");
+  if (delBtn) {
+    const type = delBtn.dataset.srcType, id = delBtn.dataset.srcId, builtin = delBtn.dataset.srcBuiltin === "1";
+    if (!confirm("确定删除该台标来源？")) return;
+    try {
+      if (builtin) await requestJson(`/api/sources/builtin/${type}/${id}`, {method: "DELETE"});
+      else await requestJson(`/api/sources/custom/${type}/${id}`, {method: "DELETE"});
+      await loadScheduleEpgSources();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const restoreBtn = event.target.closest(".epg-src-restore-btn");
+  if (restoreBtn) {
+    const type = restoreBtn.dataset.srcType, id = restoreBtn.dataset.srcId;
+    try {
+      await requestJson(`/api/sources/builtin/${type}/${id}/restore`, {method: "POST", body: "{}"});
+      await loadScheduleEpgSources();
+    } catch (err) { alert(err.message); }
+  }
+});
+$("scheduleEpgAddBtn").addEventListener("click", async () => {
+  const name = $("scheduleEpgAddName").value.trim();
+  const url = $("scheduleEpgAddUrl").value.trim();
+  if (!url) { alert("请填写 EPG 地址"); return; }
   try {
-    await requestJson("/api/epg/refresh", {method: "POST", body: JSON.stringify({epg_url: url})});
+    await requestJson("/api/sources/custom", {method: "POST", body: JSON.stringify({type: "epg", name: name || url, url})});
+    $("scheduleEpgAddName").value = ""; $("scheduleEpgAddUrl").value = "";
     await loadScheduleEpgSources();
   } catch (err) { alert(err.message); }
-  finally { btn.disabled = false; btn.textContent = "刷新"; }
+});
+$("scheduleLogoAddBtn").addEventListener("click", async () => {
+  const name = $("scheduleLogoAddName").value.trim();
+  const url = $("scheduleLogoAddUrl").value.trim();
+  if (!url) { alert("请填写台标 M3U 地址"); return; }
+  try {
+    await requestJson("/api/sources/custom", {method: "POST", body: JSON.stringify({type: "logo", name: name || url, url})});
+    $("scheduleLogoAddName").value = ""; $("scheduleLogoAddUrl").value = "";
+    await loadScheduleEpgSources();
+  } catch (err) { alert(err.message); }
+});
+$("reimportOperatorBtn").addEventListener("click", async () => {
+  const btn = $("reimportOperatorBtn");
+  btn.disabled = true; btn.textContent = "导入中…";
+  try {
+    const data = await requestJson("/api/operator_channels");
+    if (!data.channels?.length) { alert("暂无已保存的运营商频道表，请先完成 STB 开机捕获。"); return; }
+    const result = await requestJson("/api/operator_channels/import", {method: "POST", body: JSON.stringify({channels: data.channels})});
+    const status = $("reimportOperatorStatus");
+    status.hidden = false;
+    status.className = "result-box";
+    status.textContent = `重新导入完成：${result.imported} 个频道，频道列表更新 ${result.channels_saved} 条。`;
+    showTab("channelList");
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; btn.textContent = "重新导入到频道列表"; }
+});
+$("saveSnapshotBtn").addEventListener("click", async () => {
+  const name = $("snapshotNameInput").value.trim();
+  try {
+    const meta = await requestJson("/api/channels/snapshot", {method: "POST", body: JSON.stringify({name})});
+    $("snapshotNameInput").value = "";
+    await loadSnapshots();
+    alert(`快照「${meta.name}」已保存，共 ${meta.count} 个频道。`);
+  } catch (err) { alert(err.message); }
+});
+$("snapshotList").addEventListener("click", async (event) => {
+  const restoreBtn = event.target.closest(".snap-restore-btn");
+  if (restoreBtn) {
+    if (!confirm("确定从此快照恢复？将覆盖当前频道列表。")) return;
+    try {
+      const result = await requestJson(`/api/channels/snapshots/${restoreBtn.dataset.snapId}/restore`, {method: "POST", body: "{}"});
+      await loadChannelList();
+      alert(`已从快照「${result.name}」恢复 ${result.restored} 个频道。`);
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const delBtn = event.target.closest(".snap-del-btn");
+  if (delBtn) {
+    if (!confirm("确定删除此快照？")) return;
+    try {
+      await requestJson(`/api/channels/snapshots/${delBtn.dataset.snapId}`, {method: "DELETE"});
+      await loadSnapshots();
+    } catch (err) { alert(err.message); }
+  }
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
