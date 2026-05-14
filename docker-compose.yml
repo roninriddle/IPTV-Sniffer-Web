@@ -1,7 +1,7 @@
 services:
   iptv-sniffer-web:
     build: .
-    image: iptv-sniffer-web:0.7.1
+    image: iptv-sniffer-web:0.7.2
     container_name: iptv-sniffer-web
     network_mode: host
     cap_add:
@@ -19,8 +19,3 @@ services:
       - ./data:/app/data
       - ./output:/app/output
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8787/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3

@@ -234,7 +234,10 @@ class ExportService:
                 first_group = False
                 handle.write(f"{category},#genre#\n")
                 for channel in group_channels:
-                    url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+                    if http_host:
+                        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+                    else:
+                        url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
                     handle.write(f"{channel.name},{url}\n")
 
     def _write_csv(
@@ -276,7 +279,10 @@ class ExportService:
 
     def _write_csv_row(self, writer: csv.writer, channel: ChannelRecord, display_group: str, http_host: str, http_port: int, path_mode: str) -> None:
         source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
-        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+        if http_host:
+            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+        else:
+            url = source
         resolution = f"{channel.width}x{channel.height}" if channel.width and channel.height else channel.resolution_label
         writer.writerow([
             display_group,
