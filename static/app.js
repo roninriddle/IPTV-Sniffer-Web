@@ -1114,6 +1114,25 @@ $("clDeleteSelectedBtn").addEventListener("click", async () => {
   } catch (err) { alert(err.message); }
 });
 $("clRefreshBtn").addEventListener("click", () => loadChannelList());
+$("clProbeBtn").addEventListener("click", async function() {
+  const unprobed = (state.channelList || []).filter(ch => !ch.quality_group || ch.quality_group === "未识别");
+  if (!unprobed.length) { alert("所有频道均已识别分辨率。"); return; }
+  if (!confirm(`将对 ${unprobed.length} 个未识别频道运行 ffprobe 探测，每个约 10 秒，请耐心等待。继续？`)) return;
+  this.disabled = true; this.textContent = `探测中… (0/${unprobed.length})`;
+  const btn = this;
+  const settings = formSettings();
+  let done = 0;
+  for (const ch of unprobed) {
+    try {
+      await requestJson("/api/probe/batch", {method: "POST", body: JSON.stringify({channels: [ch], path_mode: settings.path_mode})});
+    } catch (_) {}
+    done++;
+    btn.textContent = `探测中… (${done}/${unprobed.length})`;
+  }
+  btn.disabled = false; btn.textContent = "一键探测分辨率";
+  await loadChannelList();
+  alert(`探测完成，已更新 ${done} 个频道。`);
+});
 $("refreshAllEpgBtn").addEventListener("click", async () => {
   const btn = $("refreshAllEpgBtn");
   btn.disabled = true; btn.textContent = "刷新中…";

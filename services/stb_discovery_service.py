@@ -81,15 +81,20 @@ def _split_http_responses(raw: bytes) -> list[tuple[str, bytes]]:
 
 
 def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], bytes]:
-    """Read a pcap file and reassemble TCP payload streams by 4-tuple key."""
-    streams: dict[tuple[str, int, str, int], bytes] = {}
+    """Read a pcap file and reassemble TCP payload streams by 4-tuple key.
+
+    Packets are sorted by TCP sequence number before concatenation so that
+    out-of-order delivery and retransmissions don't corrupt the stream.
+    """
+    # Map from 4-tuple to {seq: payload} for ordering
+    stream_seqs: dict[tuple[str, int, str, int], dict[int, bytes]] = {}
     with open(pcap_path, "rb") as f:
         header = f.read(24)
         if len(header) < 24:
-            return streams
+            return {}
         magic = struct.unpack("<I", header[:4])[0]
         if magic not in (0xA1B2C3D4, 0xD3B4A1B2):
-            return streams
+            return {}
         while True:
             hdr = f.read(16)
             if len(hdr) < 16:
@@ -110,13 +115,19 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
                 continue
             src_port = struct.unpack(">H", pkt[tcp_off : tcp_off + 2])[0]
             dst_port = struct.unpack(">H", pkt[tcp_off + 2 : tcp_off + 4])[0]
+            seq = struct.unpack(">I", pkt[tcp_off + 4 : tcp_off + 8])[0]
             data_off = tcp_off + ((pkt[tcp_off + 12] >> 4) * 4)
             payload = pkt[data_off:]
             if not payload:
                 continue
             key = (src_ip, src_port, dst_ip, dst_port)
-            streams.setdefault(key, b"")
-            streams[key] += payload
+            seqs = stream_seqs.setdefault(key, {})
+            if seq not in seqs:  # skip retransmits (same seq, same data)
+                seqs[seq] = payload
+    # Sort each stream by seq number and concatenate
+    streams: dict[tuple[str, int, str, int], bytes] = {}
+    for key, seq_map in stream_seqs.items():
+        streams[key] = b"".join(payload for _, payload in sorted(seq_map.items()))
     return streams
 
 
