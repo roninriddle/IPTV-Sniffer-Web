@@ -29,18 +29,42 @@ class ExportService:
         port: int,
         fcc_ip: str = "",
         fcc_port: int | None = None,
+        fec_port: int | None = None,
+        fcc_type: str = "",
     ) -> str:
         url = f"http://{http_host}:{http_port}/{path_mode}/{host}:{port}"
+        params: list[str] = []
         if fcc_ip and fcc_port:
-            url += f"?fcc={fcc_ip}:{int(fcc_port)}"
+            params.append(f"fcc={fcc_ip}:{int(fcc_port)}")
+            if fcc_type:
+                params.append(f"fcc-type={fcc_type}")
+        if fec_port:
+            params.append(f"fec={int(fec_port)}")
+        if params:
+            url += "?" + "&".join(params)
         return url
 
     @staticmethod
-    def make_source_url(path_mode: str, host: str, port: int, fcc_ip: str = "", fcc_port: int | None = None) -> str:
+    def make_source_url(
+        path_mode: str,
+        host: str,
+        port: int,
+        fcc_ip: str = "",
+        fcc_port: int | None = None,
+        fec_port: int | None = None,
+        fcc_type: str = "",
+    ) -> str:
         scheme = "rtp" if path_mode == "rtp" else "udp"
         url = f"{scheme}://{host}:{port}"
+        params: list[str] = []
         if fcc_ip and fcc_port:
-            url += f"?fcc={fcc_ip}:{int(fcc_port)}"
+            params.append(f"fcc={fcc_ip}:{int(fcc_port)}")
+            if fcc_type:
+                params.append(f"fcc-type={fcc_type}")
+        if fec_port:
+            params.append(f"fec={int(fec_port)}")
+        if params:
+            url += "?" + "&".join(params)
         return url
 
     def _normalize_channels(self, rows: list[dict[str, Any]]) -> list[ChannelRecord]:
@@ -84,6 +108,7 @@ class ExportService:
                 quality_group=quality_group,
                 fcc_ip=str(row.get("fcc_ip", "") or "").strip(),
                 fcc_port=self._safe_int(row.get("fcc_port")),
+                fec_port=self._safe_int(row.get("fec_port")),
                 tvg_id=str(row.get("tvg_id", "") or "").strip(),
                 tvg_name=str(row.get("tvg_name", "") or "").strip(),
                 tvg_logo=str(row.get("tvg_logo", "") or "").strip(),
@@ -131,6 +156,7 @@ class ExportService:
         epg_url = str(settings.get("epg_url", "") or "").strip()
         catchup_days = int(settings.get("catchup_days", 7) or 0)
         catchup_template = str(settings.get("catchup_source_template", "") or "").strip()
+        fcc_type = str(settings.get("fcc_type", "") or "").strip()
         op_ch = operator_channels or {}
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
@@ -138,11 +164,11 @@ class ExportService:
         txt_path = self.output_dir / "channels.txt"
         csv_path = self.output_dir / "channels.csv"
         quality_groups = self._quality_groups(channels)
-        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch)
-        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch)
-        self._write_playlist_json(channels, json_path, path_mode)
-        self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode)
-        self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode)
+        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
+        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
+        self._write_playlist_json(channels, json_path, path_mode, fcc_type=fcc_type)
+        self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
+        self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
         return {
             "count": len(channels),
             "quality_group_counts": {name: len(quality_groups.get(name, [])) for name in QUALITY_GROUP_OPTIONS},
@@ -177,6 +203,7 @@ class ExportService:
         epg_url: str = "",
         catchup_days: int = 0,
         catchup_template: str = "",
+        fcc_type: str = "",
         op_ch: dict[str, Any] | None = None,
     ) -> None:
         op_ch = op_ch or {}
@@ -187,10 +214,10 @@ class ExportService:
             else:
                 handle.write("#EXTM3U\n")
             for channel in channels:
-                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch)
+                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
             for group_name in QUALITY_GROUP_OPTIONS:
                 for channel in quality_groups.get(group_name, []):
-                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch)
+                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
 
     def _write_m3u_item(
         self,
@@ -204,15 +231,16 @@ class ExportService:
         catchup_days: int = 0,
         catchup_template: str = "",
         op_ch: dict[str, Any] | None = None,
+        fcc_type: str = "",
     ) -> None:
         safe_group = group.replace('"', "'")
         tvg_name = (channel.tvg_name or channel.name).replace('"', "'")
         tvg_id = (channel.tvg_id or channel.tvg_name or channel.name).replace('"', "'")
         tvg_logo = channel.tvg_logo.replace('"', "%22")
         if url_mode == "source" or not http_host:
-            url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+            url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
         else:
-            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
         logo_attr = f' tvg-logo="{tvg_logo}"' if tvg_logo else ""
         # Catchup attributes for channels that support time-shift
         catchup_attr = ""
@@ -236,6 +264,7 @@ class ExportService:
         http_host: str,
         http_port: int,
         path_mode: str,
+        fcc_type: str = "",
     ) -> None:
         grouped: dict[str, list[ChannelRecord]] = {category: [] for category in CATEGORY_OPTIONS}
         for channel in channels:
@@ -256,9 +285,9 @@ class ExportService:
                 handle.write(f"{category},#genre#\n")
                 for channel in group_channels:
                     if http_host:
-                        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+                        url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
                     else:
-                        url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+                        url = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
                     handle.write(f"{channel.name},{url}\n")
 
     def _write_csv(
@@ -269,6 +298,7 @@ class ExportService:
         http_host: str,
         http_port: int,
         path_mode: str,
+        fcc_type: str = "",
     ) -> None:
         with target.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
@@ -293,15 +323,15 @@ class ExportService:
                 "抓到包数",
             ])
             for channel in channels:
-                self._write_csv_row(writer, channel, channel.category, http_host, http_port, path_mode)
+                self._write_csv_row(writer, channel, channel.category, http_host, http_port, path_mode, fcc_type)
             for group_name in QUALITY_GROUP_OPTIONS:
                 for channel in quality_groups.get(group_name, []):
-                    self._write_csv_row(writer, channel, group_name, http_host, http_port, path_mode)
+                    self._write_csv_row(writer, channel, group_name, http_host, http_port, path_mode, fcc_type)
 
-    def _write_csv_row(self, writer: csv.writer, channel: ChannelRecord, display_group: str, http_host: str, http_port: int, path_mode: str) -> None:
-        source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+    def _write_csv_row(self, writer: csv.writer, channel: ChannelRecord, display_group: str, http_host: str, http_port: int, path_mode: str, fcc_type: str = "") -> None:
+        source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
         if http_host:
-            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+            url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
         else:
             url = source
         resolution = f"{channel.width}x{channel.height}" if channel.width and channel.height else channel.resolution_label
@@ -326,10 +356,10 @@ class ExportService:
             channel.packets,
         ])
 
-    def _write_playlist_json(self, channels: list[ChannelRecord], target: Path, path_mode: str) -> None:
+    def _write_playlist_json(self, channels: list[ChannelRecord], target: Path, path_mode: str, fcc_type: str = "") -> None:
         payload: dict[str, Any] = {}
         for index, channel in enumerate(channels, start=1):
-            source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port)
+            source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
             definition = channel.resolution_label if channel.resolution_label != "未识别" else ""
             payload[channel.name] = {
                 "chno": index,
@@ -354,6 +384,7 @@ class ExportService:
                     "width": channel.width,
                     "height": channel.height,
                     "fcc": f"{channel.fcc_ip}:{channel.fcc_port}" if channel.fcc_ip and channel.fcc_port else "",
+                    "fec": channel.fec_port or "",
                 },
             }
         with target.open("w", encoding="utf-8", newline="\n") as handle:

@@ -83,10 +83,13 @@ def _split_http_responses(raw: bytes) -> list[tuple[str, bytes]]:
 def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], bytes]:
     """Read a pcap file and reassemble TCP payload streams by 4-tuple key.
 
-    Packets are sorted by TCP sequence number before concatenation so that
-    out-of-order delivery and retransmissions don't corrupt the stream.
+    Handles 802.1Q single-tag and QinQ double-tag VLAN frames (common in IPTV
+    trunk / single-line-mux deployments).  Packets are sorted by TCP sequence
+    number and retransmissions are deduplicated so that out-of-order capture
+    does not corrupt the reassembled HTTP body.
     """
-    # Map from 4-tuple to {seq: payload} for ordering
+    # VLAN EtherTypes that may prefix the real EtherType
+    _VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
     stream_seqs: dict[tuple[str, int, str, int], dict[int, bytes]] = {}
     with open(pcap_path, "rb") as f:
         header = f.read(24)
@@ -101,16 +104,30 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
                 break
             inc_len = struct.unpack("<I", hdr[8:12])[0]
             pkt = f.read(inc_len)
-            if len(pkt) < 54:
+            if len(pkt) < 14:
                 continue
-            if pkt[12:14] != b"\x08\x00":
+            # Walk past any 802.1Q / QinQ VLAN tags to reach the real EtherType.
+            # Each tag is 4 bytes: 2-byte EtherType + 2-byte TCI.
+            p = 12
+            if p + 2 > len(pkt):
+                continue
+            etype = struct.unpack(">H", pkt[p : p + 2])[0]
+            while etype in _VLAN_ETYPES:
+                p += 4
+                if p + 2 > len(pkt):
+                    break
+                etype = struct.unpack(">H", pkt[p : p + 2])[0]
+            if etype != 0x0800:
                 continue  # not IPv4
-            if pkt[23] != 6:
+            ip_start = p + 2  # first byte of IP header
+            if ip_start + 20 > len(pkt):
+                continue
+            if pkt[ip_start + 9] != 6:
                 continue  # not TCP
-            ip_ihl = (pkt[14] & 0x0F) * 4
-            src_ip = _parse_ip(pkt, 26)
-            dst_ip = _parse_ip(pkt, 30)
-            tcp_off = 14 + ip_ihl
+            ip_ihl = (pkt[ip_start] & 0x0F) * 4
+            src_ip = _parse_ip(pkt, ip_start + 12)
+            dst_ip = _parse_ip(pkt, ip_start + 16)
+            tcp_off = ip_start + ip_ihl
             if tcp_off + 20 > len(pkt):
                 continue
             src_port = struct.unpack(">H", pkt[tcp_off : tcp_off + 2])[0]
@@ -122,9 +139,8 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
                 continue
             key = (src_ip, src_port, dst_ip, dst_port)
             seqs = stream_seqs.setdefault(key, {})
-            if seq not in seqs:  # skip retransmits (same seq, same data)
+            if seq not in seqs:  # skip retransmits with identical seq
                 seqs[seq] = payload
-    # Sort each stream by seq number and concatenate
     streams: dict[tuple[str, int, str, int], bytes] = {}
     for key, seq_map in stream_seqs.items():
         streams[key] = b"".join(payload for _, payload in sorted(seq_map.items()))

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.4"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -103,6 +103,7 @@ DEFAULT_SETTINGS = {
     "schedule_minute": 0,
     "catchup_days": 7,
     "catchup_source_template": "",
+    "fcc_type": "",
 }
 
 for directory in (DATA_DIR, OUTPUT_DIR):

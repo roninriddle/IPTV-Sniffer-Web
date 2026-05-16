@@ -915,6 +915,7 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "packets": 0,
             "fcc_ip": ch.get("fcc_ip", ""),
             "fcc_port": ch.get("fcc_port"),
+            "fec_port": ch.get("fec_port"),
         }
         for ch in channels
         if ch.get("ip") and ch.get("port") and ch.get("name")

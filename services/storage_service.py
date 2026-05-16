@@ -118,6 +118,7 @@ class ChannelStore:
                     "detected_name_source": str(row.get("detected_name_source") or data.get(key, {}).get("detected_name_source", "")),
                     "fcc_ip": str(row.get("fcc_ip") or data.get(key, {}).get("fcc_ip", "")),
                     "fcc_port": self._safe_port(row.get("fcc_port") or data.get(key, {}).get("fcc_port")),
+                    "fec_port": self._safe_port(row.get("fec_port") or data.get(key, {}).get("fec_port")),
                     "tvg_id": str(row.get("tvg_id") or data.get(key, {}).get("tvg_id", "")),
                     "tvg_name": str(row.get("tvg_name") or data.get(key, {}).get("tvg_name", "")),
                     "tvg_logo": str(row.get("tvg_logo") or data.get(key, {}).get("tvg_logo", "")),

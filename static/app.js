@@ -67,6 +67,7 @@ function formSettings() {
     logo_url: logoUrl,
     catchup_days: Number($("catchupDays")?.value ?? 7),
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
+    fcc_type: $("fccType")?.value || "",
   };
 }
 
@@ -369,6 +370,7 @@ async function loadSettings() {
   $("scheduleMinute").value = data.schedule_minute ?? 0;
   $("catchupDays").value = data.catchup_days ?? 7;
   $("catchupSourceTemplate").value = data.catchup_source_template || "";
+  if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
   updateScheduleUnitState();
 }
 

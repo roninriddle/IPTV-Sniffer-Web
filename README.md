@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.2
+# IPTV Sniffer Web v0.9.4
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -37,6 +37,23 @@ EPG 与台标来源参考并致谢：
 
 ## 快速开始
 
+**方式一：Docker Hub 拉取（推荐）**
+
+```bash
+mkdir -p data output
+docker run -d \
+  --name iptv-sniffer-web \
+  --network host \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  -e TZ=Asia/Shanghai \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/output:/app/output \
+  roninriddle/iptv-sniffer-web:latest
+```
+
+**方式二：本地构建**
+
 ```bash
 mkdir -p data output
 docker compose up -d --build
@@ -48,7 +65,25 @@ docker compose up -d --build
 http://宿主机IP:8787
 ```
 
-容器需要能看到机顶盒 IPTV 流量。推荐使用管理型交换机镜像机顶盒端口到 Docker 宿主机，或让 IPTV 流量真实经过运行 Docker 的 OpenWrt / iStoreOS。
+---
+
+## 网络前置条件
+
+本项目只负责抓包分析和播放列表生成，**不负责把 IPTV 专网引入宿主机**。运行前请确认：
+
+| 项目 | 说明 |
+|---|---|
+| IPTV 流量可达 | 宿主机能收到机顶盒组播包 |
+| 抓包接口正确 | 选择 IPTV 流量真实进来的那张网卡 |
+| 支持 VLAN Tagged | v0.9.4 起支持 802.1Q / QinQ 帧；单线复用场景无需额外配置 |
+
+**典型部署方式：**
+
+1. **交换机端口镜像**：管理型交换机将机顶盒端口流量镜像到 Docker 宿主机网口
+2. **OpenWrt / iStoreOS**：IPTV 流量经由路由器本机，直接在路由器上部署容器
+3. **NAS 双网口**：一个网口接 IPTV 专网，另一个接管理网络；在 IPTV 接口上抓包
+
+光猫桥接、VLAN 引入、IGMP Proxy / Snooping、防火墙配置等属于网络基础设施配置，请参考你的路由器 / 运营商文档。
 
 ---
 
@@ -75,14 +110,40 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 ?fcc=FCC服务器IP:FCC服务器端口
 ```
 
+如果指定了 FCC 协议类型，会进一步追加 `&fcc-type=telecom` 或 `&fcc-type=huawei`。
+
+如果运营商频道表中包含 FEC 端口，会追加：
+
+```text
+?fec=FEC端口
+```
+
 ---
 
 ## 页面流程
 
 1. **运营商频道发现（推荐）**：填写机顶盒 IP，点击「开始捕获」后重启机顶盒；系统自动解析频道表，点击「导入到频道列表」；
 2. **嗅探整理（可选补充）**：选择抓包网卡，填写 `rtp2httpd` 地址、端口和路径模式；点击「继续抓包」切台；点击「导入到频道列表」；
-3. 进入「频道列表」，勾选需要的频道，点击「生成播放列表」下载各格式文件；
+3. 进入「频道列表」，勾选需要的频道，点击「一键探测分辨率」，再下载所需格式；
 4. 在「定时 EPG」中配置定时刷新计划，保持 EPG 信息持续更新。
+
+---
+
+## 北京联通参考流程
+
+北京联通 IPTV 对本项目的兼容性较好，推荐按以下步骤操作：
+
+1. 确认宿主机能收到机顶盒 IPTV 流量（镜像端口或单线复用均可）
+2. 进入「运营商频道发现」→ 填写机顶盒 IP → 选择抓包网卡 → 点击「开始捕获」
+3. 重启机顶盒，等待系统自动解析频道表（含 FCC、FEC 信息）
+4. 点击「导入到频道列表」
+5. 进入「频道列表」→「一键探测分辨率」（可选，需要 ffprobe）
+6. 在 rtp2httpd 配置区填写服务器地址，FCC 协议类型选 `telecom`
+7. 点击「下载直连 M3U」或「下载源地址 M3U」
+   - 直连 M3U：通过 rtp2httpd 代理播放，支持 FCC 快速换台
+   - 源地址 M3U：作为 rtp2httpd 的 `external-m3u` 配置源
+
+频道表更新：如果已经完成过一次捕获，可在「运营商频道发现」→「已保存频道表」直接重新导入，无需再重启机顶盒。
 
 ---
 
@@ -181,6 +242,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.9.4`：STB 开机捕获支持 802.1Q / QinQ VLAN Tagged 帧（单线复用 / trunk 镜像场景不再丢包）；FEC 端口全链路贯通（运营商频道表 → 频道存储 → 导出 URL 追加 `?fec=PORT`）；新增 FCC 协议类型选择（telecom / huawei），导出 URL 自动追加 `&fcc-type=VALUE`；README 补充 Docker Hub 拉取方式、网络前置条件说明与北京联通参考流程；
 - `v0.9.2`：修复 STB 开机捕获 TCP 重组：按 seq 排序后拼接，跳过重传包，解决乱序或重传导致的频道表解析失败；修复多 EPG 来源优先级：首个刷新的 EPG 源固定为主源，后续刷新不再替换主源；修复 `epg_source` 字段：记录实际命中的 EPG 来源 URL 而非当前主源 URL；修复多源 EPG / 台标重启后丢失：`epg_cache.json` 现在持久化全部来源数据，重启后自动恢复；频道列表新增「一键探测分辨率」按钮；
 - `v0.9.1`：修复频道列表地址列太窄（64px→170px），改用 `.cl-table` 专用 CSS 类；
 - `v0.9.0`：启动时后台自动刷新全部 EPG 与台标；运营商频道页新增「已保存频道表」重新导入（无需重启机顶盒）；频道列表新增命名快照（保存/恢复/删除）；定时 EPG 页内联 EPG 与台标来源管理（添加/删除/恢复）；全量刷新同时更新台标；每个下载按钮直接触发生成并下载，移除「生成播放列表」按钮；回看（catchup）支持：导出 M3U 时对运营商标记的回看频道写入 `catchup="default" catchup-days=N` 属性；页面底部新增作者 Ronin Riddle；
