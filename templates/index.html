@@ -16,6 +16,7 @@
       </div>
       <div class="top-actions">
         <button class="nav-pill active" data-page="home" type="button">使用说明</button>
+        <button class="nav-pill" data-tab="openwrt" type="button">部署向导</button>
         <button class="nav-pill" data-tab="stbDiscovery" type="button">运营商频道</button>
         <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
         <button class="nav-pill" data-tab="channelList" type="button">频道列表</button>
@@ -106,9 +107,74 @@ OpenWrt / iStoreOS
             <span>在「定时 EPG」中管理 XMLTV EPG 来源，可手动或定时刷新全部来源，保持频道 EPG 与台标信息持续更新，匹配结果在导出时自动写入 tvg-id / tvg-logo 字段。</span>
           </article>
         </section>
+
+        <section class="card" id="openwrtWizardHomeCard">
+          <div class="section-title">
+            <h2>iStoreOS / OpenWrt 被动抓包部署向导</h2>
+            <span id="openwrtWizardHomeBadge" class="chip neutral">检测中</span>
+          </div>
+          <p class="muted">适用于 NanoPi R4S 等 iStoreOS/OpenWrt 设备。向导将读取宿主机网络配置，判断 eth0 是否已释放为抓包口，并可生成一键配置脚本。</p>
+          <div id="openwrtWizardHomeSummary" class="notice compact" style="margin-top:8px">正在读取宿主机配置…</div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="secondary" data-tab="openwrt" type="button">打开完整向导</button>
+            <button id="openwrtHomeApplyBtn" class="primary" type="button" hidden>将 eth0 应用为抓包网卡</button>
+          </div>
+        </section>
       </section>
 
       <section id="workbenchPage" class="workbench-page" hidden>
+        <div id="openwrtTab" class="tab-panel" hidden>
+          <section class="card">
+            <div class="section-title">
+              <h2>iStoreOS / OpenWrt 被动抓包部署向导</h2>
+              <span id="openwrtAnalysisBadge" class="chip neutral">检测中</span>
+            </div>
+            <p class="muted">
+              NanoPi R4S 使用 iStoreOS 时，默认 LAN 为 <code>eth1</code>，WAN 为 <code>eth0</code>。<br>
+              本向导推荐保留 <code>eth1</code> 作为管理口，将 <code>eth0</code> 改为 IPTV 被动抓包口。<br>
+              被动抓包模式：<strong>eth0 不需要 IP、不配置防火墙、不配置 VLAN、不做路由转发</strong>，只作为 tcpdump 原始流量监听入口。
+            </p>
+
+            <div class="section-subtitle"><h3>推荐拓扑</h3></div>
+            <pre class="notice compact" style="font-size:12px;line-height:1.6">家庭主网络 / 主路由
+        │
+      eth1  ← 管理口（保持上网，访问 Web 界面）
+   R4S iStoreOS
+      eth0  ← IPTV 被动抓包口（直连光猫 IPTV 口）
+        │
+  光猫 IPTV 口</pre>
+
+            <div class="section-subtitle" style="margin-top:16px"><h3>宿主机配置检测</h3></div>
+            <div id="openwrtAnalysisResult" class="notice compact">正在读取 /host/etc/config/network…</div>
+
+            <div id="openwrtScriptSection" hidden style="margin-top:16px">
+              <div class="section-subtitle"><h3>UCI 配置脚本</h3></div>
+              <p class="muted" style="margin-bottom:8px">
+                以下脚本将在 iStoreOS 宿主机上执行（<strong>非容器内</strong>）。执行前会自动备份原配置，执行后 eth0 不再作为 WAN 口。
+              </p>
+              <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                <button id="openwrtCopyScriptBtn" class="secondary" type="button">复制脚本</button>
+                <button id="openwrtDownloadScriptBtn" class="secondary" type="button">下载脚本</button>
+              </div>
+              <pre id="openwrtScriptContent" class="logs-output" style="max-height:300px;overflow:auto;font-size:12px"></pre>
+              <div class="notice compact" style="margin-top:8px">
+                <strong>回滚命令：</strong><code id="openwrtRollbackCmd" style="font-size:11px;word-break:break-all"></code>
+              </div>
+              <p class="muted" style="margin-top:8px">⚠️ 执行脚本后请等待网络重启（约 10 秒），然后刷新本页面。</p>
+            </div>
+
+            <div id="openwrtWarningSection" class="notice compact" style="margin-top:12px;display:none">
+              <strong>注意：</strong>执行后 eth0 将不再作为普通 WAN 口使用。该方案适合将 R4S 作为 IPTV 抓包设备，而非继续作为主路由 WAN 使用。
+            </div>
+
+            <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+              <button id="openwrtRefreshBtn" class="secondary" type="button">重新检测</button>
+              <button id="openwrtGenerateScriptBtn" class="secondary" type="button" hidden>生成配置脚本</button>
+              <button id="openwrtApplyIfaceBtn" class="primary" type="button" hidden>将 eth0 应用为抓包网卡</button>
+            </div>
+          </section>
+        </div>
+
         <div id="snifferTab" class="tab-panel" hidden>
           <section class="card">
             <div class="section-title">

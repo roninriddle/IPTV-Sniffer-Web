@@ -100,9 +100,11 @@ function showTab(tabName) {
   $("scheduleTab").hidden = tabName !== "schedule";
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
   $("channelListTab").hidden = tabName !== "channelList";
+  $("openwrtTab").hidden = tabName !== "openwrt";
   if (tabName === "channelList") { loadChannelList(); loadSnapshots(); }
   if (tabName === "schedule") loadScheduleEpgSources();
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
+  if (tabName === "openwrt") loadOpenwrtAnalysis();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-tab]").forEach((item) => {
     item.classList.toggle("active", item.dataset.tab === tabName);
@@ -948,6 +950,7 @@ async function bootstrap() {
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
   startPolling(initialState === "running");
+  loadOpenwrtAnalysis().catch(() => {});
 }
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
@@ -1448,4 +1451,136 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
     alert(`已导入 ${data.imported} 个频道到频道列表。`);
     showTab("channelList");
   } catch (err) { alert(err.message); }
+});
+
+// ── iStoreOS / OpenWrt 部署向导 ──────────────────────────────────────────────
+
+let _openwrtScript = "";
+let _openwrtRollback = "";
+
+function _renderOpenwrtBadge(status, el) {
+  const map = {
+    configured: ["ok", "已配置"],
+    needs_setup: ["warning", "需配置"],
+    unknown: ["neutral", "未知"],
+  };
+  const [cls, text] = map[status] || ["neutral", "检测中"];
+  el.className = `chip ${cls}`;
+  el.textContent = text;
+}
+
+function _renderOpenwrtAnalysis(data, badgeEl, resultEl) {
+  _renderOpenwrtBadge(data.status, badgeEl);
+  if (!data.available) {
+    resultEl.innerHTML = `<strong>未检测到宿主机配置</strong><br><span class="muted">${escapeHtml(data.reason || "")}</span>
+      <br><br>请确认容器启动参数包含：<code>-v /etc/config/network:/host/etc/config/network:ro</code>`;
+    return;
+  }
+  const rows = [
+    ["LAN 管理口", data.lan_device || "（未检测到）"],
+    ["WAN 接口", data.wan_device || "（未检测到）"],
+    ["iptv_sniff 抓包口", data.iptv_sniff_device || "（未创建）"],
+  ];
+  const table = rows.map(([k, v]) => `<tr><td style="padding:2px 12px 2px 0;color:#888">${k}</td><td><strong>${escapeHtml(v)}</strong></td></tr>`).join("");
+  const msgClass = data.status === "configured" ? "ok" : data.status === "needs_setup" ? "warning" : "";
+  resultEl.innerHTML = `<table style="border-collapse:collapse;margin-bottom:8px">${table}</table>
+    <span class="chip ${msgClass}" style="display:inline">${escapeHtml(data.message || "")}</span>`;
+}
+
+async function loadOpenwrtAnalysis() {
+  const badge = $("openwrtAnalysisBadge");
+  const result = $("openwrtAnalysisResult");
+  const scriptSection = $("openwrtScriptSection");
+  const generateBtn = $("openwrtGenerateScriptBtn");
+  const applyBtn = $("openwrtApplyIfaceBtn");
+  const warningSection = $("openwrtWarningSection");
+  badge.className = "chip neutral"; badge.textContent = "检测中";
+  result.textContent = "正在读取 /host/etc/config/network…";
+  scriptSection.hidden = true;
+  generateBtn.hidden = true;
+  applyBtn.hidden = true;
+  warningSection.style.display = "none";
+  try {
+    const data = (await requestJson("/api/openwrt/network-analysis")).data;
+    _renderOpenwrtAnalysis(data, badge, result);
+    if (data.available && data.status === "needs_setup") {
+      generateBtn.hidden = false;
+      warningSection.style.display = "";
+    }
+    if (data.available && (data.status === "configured" || data.recommended_capture_iface === "eth0")) {
+      applyBtn.hidden = false;
+    }
+    // 同步首页卡片
+    const homeBadge = $("openwrtWizardHomeBadge");
+    const homeSummary = $("openwrtWizardHomeSummary");
+    const homeApplyBtn = $("openwrtHomeApplyBtn");
+    if (homeBadge) _renderOpenwrtBadge(data.available ? data.status : "unknown", homeBadge);
+    if (homeSummary) {
+      if (!data.available) {
+        homeSummary.textContent = "未检测到宿主机配置（容器未挂载 /etc/config/network）。";
+      } else {
+        homeSummary.textContent = data.message || "";
+      }
+    }
+    if (homeApplyBtn) homeApplyBtn.hidden = !(data.available && data.recommended_capture_iface === "eth0");
+  } catch (err) {
+    badge.className = "chip warning"; badge.textContent = "检测失败";
+    result.textContent = `检测失败：${err.message}`;
+  }
+}
+
+async function generateOpenwrtScript() {
+  const scriptSection = $("openwrtScriptSection");
+  const scriptContent = $("openwrtScriptContent");
+  const rollbackCmd = $("openwrtRollbackCmd");
+  try {
+    const data = (await requestJson("/api/openwrt/generate-script")).data;
+    _openwrtScript = data.script || "";
+    _openwrtRollback = data.rollback || "";
+    scriptContent.textContent = _openwrtScript;
+    rollbackCmd.textContent = _openwrtRollback;
+    scriptSection.hidden = false;
+    scriptSection.scrollIntoView({behavior: "smooth", block: "nearest"});
+  } catch (err) { alert(`生成脚本失败：${err.message}`); }
+}
+
+function applyOpenwrtCaptureIface() {
+  // 同步 eth0 到嗅探整理和运营商频道发现的接口选择器
+  const snifferIface = $("interface");
+  const stbIface = $("stbDiscoveryIface");
+  if (snifferIface) {
+    for (const opt of snifferIface.options) {
+      if (opt.value === "eth0") { snifferIface.value = "eth0"; break; }
+    }
+  }
+  if (stbIface) {
+    for (const opt of stbIface.options) {
+      if (opt.value === "eth0") { stbIface.value = "eth0"; break; }
+    }
+  }
+  // 保存设置
+  requestJson("/api/settings", {method: "POST", body: JSON.stringify({...formSettings(), interface: "eth0"})})
+    .then(() => alert("已将 eth0 应用为抓包网卡（嗅探整理 + 运营商频道发现），设置已保存。"))
+    .catch((err) => alert(`保存失败：${err.message}`));
+}
+
+$("openwrtRefreshBtn").addEventListener("click", loadOpenwrtAnalysis);
+$("openwrtGenerateScriptBtn").addEventListener("click", generateOpenwrtScript);
+$("openwrtApplyIfaceBtn").addEventListener("click", applyOpenwrtCaptureIface);
+$("openwrtHomeApplyBtn").addEventListener("click", applyOpenwrtCaptureIface);
+
+$("openwrtCopyScriptBtn").addEventListener("click", () => {
+  if (!_openwrtScript) return;
+  navigator.clipboard.writeText(_openwrtScript)
+    .then(() => { $("openwrtCopyScriptBtn").textContent = "已复制！"; setTimeout(() => { $("openwrtCopyScriptBtn").textContent = "复制脚本"; }, 2000); })
+    .catch(() => alert("复制失败，请手动选择脚本文本后复制。"));
+});
+
+$("openwrtDownloadScriptBtn").addEventListener("click", () => {
+  if (!_openwrtScript) return;
+  const blob = new Blob([_openwrtScript], {type: "text/plain"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "iptv-sniffer-openwrt-setup.sh"; a.click();
+  URL.revokeObjectURL(url);
 });

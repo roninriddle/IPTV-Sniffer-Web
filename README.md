@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.4
+# IPTV Sniffer Web v0.9.5
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -84,6 +84,91 @@ http://宿主机IP:8787
 3. **NAS 双网口**：一个网口接 IPTV 专网，另一个接管理网络；在 IPTV 接口上抓包
 
 光猫桥接、VLAN 引入、IGMP Proxy / Snooping、防火墙配置等属于网络基础设施配置，请参考你的路由器 / 运营商文档。
+
+---
+
+## NanoPi R4S + iStoreOS 被动抓包部署
+
+### 推荐网络拓扑
+
+```text
+ONT（光猫）
+  └─ IPTV 专口（如华为 B850 LAN2，192.168.100.x DHCP）
+       └─ NanoPi R4S  eth0（被动监听，无 IP 地址）
+                           ← tcpdump 抓取 STB 开机 TCP 流量
+
+NanoPi R4S  eth1（LAN，192.168.x.x）
+  └─ 家庭内网交换机
+       ├─ 机顶盒（STB）
+       ├─ 电视 / 手机 / 电脑
+       └─ 上级路由器（可选）
+```
+
+R4S 默认：`eth1` = LAN，`eth0` = WAN。将 `eth0` 改为 `proto=none` 被动监听模式，直连光猫 IPTV 专口，即可用 tcpdump 嗅探 STB 开机流量，**无需为 eth0 分配 IP 地址**。
+
+### 为什么 eth0 不需要 IP
+
+tcpdump 工作在第 2 层（数据链路层），只需网卡处于 UP 状态并能收到帧，无需 IP 地址。为 eth0 配置 IP 反而可能：
+
+- 触发 `udhcpc` 修改系统默认路由，中断 SSH 会话；
+- 产生不必要的 ARP / DHCP 广播，干扰光猫侧的 IPTV 认证。
+
+被动监听模式下 eth0 无 IP、无路由、无 DHCP，仅接收帧并交给 tcpdump。
+
+### 部署向导
+
+容器内置 **部署向导（"部署向导"标签页）**，可自动读取宿主机 `/etc/config/network`，分析 UCI 配置，并生成一键配置脚本。
+
+**启用向导（需挂载宿主机配置文件）**：
+
+在 `docker-compose.yml` 中取消注释以下行：
+
+```yaml
+volumes:
+  - ./data:/app/data
+  - ./output:/app/output
+  - /etc/config/network:/host/etc/config/network:ro   # ← 取消此行注释
+```
+
+或在 `docker run` 命令中追加：
+
+```bash
+-v /etc/config/network:/host/etc/config/network:ro
+```
+
+### R4S UCI 配置脚本
+
+向导生成的脚本内容如下（也可直接复制到 iStoreOS SSH 中执行）：
+
+```sh
+#!/bin/sh
+# IPTV Sniffer Web — iStoreOS eth0 被动抓包模式配置
+# 备份当前配置
+cp /etc/config/network /etc/config/network.backup-iptv-sniffer-$(date +%Y%m%d%H%M%S)
+# 移除 WAN 接口（释放 eth0）
+uci -q delete network.wan  || true
+uci -q delete network.wan6 || true
+# 创建被动监听接口
+uci -q delete network.iptv_sniff || true
+uci set network.iptv_sniff='interface'
+uci set network.iptv_sniff.proto='none'
+uci set network.iptv_sniff.device='eth0'
+# 应用
+uci commit network
+/etc/init.d/network restart
+```
+
+> **注意**：执行后 eth0 不再绑定 WAN，路由器不再通过 eth0 上网。仅适用于 eth0 不承担上网任务的旁路嗅探场景。恢复：`cp /etc/config/network.backup-iptv-sniffer-* /etc/config/network && uci commit network && /etc/init.d/network restart`。
+
+### 配置完成后的操作流程
+
+1. 在 iStoreOS 宿主机 SSH 中执行上方脚本（或通过向导点击「复制脚本」后手动粘贴执行）；
+2. 将光猫 IPTV 专口网线插入 R4S `eth0`；
+3. 打开 IPTV Sniffer Web → **部署向导** → 点击「将 eth0 应用为抓包网卡」，自动同步到抓包接口选择框；
+4. 前往 **运营商频道发现** → 填写机顶盒 IP → 点击「开始捕获」；
+5. 重启机顶盒（拔插电源），等待系统解析频道表；
+6. 点击「导入到频道列表」；
+7. 前往 **频道列表** → 探测分辨率 → 下载 M3U。
 
 ---
 
@@ -217,6 +302,8 @@ M3U / TXT 会保留原始分类，并额外生成：
 | POST | `/api/stb_discovery/import` | 将发现的频道导入到频道列表 |
 | POST | `/api/stb_discovery/reset` | 重置捕获状态 |
 | GET | `/api/operator_channels` | 获取运营商频道表 |
+| GET | `/api/openwrt/network-analysis` | 读取宿主机 UCI 配置并分析接口用途（需挂载 `/host/etc/config/network`） |
+| GET | `/api/openwrt/generate-script` | 生成 R4S eth0 被动抓包 UCI 配置脚本 |
 | GET | `/api/logs` | 获取实时日志 |
 | GET | `/api/logs/download` | 下载完整日志 |
 
@@ -242,6 +329,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.9.5`：新增 iStoreOS / OpenWrt 部署向导（"部署向导"标签页）：自动读取宿主机 `/etc/config/network`（需 `-v /etc/config/network:/host/etc/config/network:ro`），分析 UCI 接口用途，一键生成 eth0 被动监听配置脚本，支持复制 / 下载，并可将 eth0 同步为全局抓包接口；STB 开机 pcap 解析兼容 Linux cooked SLL（DLT=113）与 SLL2（DLT=276）链路类型（`tcpdump -i any` 抓包不再丢失频道数据）；运营商频道发现支持双引号 `CUSetConfig("Channel"...)` 格式；FEC 端口从运营商频道表全链路贯通至导出 URL；候选流预览地址同步携带 `fec_port` 与 `fcc_type`；
 - `v0.9.4`：STB 开机捕获支持 802.1Q / QinQ VLAN Tagged 帧（单线复用 / trunk 镜像场景不再丢包）；FEC 端口全链路贯通（运营商频道表 → 频道存储 → 导出 URL 追加 `?fec=PORT`）；新增 FCC 协议类型选择（telecom / huawei），导出 URL 自动追加 `&fcc-type=VALUE`；README 补充 Docker Hub 拉取方式、网络前置条件说明与北京联通参考流程；
 - `v0.9.2`：修复 STB 开机捕获 TCP 重组：按 seq 排序后拼接，跳过重传包，解决乱序或重传导致的频道表解析失败；修复多 EPG 来源优先级：首个刷新的 EPG 源固定为主源，后续刷新不再替换主源；修复 `epg_source` 字段：记录实际命中的 EPG 来源 URL 而非当前主源 URL；修复多源 EPG / 台标重启后丢失：`epg_cache.json` 现在持久化全部来源数据，重启后自动恢复；频道列表新增「一键探测分辨率」按钮；
 - `v0.9.1`：修复频道列表地址列太窄（64px→170px），改用 `.cl-table` 专用 CSS 类；

@@ -83,13 +83,14 @@ def _split_http_responses(raw: bytes) -> list[tuple[str, bytes]]:
 def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], bytes]:
     """Read a pcap file and reassemble TCP payload streams by 4-tuple key.
 
-    Handles 802.1Q single-tag and QinQ double-tag VLAN frames (common in IPTV
-    trunk / single-line-mux deployments).  Packets are sorted by TCP sequence
-    number and retransmissions are deduplicated so that out-of-order capture
-    does not corrupt the reassembled HTTP body.
+    Handles Ethernet (DLT=1), Linux cooked SLL (DLT=113), and SLL2 (DLT=276)
+    link types so captures on the ``any`` interface work correctly.  Also
+    handles 802.1Q / QinQ VLAN tags on Ethernet frames.  Packets are sorted by
+    TCP sequence number and retransmissions are deduplicated.
     """
-    # VLAN EtherTypes that may prefix the real EtherType
     _VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
+    _DLT_LINUX_SLL = 113
+    _DLT_LINUX_SLL2 = 276
     stream_seqs: dict[tuple[str, int, str, int], dict[int, bytes]] = {}
     with open(pcap_path, "rb") as f:
         header = f.read(24)
@@ -98,28 +99,43 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
         magic = struct.unpack("<I", header[:4])[0]
         if magic not in (0xA1B2C3D4, 0xD3B4A1B2):
             return {}
+        linktype = struct.unpack("<I", header[20:24])[0]
         while True:
             hdr = f.read(16)
             if len(hdr) < 16:
                 break
             inc_len = struct.unpack("<I", hdr[8:12])[0]
             pkt = f.read(inc_len)
-            if len(pkt) < 14:
-                continue
-            # Walk past any 802.1Q / QinQ VLAN tags to reach the real EtherType.
-            # Each tag is 4 bytes: 2-byte EtherType + 2-byte TCI.
-            p = 12
-            if p + 2 > len(pkt):
-                continue
-            etype = struct.unpack(">H", pkt[p : p + 2])[0]
-            while etype in _VLAN_ETYPES:
-                p += 4
+            if linktype == _DLT_LINUX_SLL:
+                # SLL v1: 16-byte cooked header; EtherType at bytes 14-15
+                if len(pkt) < 16:
+                    continue
+                if struct.unpack(">H", pkt[14:16])[0] != 0x0800:
+                    continue
+                ip_start = 16
+            elif linktype == _DLT_LINUX_SLL2:
+                # SLL v2: 20-byte cooked header; EtherType at bytes 0-1
+                if len(pkt) < 20:
+                    continue
+                if struct.unpack(">H", pkt[0:2])[0] != 0x0800:
+                    continue
+                ip_start = 20
+            else:
+                # Ethernet (DLT=1) — walk past 802.1Q / QinQ VLAN tags
+                if len(pkt) < 14:
+                    continue
+                p = 12
                 if p + 2 > len(pkt):
-                    break
+                    continue
                 etype = struct.unpack(">H", pkt[p : p + 2])[0]
-            if etype != 0x0800:
-                continue  # not IPv4
-            ip_start = p + 2  # first byte of IP header
+                while etype in _VLAN_ETYPES:
+                    p += 4
+                    if p + 2 > len(pkt):
+                        break
+                    etype = struct.unpack(">H", pkt[p : p + 2])[0]
+                if etype != 0x0800:
+                    continue
+                ip_start = p + 2
             if ip_start + 20 > len(pkt):
                 continue
             if pkt[ip_start + 9] != 6:
@@ -150,7 +166,7 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
 def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
     """Parse getchannellistHWCU.jsp HTML response into channel dicts."""
     text = html.decode("utf-8", errors="replace")
-    blocks = re.findall(r"CUSetConfig\('Channel','([^']+)'\)", text)
+    blocks = re.findall(r"""CUSetConfig\(['"]Channel['"],\s*['"]([^'"]+)['"]\)""", text)
     channels: list[dict[str, Any]] = []
     for block in blocks:
         pairs = dict(re.findall(r"(\w+)=\"([^\"]*)\"", block))

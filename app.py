@@ -272,6 +272,8 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
                 item["fcc_ip"] = op_ch["fcc_ip"]
             if op_ch.get("fcc_port") and not item.get("fcc_port"):
                 item["fcc_port"] = op_ch["fcc_port"]
+            if op_ch.get("fec_port") and not item.get("fec_port"):
+                item["fec_port"] = op_ch["fec_port"]
         discovery = discovered.get(key, {})
         if not str(item.get("name", "")).strip() and discovery.get("name"):
             item["name"] = str(discovery.get("name", "")).strip()
@@ -388,8 +390,10 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
         item["fcc_ip"] = str(fcc.get("fcc_ip", ""))
         item["fcc_port"] = fcc.get("fcc_port")
+        item["fec_port"] = channel.get("fec_port")
         if not str(item.get("name", "")).strip() and str(item.get("probe_status", "")) == "failed":
             continue
+        _fcc_type = str(settings.get("fcc_type", "") or "").strip()
         item["preview_url"] = export_service.make_http_url(
             str(settings.get("http_host", "")),
             int(settings.get("http_port", 5140)),
@@ -398,6 +402,8 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
             int(item["port"]),
             item["fcc_ip"],
             item["fcc_port"],
+            item["fec_port"],
+            _fcc_type,
         ) if settings.get("http_host") else ""
         item["snapshot_url"] = f"/api/snapshot/{item['host']}/{item['port']}" if item.get("eligible") else ""
         item["player_url"] = (
@@ -595,6 +601,119 @@ def api_interfaces():
         return api_success({"interfaces": capture_service.list_interfaces()})
     except Exception as exc:
         return api_error(str(exc), 500)
+
+
+def _parse_uci_network(text: str) -> dict[str, dict[str, str]]:
+    interfaces: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("config interface"):
+            m = re.match(r"config interface\s+['\"]?(\w+)['\"]?", line)
+            if m:
+                current = m.group(1)
+                interfaces[current] = {}
+        elif line.startswith("option ") and current is not None:
+            m = re.match(r"option\s+(\w+)\s+['\"]?(.*?)['\"]?\s*$", line)
+            if m:
+                interfaces[current][m.group(1)] = m.group(2)
+    return interfaces
+
+
+def _analyze_uci_interfaces(ifaces: dict[str, dict[str, str]]) -> dict[str, Any]:
+    def _dev(d: dict) -> str:
+        return str(d.get("device") or d.get("ifname") or "").strip()
+
+    lan_dev = _dev(ifaces.get("lan", {}))
+    wan_dev = _dev(ifaces.get("wan", {}))
+    sniff_cfg = ifaces.get("iptv_sniff", {})
+    sniff_dev = _dev(sniff_cfg)
+    sniff_proto = str(sniff_cfg.get("proto", "")).strip()
+    iptv_configured = bool(sniff_dev == "eth0" and sniff_proto == "none")
+    wan_occupies_eth0 = wan_dev == "eth0" and not iptv_configured
+    is_r4s = lan_dev == "eth1" and (wan_dev == "eth0" or iptv_configured)
+    if iptv_configured:
+        status = "configured"
+        message = "检测到 iptv_sniff 接口（eth0，proto=none），已满足被动抓包要求。"
+    elif wan_occupies_eth0:
+        status = "needs_setup"
+        message = "LAN 管理口：eth1，WAN 当前占用 eth0，需释放 eth0 并创建 iptv_sniff 抓包接口。"
+    elif lan_dev:
+        status = "unknown"
+        message = f"LAN 管理口：{lan_dev}，WAN：{wan_dev or '未知'}。无法自动判断是否适合抓包，请手动确认。"
+    else:
+        status = "unknown"
+        message = "未能识别标准 LAN/WAN 接口定义，请手动确认配置。"
+    return {
+        "lan_device": lan_dev,
+        "wan_device": wan_dev,
+        "iptv_sniff_device": sniff_dev,
+        "iptv_configured": iptv_configured,
+        "wan_occupies_eth0": wan_occupies_eth0,
+        "is_r4s": is_r4s,
+        "status": status,
+        "message": message,
+        "recommended_capture_iface": "eth0" if (is_r4s or iptv_configured) else "",
+        "all_interfaces": list(ifaces.keys()),
+    }
+
+
+@app.get("/api/openwrt/network-analysis")
+def api_openwrt_network_analysis():
+    host_cfg = Path("/host/etc/config/network")
+    if not host_cfg.exists():
+        return api_success({
+            "available": False,
+            "reason": "未检测到 /host/etc/config/network（容器未挂载宿主机网络配置，或不是 OpenWrt 宿主机）",
+        })
+    try:
+        text = host_cfg.read_text(encoding="utf-8", errors="replace")
+        ifaces = _parse_uci_network(text)
+        result = _analyze_uci_interfaces(ifaces)
+        result["available"] = True
+        return api_success(result)
+    except Exception as exc:
+        logger.warning(f"解析 OpenWrt 网络配置失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.get("/api/openwrt/generate-script")
+def api_openwrt_generate_script():
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    backup_path = f"/etc/config/network.backup-iptv-sniffer-{ts}"
+    script = f"""#!/bin/sh
+# IPTV Sniffer Web — R4S 被动抓包配置脚本
+# 生成时间：{ts}
+# 说明：将 eth0 从 WAN 释放，改为 IPTV 被动抓包接口（proto=none）
+# 被动抓包不需要 IP、不配置防火墙、不配置 VLAN、不做路由转发。
+
+set -e
+
+# 1. 备份当前配置
+cp /etc/config/network {backup_path}
+echo "已备份：{backup_path}"
+
+# 2. 删除 WAN 对 eth0 的占用
+uci -q delete network.wan  || true
+uci -q delete network.wan6 || true
+
+# 3. 创建 IPTV 被动抓包接口
+uci -q delete network.iptv_sniff || true
+uci set network.iptv_sniff='interface'
+uci set network.iptv_sniff.proto='none'
+uci set network.iptv_sniff.device='eth0'
+
+# 4. 提交并重启网络
+uci commit network
+/etc/init.d/network restart
+
+echo ""
+echo "完成！eth0 现在是 IPTV 被动抓包接口。"
+echo "回滚命令："
+echo "  cp {backup_path} /etc/config/network && /etc/init.d/network restart"
+"""
+    rollback = f"cp {backup_path} /etc/config/network && /etc/init.d/network restart"
+    return api_success({"script": script, "rollback": rollback, "timestamp": ts})
 
 
 @app.get("/api/settings")
