@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.5
+# IPTV Sniffer Web v0.9.6
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -329,6 +329,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.9.6`：修复部署向导前端 `requestJson()` 重复取 `.data` 导致向导始终显示"检测失败"；修复 `CUSetConfig` 频道表解析回归（单引号与双引号两种外层格式均可正确提取频道，属性值同时兼容单双引号）；新增回归测试套件覆盖 Ethernet / SLL / SLL2 pcap、单双引号频道表解析、FEC/FCC/fcc-type 导出 URL、OpenWrt UCI 解析器与分析器接口契约（25 项全部通过）；
 - `v0.9.5`：新增 iStoreOS / OpenWrt 部署向导（"部署向导"标签页）：自动读取宿主机 `/etc/config/network`（需 `-v /etc/config/network:/host/etc/config/network:ro`），分析 UCI 接口用途，一键生成 eth0 被动监听配置脚本，支持复制 / 下载，并可将 eth0 同步为全局抓包接口；STB 开机 pcap 解析兼容 Linux cooked SLL（DLT=113）与 SLL2（DLT=276）链路类型（`tcpdump -i any` 抓包不再丢失频道数据）；运营商频道发现支持双引号 `CUSetConfig("Channel"...)` 格式；FEC 端口从运营商频道表全链路贯通至导出 URL；候选流预览地址同步携带 `fec_port` 与 `fcc_type`；
 - `v0.9.4`：STB 开机捕获支持 802.1Q / QinQ VLAN Tagged 帧（单线复用 / trunk 镜像场景不再丢包）；FEC 端口全链路贯通（运营商频道表 → 频道存储 → 导出 URL 追加 `?fec=PORT`）；新增 FCC 协议类型选择（telecom / huawei），导出 URL 自动追加 `&fcc-type=VALUE`；README 补充 Docker Hub 拉取方式、网络前置条件说明与北京联通参考流程；
 - `v0.9.2`：修复 STB 开机捕获 TCP 重组：按 seq 排序后拼接，跳过重传包，解决乱序或重传导致的频道表解析失败；修复多 EPG 来源优先级：首个刷新的 EPG 源固定为主源，后续刷新不再替换主源；修复 `epg_source` 字段：记录实际命中的 EPG 来源 URL 而非当前主源 URL；修复多源 EPG / 台标重启后丢失：`epg_cache.json` 现在持久化全部来源数据，重启后自动恢复；频道列表新增「一键探测分辨率」按钮；

@@ -1501,7 +1501,7 @@ async function loadOpenwrtAnalysis() {
   applyBtn.hidden = true;
   warningSection.style.display = "none";
   try {
-    const data = (await requestJson("/api/openwrt/network-analysis")).data;
+    const data = await requestJson("/api/openwrt/network-analysis");
     _renderOpenwrtAnalysis(data, badge, result);
     if (data.available && data.status === "needs_setup") {
       generateBtn.hidden = false;
@@ -1534,7 +1534,7 @@ async function generateOpenwrtScript() {
   const scriptContent = $("openwrtScriptContent");
   const rollbackCmd = $("openwrtRollbackCmd");
   try {
-    const data = (await requestJson("/api/openwrt/generate-script")).data;
+    const data = await requestJson("/api/openwrt/generate-script");
     _openwrtScript = data.script || "";
     _openwrtRollback = data.rollback || "";
     scriptContent.textContent = _openwrtScript;

@@ -166,10 +166,14 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
 def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
     """Parse getchannellistHWCU.jsp HTML response into channel dicts."""
     text = html.decode("utf-8", errors="replace")
-    blocks = re.findall(r"""CUSetConfig\(['"]Channel['"],\s*['"]([^'"]+)['"]\)""", text)
+    # Single-quote outer delimiter allows double quotes inside (typical format)
+    blocks = re.findall(r"CUSetConfig\('Channel',\s*'([^']+)'\)", text)
+    # Double-quote outer delimiter allows single quotes inside
+    blocks += re.findall(r'CUSetConfig\("Channel",\s*"([^"]+)"\)', text)
     channels: list[dict[str, Any]] = []
     for block in blocks:
-        pairs = dict(re.findall(r"(\w+)=\"([^\"]*)\"", block))
+        raw = re.findall(r"""(\w+)=(?:"([^"]*)"|'([^']*)')""", block)
+        pairs = {k: (dq or sq) for k, dq, sq in raw}
         chan_name = pairs.get("ChannelName", "").strip()
         user_chan_id = pairs.get("UserChannelID", "")
         channel_url = pairs.get("ChannelURL", "")
