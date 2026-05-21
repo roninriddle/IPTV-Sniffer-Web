@@ -5,6 +5,7 @@ Covers:
 - CUSetConfig channel parsing: single-quote outer, double-quote outer
 - Export URL: FCC / fcc-type / FEC parameter generation
 - OpenWrt UCI parser + analyzer API contract
+- quality_group derived from is_hd on operator channel import
 """
 import os
 import struct
@@ -17,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.stb_discovery_service import _parse_chanlist_html, _reassemble_tcp_streams
 from services.export_service import ExportService
-from app import _parse_uci_network, _analyze_uci_interfaces
+from app import _parse_uci_network, _analyze_uci_interfaces, enrich_channel_rows
 
 
 # ── pcap helpers ─────────────────────────────────────────────────────────
@@ -325,3 +326,32 @@ class TestUciAnalyzer:
                     "status", "message", "recommended_capture_iface",
                     "all_interfaces"):
             assert key in result, f"missing key: {key}"
+
+
+# ── quality_group derivation from is_hd ──────────────────────────────────
+
+class TestQualityGroupFromIsHd:
+    def _row(self, is_hd, quality_group=None):
+        r = {"key": "239.1.1.1:8008", "host": "239.1.1.1", "port": 8008,
+             "name": "Test", "is_hd": is_hd}
+        if quality_group is not None:
+            r["quality_group"] = quality_group
+        return r
+
+    def test_hd_channel_gets_hd_group(self):
+        enriched = enrich_channel_rows([self._row(True)])
+        assert enriched[0]["quality_group"] == "高清频道"
+
+    def test_sd_channel_gets_normal_group(self):
+        enriched = enrich_channel_rows([self._row(False)])
+        assert enriched[0]["quality_group"] == "普通频道"
+
+    def test_probed_quality_group_not_overwritten(self):
+        """If ffprobe already set quality_group, is_hd must not override it."""
+        enriched = enrich_channel_rows([self._row(False, quality_group="4K高清")])
+        assert enriched[0]["quality_group"] == "4K高清"
+
+    def test_channel_without_is_hd_stays_unset(self):
+        row = {"key": "239.1.1.2:8008", "host": "239.1.1.2", "port": 8008, "name": "Test"}
+        enriched = enrich_channel_rows([row])
+        assert enriched[0].get("quality_group") in (None, "", "未识别")

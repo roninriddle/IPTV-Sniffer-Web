@@ -285,6 +285,15 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
         fill_channel_name_from_metadata(item, allow_epg_name=False)
         _auto_cat = classify_channel_name(str(item.get("name", "")))
         item["category"] = _auto_cat if _auto_cat != "其它频道" else (str(item.get("category", "")).strip() or "其它频道")
+        # Derive quality_group from is_hd when ffprobe hasn't run yet
+        cur_qg = str(item.get("quality_group", "")).strip()
+        if (not cur_qg or cur_qg == "未识别") and "is_hd" in item:
+            item["quality_group"] = "高清频道" if item["is_hd"] else "普通频道"
+        # Also pull is_hd from operator channel table if not already present
+        if op_ch and "is_hd" in op_ch and "is_hd" not in item:
+            item["is_hd"] = op_ch["is_hd"]
+            if not cur_qg or cur_qg == "未识别":
+                item["quality_group"] = "高清频道" if op_ch["is_hd"] else "普通频道"
         if settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
             fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(row, item))
@@ -1035,6 +1044,7 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "fcc_ip": ch.get("fcc_ip", ""),
             "fcc_port": ch.get("fcc_port"),
             "fec_port": ch.get("fec_port"),
+            "is_hd": ch.get("is_hd", False),
         }
         for ch in channels
         if ch.get("ip") and ch.get("port") and ch.get("name")
