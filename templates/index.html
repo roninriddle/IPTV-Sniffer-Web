@@ -514,7 +514,22 @@ OpenWrt / iStoreOS
               <button id="clRefreshBtn" class="secondary" type="button">刷新</button>
               <button id="clProbeBtn" class="secondary" type="button">一键探测分辨率</button>
             </div>
-            <div class="table-wrap" style="margin-top:12px">
+            <div class="cl-filter">
+              <input id="clFilterName" class="cl-filter-name" type="search" placeholder="搜索频道名称…" autocomplete="off">
+              <select id="clFilterCategory">
+                <option value="">全部分类</option>
+                <option value="央视频道">央视频道</option>
+                <option value="卫视频道">卫视频道</option>
+                <option value="其它频道">其它频道</option>
+              </select>
+              <select id="clFilterQuality">
+                <option value="">全部清晰度</option>
+                <option value="4K高清">4K高清</option>
+                <option value="高清频道">高清频道</option>
+                <option value="普通频道">普通频道</option>
+              </select>
+            </div>
+            <div class="table-wrap" style="margin-top:8px">
               <table class="cl-table">
                 <thead>
                   <tr>

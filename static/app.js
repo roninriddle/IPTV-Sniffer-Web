@@ -812,12 +812,33 @@ async function loadChannelList() {
   try {
     const data = await requestJson("/api/channels");
     state.channelList = data.channels || [];
-    renderChannelList(state.channelList);
+    filterAndRenderChannelList();
   } catch (err) { console.warn("loadChannelList:", err.message); }
 }
 
+function filterAndRenderChannelList() {
+  const name = ($("clFilterName").value || "").trim().toLowerCase();
+  const category = $("clFilterCategory").value;
+  const quality = $("clFilterQuality").value;
+  let filtered = state.channelList || [];
+  if (name) filtered = filtered.filter(ch => (ch.name || "").toLowerCase().includes(name));
+  if (category) filtered = filtered.filter(ch => ch.category === category);
+  if (quality) {
+    filtered = filtered.filter(ch => {
+      const q = (ch.quality_group && ch.quality_group !== "未识别")
+        ? ch.quality_group
+        : ((ch.resolution_label && ch.resolution_label !== "未识别") ? ch.resolution_label : "-");
+      return q === quality;
+    });
+  }
+  renderChannelList(filtered);
+}
+
 function renderChannelList(channels) {
-  $("clChannelCount").textContent = `${channels.length} 个`;
+  const total = (state.channelList || []).length;
+  $("clChannelCount").textContent = channels.length === total
+    ? `${channels.length} 个`
+    : `${channels.length} / ${total} 个`;
   const tbody = $("clChannelTableBody");
   if (!channels.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>';
@@ -1119,6 +1140,9 @@ $("clDeleteSelectedBtn").addEventListener("click", async () => {
   } catch (err) { alert(err.message); }
 });
 $("clRefreshBtn").addEventListener("click", () => loadChannelList());
+$("clFilterName").addEventListener("input", filterAndRenderChannelList);
+$("clFilterCategory").addEventListener("change", filterAndRenderChannelList);
+$("clFilterQuality").addEventListener("change", filterAndRenderChannelList);
 $("clProbeBtn").addEventListener("click", async function() {
   const unprobed = (state.channelList || []).filter(ch => !ch.quality_group || ch.quality_group === "未识别");
   if (!unprobed.length) { alert("所有频道均已识别分辨率。"); return; }

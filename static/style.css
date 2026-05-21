@@ -48,6 +48,9 @@ body {
   align-items: center;
 }
 .toolbar-check { font-size: 13px; font-weight: 500; padding: 0 8px; min-height: 34px; }
+.cl-filter { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; flex-wrap: wrap; }
+.cl-filter-name { flex: 1; min-width: 160px; }
+.cl-filter select { min-width: 110px; }
 
 .layout {
   width: min(1040px, calc(100% - 32px));
