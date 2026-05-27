@@ -5,6 +5,6 @@ group "default" {
 target "iptv-sniffer-web" {
   context = "."
   dockerfile = "Dockerfile"
-  tags = ["iptv-sniffer-web:v0.9.7"]
+  tags = ["iptv-sniffer-web:v0.9.8"]
   platforms = ["linux/amd64", "linux/arm64"]
 }

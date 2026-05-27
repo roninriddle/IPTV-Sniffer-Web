@@ -244,6 +244,10 @@ td.mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cl-table th:nth-child(4), .cl-table td:nth-child(4) { width: 90px; }
 .cl-table th:nth-child(5), .cl-table td:nth-child(5) { width: 90px; }
 .cl-table th:nth-child(6), .cl-table td:nth-child(6) { width: 130px; }
+.auth-info-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.auth-info-table th { width: 200px; text-align: left; padding: 6px 12px 6px 0; font-weight: 600; color: var(--text-secondary, #6b7280); vertical-align: top; white-space: nowrap; }
+.auth-info-table td { padding: 6px 0; word-break: break-all; white-space: pre-wrap; }
+.auth-info-table tr + tr th, .auth-info-table tr + tr td { border-top: 1px solid var(--border, #e5e7eb); }
 td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
 .channel-name { min-width: 144px; }
 .channel-category { min-width: 92px; }

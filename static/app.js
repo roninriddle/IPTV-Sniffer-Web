@@ -1390,6 +1390,7 @@ function renderStbDiscoveryStatus(state) {
     box.textContent = n > 0 ? `捕获完成，共发现 ${n} 个频道。` : "捕获完成，未发现频道。请确认机顶盒已完成开机流程。";
     box.className = n > 0 ? "result-box ok" : "result-box warning";
     renderStbDiscoveryChannels(state.channels || []);
+    renderStbAuthInfo(state.auth_info || {});
   } else if (isError) {
     box.textContent = `捕获出错：${escapeHtml(state.error || "未知错误")}`;
     box.className = "result-box error";
@@ -1397,6 +1398,31 @@ function renderStbDiscoveryStatus(state) {
     box.textContent = "等待开始…";
     box.className = "result-box muted";
   }
+}
+
+function renderStbAuthInfo(info) {
+  const section = $("stbAuthInfoSection");
+  if (!info || !Object.values(info).some(v => v && (Array.isArray(v) ? v.length : true))) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  const rows = [
+    ["机顶盒 MAC",            info.mac],
+    ["IPTV IP（DHCP 分配）",  info.assigned_ip],
+    ["子网掩码",              info.netmask],
+    ["网关",                  info.gateway],
+    ["DNS 服务器",            (info.dns || []).join("  /  ")],
+    ["DHCP 服务器",           info.dhcp_server],
+    ["Option 60 / Vendor Class",  info.vendor_class],
+    ["Option 12 / Hostname",      info.hostname],
+    ["Option 61 / Client-ID",     info.client_id],
+    ["Option 125 / Vendor Specific", info.vendor_specific_125],
+  ];
+  $("stbAuthInfoBody").innerHTML = rows
+    .filter(([, v]) => v)
+    .map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td class="mono small">${escapeHtml(v)}</td></tr>`)
+    .join("");
 }
 
 function renderStbDiscoveryChannels(channels) {
@@ -1466,6 +1492,7 @@ $("stbDiscoveryResetBtn").addEventListener("click", async () => {
     const data = await requestJson("/api/stb_discovery/reset", {method: "POST", body: "{}"});
     renderStbDiscoveryStatus(data);
     $("stbDiscoveryResultSection").hidden = true;
+    $("stbAuthInfoSection").hidden = true;
   } catch (err) { alert(err.message); }
 });
 

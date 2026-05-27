@@ -23,6 +23,214 @@ def _parse_ip(data: bytes, off: int) -> str:
     return ".".join(str(b) for b in data[off : off + 4])
 
 
+# ── DHCP helpers ─────────────────────────────────────────────────────────────
+
+def _parse_dhcp_options(options_bytes: bytes) -> dict[int, bytes]:
+    """Parse DHCP options TLV into {code: value_bytes}."""
+    opts: dict[int, bytes] = {}
+    i = 0
+    while i < len(options_bytes):
+        code = options_bytes[i]
+        i += 1
+        if code == 0:   # PAD
+            continue
+        if code == 255:  # END
+            break
+        if i >= len(options_bytes):
+            break
+        length = options_bytes[i]
+        i += 1
+        if i + length > len(options_bytes):
+            break
+        opts[code] = options_bytes[i : i + length]
+        i += length
+    return opts
+
+
+def _parse_opt125(data: bytes) -> str:
+    """Parse DHCP Option 125 (Vendor-Identifying Vendor-Specific)."""
+    _ENTERPRISE_NAMES = {2011: "中兴ZTE", 3561: "Broadcom/TR-069", 4491: "CableLabs"}
+    parts: list[str] = []
+    i = 0
+    while i + 5 <= len(data):
+        enterprise = struct.unpack(">I", data[i : i + 4])[0]
+        data_len = data[i + 4]
+        i += 5
+        if i + data_len > len(data):
+            break
+        sub_data = data[i : i + data_len]
+        i += data_len
+        sub_parts: list[str] = []
+        j = 0
+        while j + 2 <= len(sub_data):
+            sub_code = sub_data[j]
+            sub_len = sub_data[j + 1]
+            j += 2
+            if j + sub_len > len(sub_data):
+                break
+            raw = sub_data[j : j + sub_len]
+            j += sub_len
+            try:
+                sv = raw.decode("utf-8", errors="replace").strip("\x00").strip()
+                if not all(c.isprintable() or c in "\t\n" for c in sv):
+                    sv = raw.hex()
+            except Exception:
+                sv = raw.hex()
+            sub_parts.append(f"sub{sub_code}={sv}")
+        label = _ENTERPRISE_NAMES.get(enterprise, str(enterprise))
+        parts.append(f"Enterprise({label}): " + "; ".join(sub_parts))
+    return "\n".join(parts)
+
+
+def _parse_dhcp_packet(payload: bytes) -> dict[str, Any] | None:
+    """Parse a DHCP packet from UDP payload. Returns None if not valid DHCP."""
+    if len(payload) < 240:
+        return None
+    if payload[236:240] != b"\x63\x82\x53\x63":  # magic cookie
+        return None
+    op = payload[0]
+    hlen = min(payload[2], 16)
+    xid = struct.unpack(">I", payload[4:8])[0]
+    yiaddr = _parse_ip(payload, 16)
+    mac = ":".join(f"{b:02x}" for b in payload[28 : 28 + hlen]) if hlen >= 6 else ""
+    options = _parse_dhcp_options(payload[240:])
+    msg_type = options.get(53, b"\x00")[0] if 53 in options else 0
+    return {"op": op, "xid": xid, "yiaddr": yiaddr, "mac": mac,
+            "msg_type": msg_type, "options": options}
+
+
+def _extract_dhcp_from_pcap(pcap_path: str) -> dict[str, Any]:
+    """Extract STB DHCP auth info from a pcap file."""
+    _VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
+    _DLT_LINUX_SLL = 113
+    _DLT_LINUX_SLL2 = 276
+    requests: dict[int, dict] = {}
+    responses: dict[int, dict] = {}
+    with open(pcap_path, "rb") as f:
+        header = f.read(24)
+        if len(header) < 24:
+            return {}
+        magic = struct.unpack("<I", header[:4])[0]
+        if magic not in (0xA1B2C3D4, 0xD3B4A1B2):
+            return {}
+        linktype = struct.unpack("<I", header[20:24])[0]
+        while True:
+            hdr = f.read(16)
+            if len(hdr) < 16:
+                break
+            inc_len = struct.unpack("<I", hdr[8:12])[0]
+            pkt = f.read(inc_len)
+            if linktype == _DLT_LINUX_SLL:
+                if len(pkt) < 16:
+                    continue
+                if struct.unpack(">H", pkt[14:16])[0] != 0x0800:
+                    continue
+                ip_start = 16
+            elif linktype == _DLT_LINUX_SLL2:
+                if len(pkt) < 20:
+                    continue
+                if struct.unpack(">H", pkt[0:2])[0] != 0x0800:
+                    continue
+                ip_start = 20
+            else:
+                if len(pkt) < 14:
+                    continue
+                p = 12
+                if p + 2 > len(pkt):
+                    continue
+                etype = struct.unpack(">H", pkt[p : p + 2])[0]
+                while etype in _VLAN_ETYPES:
+                    p += 4
+                    if p + 2 > len(pkt):
+                        break
+                    etype = struct.unpack(">H", pkt[p : p + 2])[0]
+                if etype != 0x0800:
+                    continue
+                ip_start = p + 2
+            if ip_start + 20 > len(pkt):
+                continue
+            if pkt[ip_start + 9] != 17:  # not UDP
+                continue
+            ip_ihl = (pkt[ip_start] & 0x0F) * 4
+            udp_off = ip_start + ip_ihl
+            if udp_off + 8 > len(pkt):
+                continue
+            src_port = struct.unpack(">H", pkt[udp_off : udp_off + 2])[0]
+            dst_port = struct.unpack(">H", pkt[udp_off + 2 : udp_off + 4])[0]
+            if src_port not in (67, 68) and dst_port not in (67, 68):
+                continue
+            parsed = _parse_dhcp_packet(pkt[udp_off + 8:])
+            if not parsed:
+                continue
+            xid = parsed["xid"]
+            if parsed["op"] == 1:
+                requests.setdefault(xid, parsed)
+            elif parsed["op"] == 2:
+                responses.setdefault(xid, parsed)
+
+    # Pick best matched request+response pair
+    best_req, best_resp = None, None
+    for xid, req in requests.items():
+        if xid in responses:
+            best_req, best_resp = req, responses[xid]
+            break
+    if best_req is None and requests:
+        best_req = next(iter(requests.values()))
+    if best_req is None:
+        return {}
+
+    opts_req = best_req["options"]
+    opts_resp = best_resp["options"] if best_resp else {}
+
+    def _str(opts: dict, code: int) -> str:
+        val = opts.get(code)
+        if not val:
+            return ""
+        try:
+            s = val.decode("utf-8", errors="replace").strip("\x00").strip()
+            return s if all(c.isprintable() or c in " \t" for c in s) else val.hex()
+        except Exception:
+            return val.hex()
+
+    def _ip(opts: dict, code: int) -> str:
+        val = opts.get(code)
+        return ".".join(str(b) for b in val[:4]) if val and len(val) >= 4 else ""
+
+    def _ips(opts: dict, code: int) -> list[str]:
+        val = opts.get(code)
+        if not val:
+            return []
+        return [".".join(str(b) for b in val[i : i + 4])
+                for i in range(0, len(val) - 3, 4)]
+
+    raw61 = opts_req.get(61, b"")
+    if raw61 and raw61[0] == 1 and len(raw61) == 7:
+        client_id = "01:" + ":".join(f"{b:02x}" for b in raw61[1:])
+    elif raw61:
+        client_id = raw61.hex()
+    else:
+        client_id = ""
+
+    assigned_ip = ""
+    if best_resp:
+        yi = best_resp.get("yiaddr", "")
+        if yi and yi != "0.0.0.0":
+            assigned_ip = yi
+
+    return {
+        "mac": best_req.get("mac", ""),
+        "assigned_ip": assigned_ip,
+        "gateway": _ip(opts_resp, 3),
+        "netmask": _ip(opts_resp, 1),
+        "dns": _ips(opts_resp, 6),
+        "dhcp_server": _ip(opts_resp, 54),
+        "vendor_class": _str(opts_req, 60),
+        "hostname": _str(opts_req, 12),
+        "client_id": client_id,
+        "vendor_specific_125": _parse_opt125(opts_req[125]) if 125 in opts_req else "",
+    }
+
+
 def _unchunk(data: bytes) -> bytes:
     """Strip HTTP chunked transfer encoding."""
     out = bytearray()
@@ -305,6 +513,7 @@ class StbDiscoveryService:
             "error": None,
             "channels": [],
             "channel_count": 0,
+            "auth_info": {},
         }
         self._proc: subprocess.Popen | None = None
         self._pcap_path: str | None = None
@@ -335,13 +544,14 @@ class StbDiscoveryService:
                 "error": None,
                 "channels": [],
                 "channel_count": 0,
+                "auth_info": {},
             }
         cmd = [
             "tcpdump",
             "-i", interface,
             "-s", "0",
             "-w", self._pcap_path,
-            f"host {stb_ip} and tcp",
+            f"(host {stb_ip} and tcp) or (udp and (port 67 or port 68))",
         ]
         self.logger.info(f"开始捕获 STB 开机流量：STB={stb_ip}，接口={interface}，文件={self._pcap_path}")
         try:
@@ -383,8 +593,10 @@ class StbDiscoveryService:
             try:
                 time.sleep(0.5)  # let pcap flush
                 channels: list[dict[str, Any]] = []
+                auth_info: dict[str, Any] = {}
                 if pcap_path and os.path.exists(pcap_path):
                     channels = analyze_pcap_for_channels(pcap_path, stb_ip or "")
+                    auth_info = _extract_dhcp_from_pcap(pcap_path)
                     try:
                         os.unlink(pcap_path)
                     except Exception:
@@ -393,7 +605,12 @@ class StbDiscoveryService:
                     self._state["status"] = self.STATUS_DONE
                     self._state["channels"] = channels
                     self._state["channel_count"] = len(channels)
-                self.logger.info(f"STB 频道发现完成：共发现 {len(channels)} 个频道")
+                    self._state["auth_info"] = auth_info
+                has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
+                self.logger.info(
+                    f"STB 频道发现完成：共发现 {len(channels)} 个频道，"
+                    f"认证信息：{'已提取（MAC=' + auth_info.get('mac','') + '）' if has_auth else '未捕获到 DHCP'}"
+                )
             except Exception as exc:
                 self.logger.error(f"STB 频道发现分析失败：{exc}")
                 with self._lock:
@@ -428,4 +645,5 @@ class StbDiscoveryService:
                 "error": None,
                 "channels": [],
                 "channel_count": 0,
+                "auth_info": {},
             }
