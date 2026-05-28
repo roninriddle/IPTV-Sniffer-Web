@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.9.8"
+APP_VERSION = "0.9.9"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -75,6 +75,10 @@ PROBE_BUFFER_SIZE = int(os.environ.get("PROBE_BUFFER_SIZE", "131072"))
 
 CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "(udp and dst net 224.0.0.0/4) or tcp")
 ALLOWED_DOWNLOADS = {
+    "channels-best.m3u",
+    "channels-all.m3u",
+    "channels-rtp2httpd-best.m3u",
+    "channels-rtp2httpd-all.m3u",
     "channels-direct.m3u",
     "channels-rtp2httpd-source.m3u",
     "scheduled-epg.m3u",

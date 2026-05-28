@@ -133,3 +133,41 @@ def stream_quality_group(width: int | None, height: int | None) -> str:
     if width > 0 and height > 0:
         return "普通频道"
     return "未识别"
+
+
+# ── Channel grouping helpers ──────────────────────────────────────────────
+
+_GROUP_SUFFIX_RE = re.compile(
+    r"(4K|SUPER4K|UHD|超高清|高清|标清|HD|SD|\d{3,4}[PI])$",
+    re.IGNORECASE,
+)
+
+
+def normalize_channel_name_for_group(name: str) -> str:
+    """Strip quality suffixes and punctuation for group-key comparison."""
+    n = re.sub(r"[\s\-_·•【】\[\]()（）]", "", name.upper())
+    n = _GROUP_SUFFIX_RE.sub("", n)
+    return n.strip()
+
+
+def channel_group_key(ch: dict) -> str:
+    """Return a stable group key: tvg_id > normalized name > raw key."""
+    tvg_id = str(ch.get("tvg_id") or "").strip()
+    if tvg_id:
+        return f"id:{tvg_id}"
+    name = str(ch.get("name") or "").strip()
+    norm = normalize_channel_name_for_group(name)
+    if norm:
+        return f"name:{norm}"
+    return f"raw:{ch.get('key', '')}"
+
+
+def channel_primary_score(ch: dict) -> tuple:
+    """Higher tuple = better candidate for primary source within a group."""
+    qg = {"4K高清": 4, "高清频道": 3, "普通频道": 2}.get(str(ch.get("quality_group", "")), 1)
+    ps = {"ok": 3, "partial": 2, "not_probed": 1, "failed": 0}.get(
+        str(ch.get("probe_status", "not_probed")), 1
+    )
+    fcc = (2 if ch.get("fcc_ip") and ch.get("fcc_port") else 0) + (1 if ch.get("fec_port") else 0)
+    pkts = int(ch.get("packets", 0) or 0)
+    return (qg, ps, fcc, pkts)

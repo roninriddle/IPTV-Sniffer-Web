@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.8
+# IPTV Sniffer Web v0.9.9
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -336,6 +336,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.9.9`：首页拓扑三场景统一（镜像口 / R4S eth0 被动抓包 / IGMP Proxy）；首页与部署向导合并，流程说明更新为频道线路与播放诊断；新增频道线路组（按 tvg-id / 标准化频道名自动归组，4K>HD>SD>未识别优先级自动选主源，支持手动设为主源）；导出重构为四档：channels-best.m3u（主源直连）、channels-all.m3u（全部直连）、channels-rtp2httpd-best.m3u（主源源地址）、channels-rtp2httpd-all.m3u（全部源地址），旧文件名作为别名保留兼容；频道列表新增「分组视图」切换，展开后可查看各备线并一键设为主源；utils 新增 channel_group_key / channel_primary_score / normalize_channel_name_for_group；
 - `v0.9.8`：STB 开机捕获新增 DHCP 认证信息提取：tcpdump 过滤器同步捕获 UDP 67/68，分析完成后自动解析机顶盒 MAC、IPTV IP、网关/掩码/DNS/DHCP 服务器、Option 60 Vendor Class、Option 12 Hostname、Option 61 Client-ID、Option 125 Vendor Specific（含 Enterprise 子选项），结果展示在「运营商频道」页面「机顶盒认证信息」卡片；
 - `v0.9.7`：运营商频道导入后自动从 `is_hd` 字段推导清晰度分组（高清频道 / 普通频道），导入即可在频道列表看到清晰度，无需等待 ffprobe 探测（ffprobe 探测到 4K 后仍可覆盖）；频道列表新增筛选行：按名称实时搜索、按分类下拉筛选、按清晰度下拉筛选，有筛选条件时计数显示"N / 总数 个"；
 - `v0.9.6`：修复部署向导前端 `requestJson()` 重复取 `.data` 导致向导始终显示"检测失败"；修复 `CUSetConfig` 频道表解析回归（单引号与双引号两种外层格式均可正确提取频道，属性值同时兼容单双引号）；新增回归测试套件覆盖 Ethernet / SLL / SLL2 pcap、单双引号频道表解析、FEC/FCC/fcc-type 导出 URL、OpenWrt UCI 解析器与分析器接口契约（25 项全部通过）；

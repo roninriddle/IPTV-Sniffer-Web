@@ -128,10 +128,25 @@ class ChannelStore:
                     "probed_at": row.get("probed_at", data.get(key, {}).get("probed_at")),
                     "epg_matched_at": row.get("epg_matched_at", data.get(key, {}).get("epg_matched_at")),
                     "updated_at": row.get("updated_at"),
+                    "is_primary": bool(row.get("is_primary", data.get(key, {}).get("is_primary", False))),
                 }
                 saved += 1
             _atomic_dump_json(self.path, data)
             return {"saved": saved, "deleted": deleted, "total": len(data)}
+
+    def patch_group_primary(self, group_key: str, primary_key: str) -> int:
+        """Set is_primary=True on primary_key and False on all others in the same group."""
+        from utils import channel_group_key
+        with self._lock:
+            data = self.load()
+            updated = 0
+            for k, ch in data.items():
+                if channel_group_key(ch) == group_key:
+                    ch["is_primary"] = (k == primary_key)
+                    updated += 1
+            if updated:
+                _atomic_dump_json(self.path, data)
+            return updated
 
     def delete_keys(self, keys: list[str]) -> int:
         with self._lock:

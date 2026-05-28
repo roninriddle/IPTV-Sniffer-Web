@@ -74,28 +74,31 @@
         <section class="card topology-card">
           <details open>
             <summary>
-              <span>运行拓扑与抓包前提</span>
-              <span class="chip warning">宿主机必须能看到机顶盒 IPTV 流量</span>
+              <span>三种拓扑模式</span>
+              <span class="chip warning">容器只能抓到宿主机实际可见的流量</span>
             </summary>
-            <div class="grid two">
+            <div class="grid three-col">
               <article class="notice compact">
-                <h3>推荐：管理型交换机镜像口</h3>
-                <pre>光猫 IPTV 口 → 交换机 A 口
-交换机 B 口 → 机顶盒
-交换机 C 口 → 抓包设备 / Docker 宿主机
-
-源端口：B 口（机顶盒端口）
-目标端口：C 口（抓包设备）
-镜像方向：Both / 双向</pre>
+                <h3>① 交换机镜像口（只嗅探）</h3>
+                <pre>光猫 IPTV 口 → 交换机
+  ├─ 机顶盒端口（被镜像源）
+  └─ 宿主机端口（镜像目标）</pre>
+                <p class="muted small">✓ 可嗅探频道表 / 候选流<br>✗ 不可主动拉流播放（镜像口被动）</p>
               </article>
               <article class="notice compact">
-                <h3>OpenWrt / iStoreOS 串接</h3>
-                <pre>光猫 IPTV 口
-      ↓
-OpenWrt / iStoreOS
-      ↓
-机顶盒</pre>
-                <p class="muted">不可用场景：光猫 IPTV 口直接接机顶盒，而 NAS / Docker 只在普通 LAN 中。</p>
+                <h3>② R4S eth0 直连光猫 IPTV 口（推荐）</h3>
+                <pre>光猫 IPTV 口 → R4S eth0（被动监听）
+家庭交换机
+  ├─ 机顶盒（DHCP 认证后播放）
+  └─ R4S eth1（管理口）</pre>
+                <p class="muted small">✓ 可嗅探开机流量 / 频道表<br>✓ 认证后 rtp2httpd 可主动播放<br>⚠ 需释放 eth0 为 proto=none（见向导）</p>
+              </article>
+              <article class="notice compact">
+                <h3>③ IGMP Proxy / 光猫桥接（LAN 内播放）</h3>
+                <pre>光猫（桥接）→ OpenWrt/RouterOS
+  └─ LAN / VLAN → Docker 宿主机
+                    └─ rtp2httpd</pre>
+                <p class="muted small">✓ 路由器完成 IPTV 认证与 IGMP Proxy<br>✓ LAN 内设备可直接播放组播<br>✗ 需路由器支持 IGMP Snooping/Proxy</p>
               </article>
             </div>
           </details>
@@ -104,19 +107,19 @@ OpenWrt / iStoreOS
         <section class="home-steps">
           <article>
             <strong>1. 运营商频道发现（主入口）</strong>
-            <span>填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统自动从 STB 开机 TCP 流量中解析运营商 EPG 门户的完整频道表（频道名、组播地址、FCC 参数），一键「导入到频道列表」。</span>
+            <span>填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统自动从 STB 开机流量中解析频道表与 DHCP 认证信息（MAC / IPTV IP / Option60 等），一键「导入到频道线路」。</span>
           </article>
           <article>
-            <strong>2. 嗅探整理（补充入口）</strong>
-            <span>设置抓包网卡和 rtp2httpd 地址，切换机顶盒频道，系统过滤无效组播、自动识别编码/分辨率/截图和 EPG，点击「导入到频道列表」将嗅探结果并入频道列表。</span>
+            <strong>2. 频道线路管理</strong>
+            <span>同名频道自动归组，按清晰度（4K → 1080p → 720p → SD）与探测状态自动选主源；也可手动设为主源。导出「最佳线路 M3U」（每组只取主源）或「全部线路 M3U」。</span>
           </article>
           <article>
-            <strong>3. 频道列表与导出</strong>
-            <span>在「频道列表」中查看所有已导入的频道，可勾选特定频道后点击「生成播放列表」，一键输出直连 M3U、源地址 M3U、JSON、TXT、CSV 等格式。</span>
+            <strong>3. 播放诊断</strong>
+            <span>检测 rtp2httpd 可达性、FCC 响应与认证状态，给出「M3U 问题 / rtp2httpd 配置问题 / 上游组播问题」结论，帮助定位播放失败原因。</span>
           </article>
           <article>
             <strong>4. 定时 EPG 刷新</strong>
-            <span>在「定时 EPG」中管理 XMLTV EPG 来源，可手动或定时刷新全部来源，保持频道 EPG 与台标信息持续更新，匹配结果在导出时自动写入 tvg-id / tvg-logo 字段。</span>
+            <span>在「定时 EPG」中管理 XMLTV EPG 来源，定时刷新保持 tvg-id / tvg-logo 持续更新。</span>
           </article>
         </section>
 
@@ -125,10 +128,10 @@ OpenWrt / iStoreOS
             <h2>iStoreOS / OpenWrt 被动抓包部署向导</h2>
             <span id="openwrtWizardHomeBadge" class="chip neutral">检测中</span>
           </div>
-          <p class="muted">适用于 NanoPi R4S 等 iStoreOS/OpenWrt 设备。向导将读取宿主机网络配置，判断 eth0 是否已释放为抓包口，并可生成一键配置脚本。</p>
+          <p class="muted">NanoPi R4S 默认 eth0=WAN、eth1=LAN。向导将读取宿主机 UCI 网络配置，判断 eth0 是否已释放为被动抓包口，并生成一键配置脚本。<strong>被动抓包：eth0 无 IP、无路由，仅供 tcpdump 监听。</strong></p>
           <div id="openwrtWizardHomeSummary" class="notice compact" style="margin-top:8px">正在读取宿主机配置…</div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-            <button class="secondary" data-tab="openwrt" type="button">打开完整向导</button>
+            <button class="secondary" data-tab="openwrt" type="button">查看 UCI 脚本与详细向导</button>
             <button id="openwrtHomeApplyBtn" class="primary" type="button" hidden>将 eth0 应用为抓包网卡</button>
           </div>
         </section>
@@ -514,19 +517,25 @@ OpenWrt / iStoreOS
                 <input id="catchupSourceTemplate" type="text" placeholder="http://server/timeshift/{channel_id}">
               </label>
             </div>
+            <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
             <div class="button-row">
-              <button id="clDownloadDirectM3u" class="secondary" type="button">下载直连 M3U</button>
-              <button id="clDownloadSourceM3u" class="secondary" type="button">下载源地址 M3U</button>
-              <button id="clDownloadJson" class="secondary" type="button">下载 JSON</button>
-              <button id="clDownloadTxt" class="secondary" type="button">下载 TXT</button>
-              <button id="clDownloadCsv" class="secondary" type="button">下载 CSV</button>
+              <button id="clDownloadBestM3u" class="primary" type="button">最佳线路 M3U（直连）</button>
+              <button id="clDownloadRtpBestM3u" class="primary" type="button">最佳线路 M3U（rtp2httpd 源）</button>
             </div>
-            <div id="clExportResult" class="result-box muted">勾选频道后点击格式按钮直接下载；不勾选则导出全部。源地址 M3U 可作为 rtp2httpd external-m3u。</div>
+            <div class="section-subtitle" style="margin-top:10px"><h3>全部线路</h3></div>
+            <div class="button-row">
+              <button id="clDownloadAllM3u" class="secondary" type="button">全部线路 M3U（直连）</button>
+              <button id="clDownloadRtpAllM3u" class="secondary" type="button">全部线路 M3U（rtp2httpd 源）</button>
+              <button id="clDownloadJson" class="secondary" type="button">JSON</button>
+              <button id="clDownloadTxt" class="secondary" type="button">TXT</button>
+              <button id="clDownloadCsv" class="secondary" type="button">CSV</button>
+            </div>
+            <div id="clExportResult" class="result-box muted">「最佳线路」每个频道组只导出得分最高的主源；「全部线路」导出所有。</div>
           </section>
 
           <section class="card">
             <div class="section-title">
-              <h2>频道列表</h2>
+              <h2>频道线路</h2>
               <span id="clChannelCount" class="chip neutral">0 个</span>
             </div>
             <div class="toolbar">
@@ -535,6 +544,7 @@ OpenWrt / iStoreOS
               <button id="clDeleteSelectedBtn" class="danger" type="button">删除选中</button>
               <button id="clRefreshBtn" class="secondary" type="button">刷新</button>
               <button id="clProbeBtn" class="secondary" type="button">一键探测分辨率</button>
+              <button id="clGroupViewBtn" class="secondary" type="button">分组视图</button>
             </div>
             <div class="cl-filter">
               <input id="clFilterName" class="cl-filter-name" type="search" placeholder="搜索频道名称…" autocomplete="off">
@@ -551,7 +561,8 @@ OpenWrt / iStoreOS
                 <option value="普通频道">普通频道</option>
               </select>
             </div>
-            <div class="table-wrap" style="margin-top:8px">
+            <!-- flat view -->
+            <div id="clFlatView" class="table-wrap" style="margin-top:8px">
               <table class="cl-table">
                 <thead>
                   <tr>
@@ -565,6 +576,25 @@ OpenWrt / iStoreOS
                 </thead>
                 <tbody id="clChannelTableBody">
                   <tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- group view -->
+            <div id="clGroupView" class="table-wrap" style="margin-top:8px;display:none">
+              <table class="cl-table group-table">
+                <thead>
+                  <tr>
+                    <th style="width:28px"></th>
+                    <th>频道名称</th>
+                    <th style="width:90px">清晰度</th>
+                    <th style="width:60px">线路数</th>
+                    <th style="width:90px">分类</th>
+                    <th style="width:130px">EPG 标识</th>
+                    <th style="width:80px">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="clGroupTableBody">
+                  <tr><td colspan="7" class="empty">加载中…</td></tr>
                 </tbody>
               </table>
             </div>

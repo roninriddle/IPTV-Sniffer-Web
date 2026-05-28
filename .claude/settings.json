@@ -12,7 +12,8 @@
       "Bash(.venv/bin/pip install *)",
       "Bash(.venv/bin/pytest tests/test_regression_v096.py -v)",
       "Bash(python3 -m py_compile /Users/ronin/Downloads/iptv-sniffer-web-v0.5/app.py)",
-      "Bash(python3 -m py_compile /Users/ronin/Downloads/iptv-sniffer-web-v0.5/services/stb_discovery_service.py)"
+      "Bash(python3 -m py_compile /Users/ronin/Downloads/iptv-sniffer-web-v0.5/services/stb_discovery_service.py)",
+      "Bash(.venv/bin/pytest tests/test_regression_v096.py -q)"
     ]
   }
 }

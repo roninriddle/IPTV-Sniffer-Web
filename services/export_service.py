@@ -10,7 +10,7 @@ from typing import Any
 
 from config import CATEGORY_OPTIONS, CATEGORY_ORDER
 from models import ChannelRecord
-from utils import ip_sort_key, natural_key, stream_quality_group
+from utils import channel_group_key, channel_primary_score, ip_sort_key, natural_key, stream_quality_group
 
 QUALITY_GROUP_OPTIONS = ["4K高清", "高清频道", "普通频道"]
 
@@ -158,22 +158,44 @@ class ExportService:
         catchup_template = str(settings.get("catchup_source_template", "") or "").strip()
         fcc_type = str(settings.get("fcc_type", "") or "").strip()
         op_ch = operator_channels or {}
+        best_channels = self._select_best_channels(channels)
+        quality_groups_all  = self._quality_groups(channels)
+        quality_groups_best = self._quality_groups(best_channels)
+        m3u_kwargs = dict(http_host=http_host, http_port=http_port, path_mode=path_mode,
+                          epg_url=epg_url, catchup_days=catchup_days,
+                          catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
+        # New canonical files
+        best_m3u_path  = self.output_dir / "channels-best.m3u"
+        all_m3u_path   = self.output_dir / "channels-all.m3u"
+        rtp_best_path  = self.output_dir / "channels-rtp2httpd-best.m3u"
+        rtp_all_path   = self.output_dir / "channels-rtp2httpd-all.m3u"
+        # Legacy aliases (same content as best)
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
         json_path = self.output_dir / "channels.json"
-        txt_path = self.output_dir / "channels.txt"
-        csv_path = self.output_dir / "channels.csv"
-        quality_groups = self._quality_groups(channels)
-        self._write_m3u(channels, quality_groups, direct_m3u_path, http_host, http_port, path_mode, url_mode="direct", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
-        self._write_m3u(channels, quality_groups, source_m3u_path, http_host, http_port, path_mode, url_mode="source", epg_url=epg_url, catchup_days=catchup_days, catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
+        txt_path  = self.output_dir / "channels.txt"
+        csv_path  = self.output_dir / "channels.csv"
+        self._write_m3u(best_channels, quality_groups_best, best_m3u_path,  url_mode="direct", **m3u_kwargs)
+        self._write_m3u(channels,      quality_groups_all,  all_m3u_path,   url_mode="direct", **m3u_kwargs)
+        self._write_m3u(best_channels, quality_groups_best, rtp_best_path,  url_mode="source", **m3u_kwargs)
+        self._write_m3u(channels,      quality_groups_all,  rtp_all_path,   url_mode="source", **m3u_kwargs)
+        # Write legacy aliases (same bytes as new files)
+        import shutil as _shutil
+        _shutil.copy2(best_m3u_path, direct_m3u_path)
+        _shutil.copy2(rtp_best_path, source_m3u_path)
         self._write_playlist_json(channels, json_path, path_mode, fcc_type=fcc_type)
-        self._write_txt(channels, quality_groups, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
-        self._write_csv(channels, quality_groups, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
+        self._write_txt(channels, quality_groups_all, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
+        self._write_csv(channels, quality_groups_all, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
         return {
             "count": len(channels),
-            "quality_group_counts": {name: len(quality_groups.get(name, [])) for name in QUALITY_GROUP_OPTIONS},
+            "best_count": len(best_channels),
+            "quality_group_counts": {name: len(quality_groups_all.get(name, [])) for name in QUALITY_GROUP_OPTIONS},
             "unclassified_resolution_count": sum(1 for channel in channels if channel.quality_group not in QUALITY_GROUP_OPTIONS),
             "files": {
+                "best_m3u": best_m3u_path.name,
+                "all_m3u": all_m3u_path.name,
+                "rtp_best_m3u": rtp_best_path.name,
+                "rtp_all_m3u": rtp_all_path.name,
                 "direct_m3u": direct_m3u_path.name,
                 "source_m3u": source_m3u_path.name,
                 "json": json_path.name,
@@ -181,6 +203,23 @@ class ExportService:
                 "csv": csv_path.name,
             },
         }
+
+    def _select_best_channels(self, channels: list[ChannelRecord]) -> list[ChannelRecord]:
+        """Return one best channel per group (primary source per tvg-id/name group)."""
+        groups: dict[str, list[ChannelRecord]] = {}
+        for ch in channels:
+            gk = channel_group_key({"tvg_id": ch.tvg_id, "name": ch.name, "key": ch.key})
+            groups.setdefault(gk, []).append(ch)
+        best: list[ChannelRecord] = []
+        for members in groups.values():
+            primary = max(members, key=lambda c: channel_primary_score({
+                "quality_group": c.quality_group, "probe_status": c.probe_status,
+                "fcc_ip": c.fcc_ip, "fcc_port": c.fcc_port,
+                "fec_port": c.fec_port, "packets": c.packets,
+            }))
+            best.append(primary)
+        best.sort(key=self._channel_sort_key)
+        return best
 
     def _quality_groups(self, channels: list[ChannelRecord]) -> dict[str, list[ChannelRecord]]:
         grouped = {name: [] for name in QUALITY_GROUP_OPTIONS}

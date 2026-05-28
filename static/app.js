@@ -799,7 +799,7 @@ async function doExportDownload(filename, btn) {
       : (state.channelList || []);
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({...formSettings(), channels})});
     $("clExportResult").className = "result-box";
-    $("clExportResult").textContent = `${data.count} 个频道；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条。`;
+    $("clExportResult").textContent = `共 ${data.count} 条线路，分组后主源 ${data.best_count ?? data.count} 个；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条。`;
     const a = document.createElement("a");
     a.href = `/api/download/${filename}`;
     a.download = filename;
@@ -1115,8 +1115,10 @@ $("streamsTableBody").addEventListener("focusout", () => {
     if (!tableHasEditingFocus()) renderStreams(state.streams);
   }, 80);
 });
-$("clDownloadDirectM3u").addEventListener("click", function() { doExportDownload("channels-direct.m3u", this); });
-$("clDownloadSourceM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-source.m3u", this); });
+$("clDownloadBestM3u").addEventListener("click", function() { doExportDownload("channels-best.m3u", this); });
+$("clDownloadAllM3u").addEventListener("click", function() { doExportDownload("channels-all.m3u", this); });
+$("clDownloadRtpBestM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-best.m3u", this); });
+$("clDownloadRtpAllM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-all.m3u", this); });
 $("clDownloadJson").addEventListener("click", function() { doExportDownload("channels.json", this); });
 $("clDownloadTxt").addEventListener("click", function() { doExportDownload("channels.txt", this); });
 $("clDownloadCsv").addEventListener("click", function() { doExportDownload("channels.csv", this); });
@@ -1714,3 +1716,104 @@ async function runDiagnose() {
 }
 
 $("diagRunBtn").addEventListener("click", runDiagnose);
+
+// ── Channel group view ────────────────────────────────────────────────────
+
+let _groupViewActive = false;
+
+function _qualityBadge(qg) {
+  if (qg === "4K高清") return '<span class="badge ultra">4K</span>';
+  if (qg === "高清频道") return '<span class="badge hd">HD</span>';
+  if (qg === "普通频道") return '<span class="badge info">SD</span>';
+  return '<span class="badge neutral">—</span>';
+}
+
+function renderChannelGroups(groups) {
+  const tbody = $("clGroupTableBody");
+  if (!groups.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无频道组，请先导入频道。</td></tr>';
+    return;
+  }
+  const rows = [];
+  for (const g of groups) {
+    const p = g.primary;
+    const qg = (p.quality_group && p.quality_group !== "未识别") ? p.quality_group : "—";
+    const hasAlts = g.alternates.length > 0;
+    const groupId = `grp-${CSS.escape(g.group_key)}`;
+    rows.push(`<tr data-group="${escapeHtml(g.group_key)}">
+      <td><button class="expand-btn" data-group="${escapeHtml(g.group_key)}" aria-expanded="false">${hasAlts ? "▶" : ""}</button></td>
+      <td>${escapeHtml(p.name || "")}</td>
+      <td>${_qualityBadge(p.quality_group)}</td>
+      <td>${g.count}</td>
+      <td>${escapeHtml(p.category || "")}</td>
+      <td class="mono small">${escapeHtml(p.tvg_id || "—")}</td>
+      <td><button class="secondary xs-btn diag-ch-btn" data-key="${escapeHtml(p.key||"")}">诊断</button></td>
+    </tr>`);
+    for (const alt of g.alternates) {
+      const altQg = (alt.quality_group && alt.quality_group !== "未识别") ? alt.quality_group : "—";
+      rows.push(`<tr class="alt-row hidden" data-parent="${escapeHtml(g.group_key)}">
+        <td></td>
+        <td class="mono small">${escapeHtml(alt.name || "")} <span class="muted">${escapeHtml(alt.key || "")}</span></td>
+        <td>${_qualityBadge(alt.quality_group)}</td>
+        <td></td>
+        <td class="muted small">${escapeHtml(alt.probe_status || "")}</td>
+        <td class="mono small">${escapeHtml(alt.tvg_id || "—")}</td>
+        <td><button class="secondary xs-btn set-primary-btn"
+            data-group="${escapeHtml(g.group_key)}"
+            data-key="${escapeHtml(alt.key||"")}">设为主源</button></td>
+      </tr>`);
+    }
+  }
+  tbody.innerHTML = rows.join("");
+
+  // expand/collapse
+  tbody.querySelectorAll(".expand-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const gk = btn.dataset.group;
+      const expanded = btn.getAttribute("aria-expanded") === "true";
+      btn.setAttribute("aria-expanded", String(!expanded));
+      btn.textContent = expanded ? "▶" : "▼";
+      tbody.querySelectorAll(`tr[data-parent="${CSS.escape(gk)}"]`).forEach(tr => {
+        tr.classList.toggle("hidden", expanded);
+      });
+    });
+  });
+
+  // set-primary
+  tbody.querySelectorAll(".set-primary-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      try {
+        await requestJson("/api/channels/set-primary", {
+          method: "POST",
+          body: JSON.stringify({group_key: btn.dataset.group, channel_key: btn.dataset.key}),
+        });
+        await loadChannelGroups();
+      } catch (err) { alert(err.message); }
+    });
+  });
+}
+
+async function loadChannelGroups() {
+  try {
+    const d = await requestJson("/api/channels/groups");
+    renderChannelGroups(d.groups || []);
+    const total = (state.channelList || []).length;
+    $("clChannelCount").textContent = `${d.total} 组 / ${total} 条`;
+  } catch (err) {
+    $("clGroupTableBody").innerHTML = `<tr><td colspan="7" class="empty">加载失败：${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+let _groupViewInit = false;
+$("clGroupViewBtn").addEventListener("click", () => {
+  _groupViewActive = !_groupViewActive;
+  $("clGroupViewBtn").textContent = _groupViewActive ? "平铺视图" : "分组视图";
+  $("clFlatView").style.display  = _groupViewActive ? "none" : "";
+  $("clGroupView").style.display = _groupViewActive ? "" : "none";
+  if (_groupViewActive) loadChannelGroups();
+  else {
+    // restore flat count
+    const total = (state.channelList || []).length;
+    $("clChannelCount").textContent = `${total} 个`;
+  }
+});

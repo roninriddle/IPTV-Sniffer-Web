@@ -22,6 +22,7 @@ from waitress import serve
 from config import (
     ALLOWED_DOWNLOADS,
     APP_DESCRIPTION,
+    CATEGORY_ORDER,
     APP_NAME,
     APP_VERSION,
     GITHUB_REPO,
@@ -54,7 +55,7 @@ from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
 from services.stb_discovery_service import StbDiscoveryService
 from services.storage_service import ChannelSnapshotStore, ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
-from utils import classify_channel_name, resolution_label_from_size, stream_filter_reason, stream_quality_group, valid_ip_or_host, valid_ipv4_multicast
+from utils import channel_group_key, channel_primary_score, classify_channel_name, natural_key, resolution_label_from_size, stream_filter_reason, stream_quality_group, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
 logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
@@ -1421,6 +1422,55 @@ def api_logs_download():
     if not LOG_FILE.exists():
         LOG_FILE.write_text("", encoding="utf-8")
     return send_file(LOG_FILE, as_attachment=True, download_name="iptv-sniffer-web.log")
+
+
+@app.get("/api/channels/groups")
+def api_channels_groups():
+    """Return channels grouped by tvg_id / normalized name with primary source per group."""
+    channels = list(channel_store.load().values())
+    groups_dict: dict[str, list[dict]] = {}
+    for ch in channels:
+        gk = channel_group_key(ch)
+        groups_dict.setdefault(gk, []).append(ch)
+
+    result: list[dict] = []
+    for gk, members in groups_dict.items():
+        manual = next((m for m in members if m.get("is_primary")), None)
+        if manual:
+            rest = sorted(
+                [m for m in members if m.get("key") != manual.get("key")],
+                key=channel_primary_score, reverse=True,
+            )
+            primary, alternates = manual, rest
+        else:
+            scored = sorted(members, key=channel_primary_score, reverse=True)
+            primary, alternates = scored[0], scored[1:]
+        result.append({
+            "group_key": gk,
+            "name": primary.get("name", ""),
+            "category": primary.get("category", "其它频道"),
+            "primary": primary,
+            "alternates": alternates,
+            "count": len(members),
+        })
+    result.sort(key=lambda g: (
+        CATEGORY_ORDER.get(g["category"], 99),
+        natural_key(g["name"]),
+    ))
+    return api_success({"groups": result, "total": len(result)})
+
+
+@app.post("/api/channels/set-primary")
+def api_channels_set_primary():
+    data = request.get_json(silent=True) or {}
+    group_key = str(data.get("group_key", "")).strip()
+    channel_key = str(data.get("channel_key", "")).strip()
+    if not group_key or not channel_key:
+        return api_error("group_key 和 channel_key 不能为空")
+    updated = channel_store.patch_group_primary(group_key, channel_key)
+    if not updated:
+        return api_error("未找到该频道组")
+    return api_success({"updated": updated, "primary": channel_key})
 
 
 @app.get("/api/stb-summary")

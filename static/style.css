@@ -52,6 +52,11 @@ body {
   align-items: center;
 }
 .toolbar-check { font-size: 13px; font-weight: 500; padding: 0 8px; min-height: 34px; }
+.grid.three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.group-table .alt-row td { background: #f9fafb; font-size: 12px; padding-left: 28px; }
+.group-table .alt-row.hidden { display: none; }
+.expand-btn { background: none; border: none; cursor: pointer; font-size: 13px; padding: 0 4px; color: var(--text-secondary,#6b7280); }
+.expand-btn:hover { color: var(--text,#111); }
 .cl-filter { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; flex-wrap: wrap; }
 .cl-filter-name { flex: 1; min-width: 160px; }
 .cl-filter select { min-width: 110px; }
