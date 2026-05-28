@@ -54,7 +54,7 @@ from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
 from services.stb_discovery_service import StbDiscoveryService
 from services.storage_service import ChannelSnapshotStore, ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
-from utils import classify_channel_name, stream_filter_reason, valid_ip_or_host, valid_ipv4_multicast
+from utils import classify_channel_name, resolution_label_from_size, stream_filter_reason, stream_quality_group, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
 logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
@@ -285,14 +285,19 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
         fill_channel_name_from_metadata(item, allow_epg_name=False)
         _auto_cat = classify_channel_name(str(item.get("name", "")))
         item["category"] = _auto_cat if _auto_cat != "其它频道" else (str(item.get("category", "")).strip() or "其它频道")
-        # Derive quality_group from is_hd when ffprobe hasn't run yet
+        # If actual dimensions are known, always recompute quality_group from them
+        # (prevents stale is_hd-derived group from hiding 4K channels)
         cur_qg = str(item.get("quality_group", "")).strip()
-        if (not cur_qg or cur_qg == "未识别") and "is_hd" in item:
+        w, h = item.get("width"), item.get("height")
+        if w and h:
+            item["quality_group"] = stream_quality_group(w, h)
+            item["resolution_label"] = resolution_label_from_size(w, h)
+        elif (not cur_qg or cur_qg == "未识别") and "is_hd" in item:
             item["quality_group"] = "高清频道" if item["is_hd"] else "普通频道"
-        # Also pull is_hd from operator channel table if not already present
+        # Pull is_hd from operator channel table if missing
         if op_ch and "is_hd" in op_ch and "is_hd" not in item:
             item["is_hd"] = op_ch["is_hd"]
-            if not cur_qg or cur_qg == "未识别":
+            if not (w and h) and (not cur_qg or cur_qg == "未识别"):
                 item["quality_group"] = "高清频道" if op_ch["is_hd"] else "普通频道"
         if settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
@@ -1416,6 +1421,139 @@ def api_logs_download():
     if not LOG_FILE.exists():
         LOG_FILE.write_text("", encoding="utf-8")
     return send_file(LOG_FILE, as_attachment=True, download_name="iptv-sniffer-web.log")
+
+
+@app.get("/api/stb-summary")
+def api_stb_summary():
+    """Compact summary of STB auth/channel state for the top status bar."""
+    auth = stb_discovery_service.status().get("auth_info") or {}
+    token_data = token_store.load()
+    has_token = bool((token_data.get("history") or []))
+    fcc_count = len(fcc_store.load())
+    ch_count = len(channel_store.load())
+    return api_success({
+        "mac": auth.get("mac", ""),
+        "hostname": auth.get("hostname", ""),
+        "assigned_ip": auth.get("assigned_ip", ""),
+        "gateway": auth.get("gateway", ""),
+        "vendor_class": auth.get("vendor_class", ""),
+        "has_token": has_token,
+        "fcc_count": fcc_count,
+        "channel_count": ch_count,
+    })
+
+
+@app.post("/api/diagnose")
+def api_diagnose():
+    """Playback chain diagnostic: rtp2httpd reachability + FCC + config review."""
+    data = request.get_json(silent=True) or {}
+    settings = settings_store.load()
+    http_host = str(data.get("http_host") or settings.get("http_host", "")).strip()
+    http_port = int(data.get("http_port") or settings.get("http_port") or 5140)
+    channel_addr = str(data.get("channel", "")).strip()  # "ip:port"
+
+    checks: list[dict] = []
+    conclusions: list[str] = []
+
+    # --- Check 1: rtp2httpd reachability ---
+    rtp2httpd_ok = False
+    if http_host:
+        url = f"http://{http_host}:{http_port}/"
+        try:
+            req = Request(url)
+            req.add_header("User-Agent", "IPTV-Sniffer-Web-Diag/1.0")
+            with urlopen(req, timeout=5) as resp:
+                code = resp.getcode()
+                rtp2httpd_ok = code < 500
+            checks.append({"item": "rtp2httpd 可访问", "ok": True,
+                           "detail": f"{url} → HTTP {code}"})
+        except Exception as exc:
+            err = str(exc)
+            checks.append({"item": "rtp2httpd 可访问", "ok": False,
+                           "detail": f"{url} → {err}"})
+            conclusions.append("rtp2httpd 不可访问：请确认地址/端口正确且服务已运行。")
+    else:
+        checks.append({"item": "rtp2httpd 可访问", "ok": None,
+                       "detail": "未配置 rtp2httpd 地址，跳过检测。"})
+        conclusions.append("未配置 rtp2httpd 地址，直连 M3U 使用 rtp:// 源地址。")
+
+    # --- Check 2: Interface configured ---
+    iface = str(settings.get("interface", "")).strip()
+    checks.append({"item": "抓包接口已配置", "ok": bool(iface),
+                   "detail": f"interface = {iface or '（未设置）'}"})
+    if not iface:
+        conclusions.append("未设置抓包接口，嗅探将使用默认接口 any。")
+
+    # --- Check 3: Auth info captured ---
+    auth = stb_discovery_service.status().get("auth_info") or {}
+    has_mac = bool(auth.get("mac"))
+    has_ip = bool(auth.get("assigned_ip"))
+    checks.append({"item": "DHCP 认证信息已捕获", "ok": has_mac or has_ip,
+                   "detail": f"MAC={auth.get('mac','—')}  IP={auth.get('assigned_ip','—')}"})
+    if not (has_mac or has_ip):
+        conclusions.append("未捕获到 DHCP 认证信息，如需 Option60 认证，请重启机顶盒并再次捕获。")
+
+    # --- Check 4: UserToken captured ---
+    token_data = token_store.load()
+    has_token = bool(token_data.get("history"))
+    checks.append({"item": "UserToken 已捕获", "ok": has_token,
+                   "detail": f"历史记录 {len(token_data.get('history') or [])} 条"})
+    if not has_token:
+        conclusions.append("未捕获到 UserToken，channelAcquire 鉴权播放列表不可用。")
+
+    # --- Check 5: FCC records ---
+    fcc_count = len(fcc_store.load())
+    checks.append({"item": "FCC 记录", "ok": fcc_count > 0,
+                   "detail": f"已记录 {fcc_count} 条 FCC 服务器地址"})
+    if fcc_count == 0:
+        conclusions.append("没有 FCC 记录，快速换台功能不可用（不影响正常播放）。")
+
+    # --- Check 6: FCC reachability (if channel provided) ---
+    if channel_addr:
+        ch_ip, _, ch_port_s = channel_addr.partition(":")
+        key = channel_addr
+        fcc_records = fcc_store.load()
+        fcc_rec = fcc_records.get(key) or {}
+        fcc_ip = str(fcc_rec.get("fcc_ip", "")).strip()
+        fcc_port = fcc_rec.get("fcc_port")
+        if fcc_ip and fcc_port:
+            fcc_url = f"http://{fcc_ip}:{fcc_port}/"
+            try:
+                with urlopen(Request(fcc_url), timeout=5):
+                    pass
+                checks.append({"item": f"FCC 服务器可访问 ({channel_addr})", "ok": True,
+                               "detail": f"{fcc_url} → 可访问"})
+            except Exception as exc:
+                checks.append({"item": f"FCC 服务器可访问 ({channel_addr})", "ok": False,
+                               "detail": f"{fcc_url} → {exc}"})
+                conclusions.append(f"FCC 服务器 {fcc_url} 不可达，FCC 快速换台将超时。")
+        else:
+            checks.append({"item": f"FCC 记录查询 ({channel_addr})", "ok": None,
+                           "detail": "此频道无 FCC 记录"})
+
+    # --- Check 7: Channel list populated ---
+    ch_count = len(channel_store.load())
+    checks.append({"item": "频道列表已导入", "ok": ch_count > 0,
+                   "detail": f"已保存 {ch_count} 个频道"})
+    if ch_count == 0:
+        conclusions.append("频道列表为空，请先运行运营商频道发现或嗅探并导入。")
+
+    # --- Verdict ---
+    failed = [c for c in checks if c["ok"] is False]
+    if not failed and rtp2httpd_ok:
+        verdict = "✓ 播放链路基本正常，可尝试播放。"
+    elif not http_host:
+        verdict = "直连 rtp:// 模式，无需 rtp2httpd。如需代理播放请配置 rtp2httpd 地址。"
+    elif failed:
+        verdict = f"⚠ 发现 {len(failed)} 项问题，详见诊断项和结论。"
+    else:
+        verdict = "诊断完成。"
+
+    return api_success({
+        "verdict": verdict,
+        "checks": checks,
+        "conclusions": conclusions,
+    })
 
 
 def _startup_epg_refresh() -> None:

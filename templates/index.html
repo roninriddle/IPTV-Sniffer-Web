@@ -15,11 +15,11 @@
         <p class="top-subtitle">{{ app_description }}</p>
       </div>
       <div class="top-actions">
-        <button class="nav-pill active" data-page="home" type="button">使用说明</button>
-        <button class="nav-pill" data-tab="openwrt" type="button">部署向导</button>
+        <button class="nav-pill active" data-page="home" type="button">首页 / 部署向导</button>
         <button class="nav-pill" data-tab="stbDiscovery" type="button">运营商频道</button>
+        <button class="nav-pill" data-tab="channelList" type="button">频道线路</button>
+        <button class="nav-pill" data-tab="diagnose" type="button">播放诊断</button>
         <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
-        <button class="nav-pill" data-tab="channelList" type="button">频道列表</button>
         <button class="nav-pill" data-tab="schedule" type="button">定时 EPG</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
         <button id="refreshInterfacesBtn" class="secondary" type="button">刷新网卡</button>
@@ -27,6 +27,18 @@
       </div>
     </div>
   </header>
+
+  <div id="stbSummaryBar" class="stb-summary-bar" hidden>
+    <span class="ssb-item" id="ssbMac" title="机顶盒 MAC"></span>
+    <span class="ssb-item" id="ssbHostname" title="Hostname"></span>
+    <span class="ssb-item" id="ssbIp" title="IPTV IP"></span>
+    <span class="ssb-item" id="ssbGateway" title="网关"></span>
+    <span class="ssb-sep">|</span>
+    <span class="ssb-item" id="ssbOption60" title="Option 60 Vendor Class"></span>
+    <span class="ssb-item" id="ssbToken" title="UserToken"></span>
+    <span class="ssb-item" id="ssbFcc" title="FCC 记录数"></span>
+    <span class="ssb-item" id="ssbChannels" title="频道数"></span>
+  </div>
 
   <div class="app-shell">
     <aside id="logsDrawer" class="logs-drawer" aria-hidden="true">
@@ -557,6 +569,35 @@ OpenWrt / iStoreOS
               </table>
             </div>
           </section>
+
+        <div id="diagnoseTab" class="tab-panel" hidden>
+          <section class="card">
+            <div class="section-title">
+              <h2>播放链路诊断</h2>
+              <span class="muted small">检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性</span>
+            </div>
+            <p class="task-description">选择频道后点击「运行诊断」，系统检查 rtp2httpd 是否可访问、FCC 是否响应、当前配置是否完整，并给出排查结论。IGMP / 组播回流检测需要宿主机 tcpdump 权限，将在后续版本支持。</p>
+            <div class="form-grid">
+              <label>
+                rtp2httpd 地址
+                <input id="diagHost" type="text" placeholder="留空使用当前设置">
+              </label>
+              <label>
+                rtp2httpd 端口
+                <input id="diagPort" type="number" min="1" max="65535" placeholder="5140">
+              </label>
+              <label>
+                检测频道（组播 IP:端口）
+                <input id="diagChannel" type="text" placeholder="例如 239.3.1.241:8008（可选）">
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="diagRunBtn" class="primary" type="button">运行诊断</button>
+            </div>
+            <div id="diagResult" class="result-box muted" style="margin-top:12px">点击「运行诊断」开始检测。</div>
+            <div id="diagChecklist" style="margin-top:16px"></div>
+          </section>
+        </div>
 
           <section class="card">
             <div class="section-title">

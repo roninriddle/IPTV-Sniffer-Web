@@ -101,10 +101,12 @@ function showTab(tabName) {
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
   $("channelListTab").hidden = tabName !== "channelList";
   $("openwrtTab").hidden = tabName !== "openwrt";
+  $("diagnoseTab").hidden = tabName !== "diagnose";
   if (tabName === "channelList") { loadChannelList(); loadSnapshots(); }
   if (tabName === "schedule") loadScheduleEpgSources();
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
   if (tabName === "openwrt") loadOpenwrtAnalysis();
+  if (tabName === "diagnose") initDiagnoseTab();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-tab]").forEach((item) => {
     item.classList.toggle("active", item.dataset.tab === tabName);
@@ -972,6 +974,7 @@ async function bootstrap() {
   const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
   startPolling(initialState === "running");
   loadOpenwrtAnalysis().catch(() => {});
+  loadStbSummary().catch(() => {});
 }
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
@@ -1144,9 +1147,12 @@ $("clFilterName").addEventListener("input", filterAndRenderChannelList);
 $("clFilterCategory").addEventListener("change", filterAndRenderChannelList);
 $("clFilterQuality").addEventListener("change", filterAndRenderChannelList);
 $("clProbeBtn").addEventListener("click", async function() {
-  const unprobed = (state.channelList || []).filter(ch => !ch.quality_group || ch.quality_group === "未识别");
-  if (!unprobed.length) { alert("所有频道均已识别分辨率。"); return; }
-  if (!confirm(`将对 ${unprobed.length} 个未识别频道运行 ffprobe 探测，每个约 10 秒，请耐心等待。继续？`)) return;
+  // Probe anything not yet confirmed by ffprobe (probe_status ok/partial = already probed)
+  const unprobed = (state.channelList || []).filter(ch =>
+    !ch.probe_status || ch.probe_status === "not_probed"
+  );
+  if (!unprobed.length) { alert("所有频道均已通过 ffprobe 探测。"); return; }
+  if (!confirm(`将对 ${unprobed.length} 个频道运行 ffprobe 探测（含从 is_hd 推导的高清频道），每个约 10 秒，请耐心等待。继续？`)) return;
   this.disabled = true; this.textContent = `探测中… (0/${unprobed.length})`;
   const btn = this;
   const settings = formSettings();
@@ -1635,3 +1641,76 @@ $("openwrtDownloadScriptBtn").addEventListener("click", () => {
   a.href = url; a.download = "iptv-sniffer-openwrt-setup.sh"; a.click();
   URL.revokeObjectURL(url);
 });
+
+// ── STB summary bar ───────────────────────────────────────────────────────
+
+async function loadStbSummary() {
+  try {
+    const d = await requestJson("/api/stb-summary");
+    const bar = $("stbSummaryBar");
+    const any = d.mac || d.assigned_ip || d.has_token || d.fcc_count > 0 || d.channel_count > 0;
+    bar.hidden = !any;
+    if (!any) return;
+    const set = (id, val) => { if (val) $("ssb" + id).textContent = val; else $("ssb" + id).parentElement && ($("ssb" + id).textContent = ""); };
+    $("ssbMac").textContent       = d.mac        || "";
+    $("ssbHostname").textContent  = d.hostname   || "";
+    $("ssbIp").textContent        = d.assigned_ip|| "";
+    $("ssbGateway").textContent   = d.gateway    || "";
+    $("ssbOption60").textContent  = d.vendor_class ? d.vendor_class : "Option60: 未捕获";
+    $("ssbToken").textContent     = d.has_token   ? "UserToken: 已捕获" : "UserToken: 未捕获";
+    $("ssbFcc").textContent       = `FCC: ${d.fcc_count} 条`;
+    $("ssbChannels").textContent  = `频道: ${d.channel_count} 个`;
+    // Hide blank MAC/IP fields rather than showing empty labels
+    $("ssbMac").hidden     = !d.mac;
+    $("ssbHostname").hidden= !d.hostname;
+    $("ssbIp").hidden      = !d.assigned_ip;
+    $("ssbGateway").hidden = !d.gateway;
+  } catch (_) {}
+}
+
+// ── Playback diagnostics tab ──────────────────────────────────────────────
+
+function initDiagnoseTab() {
+  const settings = state.settings || {};
+  if (!$("diagHost").value && settings.http_host)  $("diagHost").value  = settings.http_host;
+  if (!$("diagPort").value && settings.http_port)  $("diagPort").value  = settings.http_port;
+}
+
+async function runDiagnose() {
+  const btn = $("diagRunBtn");
+  btn.disabled = true; btn.textContent = "诊断中…";
+  $("diagResult").textContent = "正在检测，请稍候…";
+  $("diagResult").className = "result-box warning";
+  $("diagChecklist").innerHTML = "";
+  try {
+    const body = {
+      http_host: $("diagHost").value.trim(),
+      http_port: parseInt($("diagPort").value) || 5140,
+      channel: $("diagChannel").value.trim(),
+    };
+    const d = await requestJson("/api/diagnose", {method: "POST", body: JSON.stringify(body)});
+    $("diagResult").textContent = d.verdict || "诊断完成。";
+    const allOk = d.checks.every(c => c.ok !== false);
+    $("diagResult").className = "result-box " + (allOk ? "ok" : "warning");
+    const checkIcon = ok => ok === true ? "✓" : ok === false ? "✗" : "–";
+    const checkCls  = ok => ok === true ? "diag-ok" : ok === false ? "diag-fail" : "diag-skip";
+    let html = '<table class="diag-table">';
+    for (const c of (d.checks || [])) {
+      html += `<tr class="${checkCls(c.ok)}"><td class="diag-icon">${checkIcon(c.ok)}</td><td class="diag-item">${escapeHtml(c.item)}</td><td class="diag-detail mono small">${escapeHtml(c.detail || "")}</td></tr>`;
+    }
+    html += "</table>";
+    if (d.conclusions?.length) {
+      html += '<div class="diag-conclusions"><strong>排查建议：</strong><ul>';
+      for (const line of d.conclusions) html += `<li>${escapeHtml(line)}</li>`;
+      html += "</ul></div>";
+    }
+    $("diagChecklist").innerHTML = html;
+  } catch (err) {
+    $("diagResult").textContent = `诊断请求失败：${err.message}`;
+    $("diagResult").className = "result-box error";
+  } finally {
+    btn.disabled = false; btn.textContent = "运行诊断";
+  }
+}
+
+$("diagRunBtn").addEventListener("click", runDiagnose);

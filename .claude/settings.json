@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/ronin/Downloads/iptv-sniffer-web-v0.5 status)",
+      "Bash(git -C /Users/ronin/Downloads/iptv-sniffer-web-v0.5 diff --stat)",
+      "Bash(git -C /Users/ronin/Downloads/iptv-sniffer-web-v0.5 log --oneline -3)",
+      "Bash(git commit -m ' *)",
+      "Bash(git -C /Users/ronin/Downloads/iptv-sniffer-web-v0.5 tag v0.9.5)",
+      "Bash(python3 -m pytest tests/test_regression_v096.py -v)",
+      "Bash(pip3 install *)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/pytest tests/test_regression_v096.py -v)",
+      "Bash(python3 -m py_compile /Users/ronin/Downloads/iptv-sniffer-web-v0.5/app.py)",
+      "Bash(python3 -m py_compile /Users/ronin/Downloads/iptv-sniffer-web-v0.5/services/stb_discovery_service.py)"
+    ]
+  }
+}

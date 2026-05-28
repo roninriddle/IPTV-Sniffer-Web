@@ -18,10 +18,13 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
       - name: Compile Python sources
         run: |
           python -m compileall app.py config.py models.py utils.py services
+      - name: Run regression tests
+        run: |
+          pytest -q
       - name: Build Docker image
         run: |
           docker build -t iptv-sniffer-web:ci .
