@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.91
+# IPTV Sniffer Web v0.9.92
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -26,8 +26,8 @@ EPG 与台标来源参考并致谢：
 |---|---|
 | **运营商频道发现** | 填写机顶盒 IP，重启机顶盒，自动从 STB 开机流量解析频道表（名称/组播/FCC/FEC）；同步捕获 DHCP 认证信息（MAC/IP/Option60/Option61/Option125） |
 | **频道线路组** | 同名频道自动归组（tvg-id > 规范化名称），4K>HD>SD>未识别优先级自动选主源；支持手动设为主源；分组视图展开备线 |
-| **播放链路诊断** | 检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性，给出排查结论 |
-| **四档导出** | `channels-best.m3u`（主源直连）/ `channels-all.m3u`（全部直连）/ `channels-rtp2httpd-best.m3u`（主源源地址）/ `channels-rtp2httpd-all.m3u`（全部源地址）；旧文件名兼容保留 |
+| **播放链路诊断** | 检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性；填写检测频道后主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，识别镜像口（SPAN，仅能被动嗅探、无法主动播放），给出排查结论 |
+| **四档导出** | `channels-best.m3u`（主源直连）/ `channels-all.m3u`（全部直连）/ `channels-rtp2httpd-best.m3u`（主源源地址）/ `channels-rtp2httpd-all.m3u`（全部源地址）；全部线路按原始分类分组、每条源只出现一次；旧文件名兼容保留 |
 | **嗅探整理** | 实时嗅探组播流，ffprobe 自动识别 4K/1080p/720p，截图预览，支持 802.1Q/QinQ VLAN |
 | **EPG & 台标** | XMLTV EPG + TVlogo 缓存匹配，定时自动刷新，导出写入 tvg-id/tvg-logo |
 | **iStoreOS 部署向导** | 读取宿主机 `/etc/config/network`，生成 eth0 被动抓包 UCI 脚本（proto=none）；支持 SLL/SLL2 pcap |
@@ -336,6 +336,7 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.9.92`：导出去重——`channels-all` / `channels-rtp2httpd-all`（及 txt/csv）每条源只按原始分类输出一次，不再额外重复一份清晰度分组；导出时按实测宽高强制重算 `quality_group`，旧值（如 3840x2160 标成「高清频道」）不再影响分组与统计；播放诊断新增组播链路检测（被动嗅探镜像口 / 主动 IGMP 加入 / 校验是否收到 239.x UDP，缺少 tcpdump 权限时优雅跳过）；修复嗅探整理页横向撑宽（grid 子项 min-width:0，宽表在 `.table-wrap` 内滚动）与实时日志抽屉滑入（绑定 `body.logs-open`，不再停在屏幕外）；
 - `v0.9.91`：修复播放诊断页初始化——从 DOM 表单（httpHost/httpPort）读取配置，不再依赖未初始化的 state.settings；刷新网卡按钮移至「运营商频道」操作栏；README 整理合并历史版本条目；
 - `v0.9.9`：首页拓扑三场景统一（镜像口 / R4S eth0 被动抓包 / IGMP Proxy）；首页与部署向导合并；新增频道线路组（tvg-id > 规范化名称归组，评分自动选主源，支持手动设为主源，分组视图展开备线）；导出重构为四档（best/all × 直连/源地址）；旧文件名别名保留；
 - `v0.9.8`：STB 开机捕获同步捕获 DHCP（UDP 67/68），解析机顶盒 MAC / IPTV IP / 网关 / Option 60/61/125；结果展示在「运营商频道」→「机顶盒认证信息」卡片；顶部摘要栏显示认证与频道状态；新增播放链路诊断页（rtp2httpd 可达性 / FCC 响应 / 认证状态 / 配置检查 / 排查结论）；导航重排：首页/部署向导 → 运营商频道 → 频道线路 → 播放诊断 → 嗅探整理 → 定时EPG；
