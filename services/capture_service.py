@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import os
 import re
+import select
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -614,3 +617,177 @@ class CaptureService:
             "total_packets": status["total_packets"],
             "elapsed": status["elapsed"],
         }
+
+    # ── Multicast link diagnostics ────────────────────────────────────────
+    def diagnose_multicast(
+        self,
+        host: str,
+        port: int,
+        interface: str = "",
+        passive_secs: float = 2.0,
+        active_secs: float = 3.0,
+    ) -> dict[str, Any]:
+        """Active + passive check of one multicast group's playback path.
+
+        Phase 1 (passive): listen on the wire via tcpdump *without* joining the
+        group. Receiving 239.x UDP here means traffic reaches us without an IGMP
+        join — typical of a switch mirror/SPAN port that cannot be played
+        actively.
+
+        Phase 2 (active): join the group with a UDP socket (the kernel emits an
+        IGMP membership report) and observe whether the stream is then
+        delivered. tcpdump runs alongside to confirm IGMP egress and to catch
+        traffic the socket can't see.
+        """
+        result: dict[str, Any] = {
+            "host": host,
+            "port": port,
+            "interface": interface or "any",
+            "tcpdump_available": shutil.which("tcpdump") is not None,
+            "igmp_sent": False,
+            "socket_active_packets": 0,
+            "wire_active_packets": 0,
+            "wire_passive_packets": 0,
+            "mirror_suspected": False,
+            "errors": [],
+        }
+        if not valid_ipv4_multicast(host):
+            result["errors"].append("目标地址不是 IPv4 组播地址，无法进行链路检测")
+            result["verdict"] = "skip"
+            return result
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            result["errors"].append("端口无效")
+            result["verdict"] = "skip"
+            return result
+
+        iface_ip = self._interface_ipv4(interface)
+        result["interface_ip"] = iface_ip
+
+        # Phase 1 — passive wire sniff (mirror-port detection).
+        if result["tcpdump_available"]:
+            try:
+                proc = self._start_diag_tcpdump(host, port, interface, include_igmp=False)
+                time.sleep(max(0.1, passive_secs))
+                passive = self._stop_diag_tcpdump(proc, host, port)
+                result["wire_passive_packets"] = passive["udp"]
+            except Exception as exc:  # pragma: no cover - environment dependent
+                result["errors"].append(f"被动嗅探失败：{exc}")
+
+        # Phase 2 — active IGMP join + observe.
+        cap = None
+        if result["tcpdump_available"]:
+            try:
+                cap = self._start_diag_tcpdump(host, port, interface, include_igmp=True)
+            except Exception as exc:  # pragma: no cover - environment dependent
+                result["errors"].append(f"主动嗅探启动失败：{exc}")
+                cap = None
+
+        sock: socket.socket | None = None
+        joined = False
+        mreq = b""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("", port))
+            except OSError as exc:
+                result["errors"].append(f"绑定端口 {port} 失败：{exc}")
+            try:
+                if iface_ip:
+                    mreq = struct.pack("4s4s", socket.inet_aton(host), socket.inet_aton(iface_ip))
+                else:
+                    mreq = struct.pack("4sl", socket.inet_aton(host), socket.INADDR_ANY)
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+                joined = True
+                result["igmp_sent"] = True  # join issued → kernel sends IGMP report
+            except OSError as exc:
+                result["errors"].append(f"加入组播组失败：{exc}")
+            deadline = time.time() + max(0.1, active_secs)
+            sock.setblocking(False)
+            while time.time() < deadline:
+                ready, _, _ = select.select([sock], [], [], min(0.5, max(0.0, deadline - time.time())))
+                if not ready:
+                    continue
+                try:
+                    _payload, addr = sock.recvfrom(4096)
+                except OSError:
+                    continue
+                if addr and addr[0] == host:
+                    result["socket_active_packets"] += 1
+        except Exception as exc:  # pragma: no cover - environment dependent
+            result["errors"].append(f"组播套接字检测失败：{exc}")
+        finally:
+            if sock is not None:
+                if joined and mreq:
+                    try:
+                        sock.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP, mreq)
+                    except OSError:
+                        pass
+                sock.close()
+
+        if cap is not None:
+            active = self._stop_diag_tcpdump(cap, host, port)
+            result["wire_active_packets"] = active["udp"]
+            if active["igmp"] > 0:
+                result["igmp_sent"] = True
+
+        got_active = result["socket_active_packets"] > 0 or result["wire_active_packets"] > 0
+        result["mirror_suspected"] = (not got_active) and result["wire_passive_packets"] > 0
+        if got_active:
+            result["verdict"] = "ok"
+        elif result["mirror_suspected"]:
+            result["verdict"] = "mirror"
+        else:
+            result["verdict"] = "none"
+        return result
+
+    def _interface_ipv4(self, interface: str) -> str:
+        interface = (interface or "").strip()
+        if not interface or interface == "any":
+            return ""
+        try:
+            text = _run_text(["ip", "-o", "-4", "addr", "show", "dev", interface])
+        except Exception:
+            return ""
+        match = re.search(r"inet\s+(\d{1,3}(?:\.\d{1,3}){3})", text)
+        return match.group(1) if match else ""
+
+    def _start_diag_tcpdump(self, host: str, port: int, interface: str, include_igmp: bool) -> subprocess.Popen[str]:
+        filt = f"(udp and dst host {host} and dst port {port})"
+        if include_igmp:
+            filt = f"({filt}) or (igmp)"
+        cmd = ["tcpdump", "-i", interface or "any", "-n", "-l", "-c", "5000", filt]
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+
+    def _stop_diag_tcpdump(self, proc: subprocess.Popen[str], host: str, port: int) -> dict[str, int]:
+        try:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+            out, _ = proc.communicate(timeout=4)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                out, _ = proc.communicate(timeout=2)
+            except Exception:
+                out = ""
+        except Exception:
+            out = ""
+        udp = 0
+        igmp = 0
+        dst = f"{host}.{port}:"
+        for line in (out or "").splitlines():
+            low = line.lower()
+            if "igmp" in low:
+                igmp += 1
+            elif dst in line and "udp" in low:
+                udp += 1
+        return {"udp": udp, "igmp": igmp}

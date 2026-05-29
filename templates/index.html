@@ -619,7 +619,7 @@
               <h2>播放链路诊断</h2>
               <span class="muted small">检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性</span>
             </div>
-            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。IGMP / 组播回流检测需要宿主机 tcpdump 权限，将在后续版本支持。</p>
+            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，并判断是否为镜像口（SPAN，仅能被动嗅探、无法主动播放）。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
             <div class="form-grid">
               <label>
                 rtp2httpd 地址

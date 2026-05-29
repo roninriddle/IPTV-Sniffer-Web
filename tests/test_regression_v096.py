@@ -235,6 +235,98 @@ class TestExportUrl:
         assert "fec=8090" in url
 
 
+# ── Export file generation: dedup + quality_group recompute ───────────────
+
+class TestExportFiles:
+    def _export(self, tmp_path, rows, settings=None):
+        svc = ExportService(tmp_path)
+        return svc, svc.export(rows, settings or {})
+
+    def _row(self, name, host, port, **kw):
+        r = {"name": name, "host": host, "port": port, "packets": 10,
+             "category": "央视频道"}
+        r.update(kw)
+        return r
+
+    def test_all_m3u_lists_each_source_once(self, tmp_path):
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080),
+                self._row("CCTV2", "239.1.1.2", 8002, width=720, height=576)]
+        svc, _ = self._export(tmp_path, rows)
+        text = (tmp_path / "channels-all.m3u").read_text(encoding="utf-8")
+        # Each multicast URL must appear exactly once (no quality-group duplicate).
+        assert text.count("rtp://239.1.1.1:8001") == 1
+        assert text.count("rtp://239.1.1.2:8002") == 1
+
+    def test_rtp_all_m3u_lists_each_source_once(self, tmp_path):
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080)]
+        self._export(tmp_path, rows)
+        text = (tmp_path / "channels-rtp2httpd-all.m3u").read_text(encoding="utf-8")
+        assert text.count("rtp://239.1.1.1:8001") == 1
+
+    def test_txt_lists_each_source_once(self, tmp_path):
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080)]
+        self._export(tmp_path, rows)
+        text = (tmp_path / "channels.txt").read_text(encoding="utf-8")
+        assert text.count("rtp://239.1.1.1:8001") == 1
+
+    def test_csv_lists_each_source_once(self, tmp_path):
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080)]
+        self._export(tmp_path, rows)
+        text = (tmp_path / "channels.csv").read_text(encoding="utf-8-sig")
+        # One header + exactly one data row for the channel (no quality dup row).
+        data_rows = [ln for ln in text.splitlines() if ",CCTV1," in ln]
+        assert len(data_rows) == 1
+
+    def test_stale_quality_group_recomputed_from_dimensions(self, tmp_path):
+        # 4K stream carrying a stale "高清频道" must be regrouped as 4K高清.
+        rows = [self._row("CCTV4K", "239.1.1.9", 8009,
+                          width=3840, height=2160, quality_group="高清频道")]
+        svc, result = self._export(tmp_path, rows)
+        assert result["quality_group_counts"]["4K高清"] == 1
+        assert result["quality_group_counts"]["高清频道"] == 0
+
+    def test_quality_group_preserved_when_no_dimensions(self, tmp_path):
+        # Without dimensions, an explicit valid quality_group is kept.
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, quality_group="4K高清")]
+        svc, result = self._export(tmp_path, rows)
+        assert result["quality_group_counts"]["4K高清"] == 1
+
+
+# ── Multicast link diagnostic ─────────────────────────────────────────────
+
+class TestMulticastDiagnostic:
+    def _service(self, tmp_path):
+        from services.capture_service import CaptureService
+        from services.log_service import AppLogger
+        return CaptureService(AppLogger(tmp_path / "t.log"))
+
+    def test_non_multicast_address_skips(self, tmp_path):
+        svc = self._service(tmp_path)
+        result = svc.diagnose_multicast("8.8.8.8", 5000)
+        assert result["verdict"] == "skip"
+        assert result["errors"]
+
+    def test_stop_tcpdump_counts_udp_and_igmp(self, tmp_path):
+        svc = self._service(tmp_path)
+
+        class _FakeProc:
+            def __init__(self, text):
+                self._text = text
+            def poll(self):
+                return 0
+            def communicate(self, timeout=None):
+                return self._text, ""
+
+        out = "\n".join([
+            "IP 192.168.1.5 > 224.0.0.22: igmp v3 report, 1 group record(s)",
+            "IP 10.0.0.2.51000 > 239.1.1.1.8001: UDP, length 1316",
+            "IP 10.0.0.2.51000 > 239.1.1.1.8001: UDP, length 1316",
+        ])
+        counts = svc._stop_diag_tcpdump(_FakeProc(out), "239.1.1.1", 8001)
+        assert counts["udp"] == 2
+        assert counts["igmp"] == 1
+
+
 # ── OpenWrt UCI parser + analyzer ─────────────────────────────────────────
 
 _R4S_CONFIG = """
