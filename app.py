@@ -1558,28 +1558,30 @@ def api_diagnose():
     if fcc_count == 0:
         conclusions.append("没有 FCC 记录，快速换台功能不可用（不影响正常播放）。")
 
-    # --- Check 6: FCC reachability (if channel provided) ---
+    # --- Check 6: FCC TCP reachability (if channel provided) ---
+    # Note: this tests TCP connect only; actual FCC uses a proprietary protocol.
+    # A TCP connect success means the port is open but does not guarantee FCC
+    # will work correctly in rtp2httpd context.
     if channel_addr:
-        ch_ip, _, ch_port_s = channel_addr.partition(":")
+        import socket as _socket
         key = channel_addr
         fcc_records = fcc_store.load()
         fcc_rec = fcc_records.get(key) or {}
         fcc_ip = str(fcc_rec.get("fcc_ip", "")).strip()
         fcc_port = fcc_rec.get("fcc_port")
         if fcc_ip and fcc_port:
-            fcc_url = f"http://{fcc_ip}:{fcc_port}/"
             try:
-                with urlopen(Request(fcc_url), timeout=5):
+                with _socket.create_connection((fcc_ip, int(fcc_port)), timeout=3):
                     pass
-                checks.append({"item": f"FCC 服务器可访问 ({channel_addr})", "ok": True,
-                               "detail": f"{fcc_url} → 可访问"})
+                checks.append({"item": f"FCC 服务器端口可达 ({channel_addr})", "ok": True,
+                               "detail": f"TCP connect {fcc_ip}:{fcc_port} → 成功（注：仅验证端口可达，非 FCC 协议握手）"})
             except Exception as exc:
-                checks.append({"item": f"FCC 服务器可访问 ({channel_addr})", "ok": False,
-                               "detail": f"{fcc_url} → {exc}"})
-                conclusions.append(f"FCC 服务器 {fcc_url} 不可达，FCC 快速换台将超时。")
+                checks.append({"item": f"FCC 服务器端口可达 ({channel_addr})", "ok": False,
+                               "detail": f"TCP connect {fcc_ip}:{fcc_port} → {exc}"})
+                conclusions.append(f"FCC 服务器 {fcc_ip}:{fcc_port} 端口不可达，rtp2httpd FCC 快速换台将超时。")
         else:
             checks.append({"item": f"FCC 记录查询 ({channel_addr})", "ok": None,
-                           "detail": "此频道无 FCC 记录"})
+                           "detail": "此频道无 FCC 记录（不影响正常播放，仅影响快速换台）"})
 
     # --- Check 7: Channel list populated ---
     ch_count = len(channel_store.load())

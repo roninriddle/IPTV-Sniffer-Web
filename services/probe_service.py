@@ -148,10 +148,15 @@ class ProbeService:
             self._remember(key, result)
             self.logger.warning(f"流信息自动识别失败：{key}，未识别到视频流")
             return result
-        stream = next(
-            (item for item in streams if isinstance(item, dict) and (item.get("width") or item.get("height"))),
-            streams[0] if isinstance(streams[0], dict) else {},
-        )
+        # Pick the video stream with the most pixels; avoids grabbing a low-res
+        # secondary stream from a multi-program TS that carries the main 4K stream.
+        def _px(s: dict) -> int:
+            try:
+                return int(s.get("width") or 0) * int(s.get("height") or 0)
+            except (TypeError, ValueError):
+                return 0
+        video_streams = [s for s in streams if isinstance(s, dict) and (s.get("width") or s.get("height"))]
+        stream = max(video_streams, key=_px) if video_streams else (streams[0] if isinstance(streams[0], dict) else {})
         try:
             width = int(stream.get("width") or 0)
             height = int(stream.get("height") or 0)

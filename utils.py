@@ -163,11 +163,23 @@ def channel_group_key(ch: dict) -> str:
 
 
 def channel_primary_score(ch: dict) -> tuple:
-    """Higher tuple = better candidate for primary source within a group."""
+    """Higher tuple = better candidate for primary source within a group.
+
+    Tier ordering (higher = better):
+      quality_group tier  4K高清=4 / 高清频道=3 / 普通频道=2 / other=1
+      pixel count         w*h (distinguishes 1080p from 720p within 高清频道)
+      probe status        ok=3 / partial=2 / not_probed=1 / failed=0
+      fcc/fec availability
+      packet count
+    """
     qg = {"4K高清": 4, "高清频道": 3, "普通频道": 2}.get(str(ch.get("quality_group", "")), 1)
+    try:
+        px = int(ch.get("width") or 0) * int(ch.get("height") or 0)
+    except (TypeError, ValueError):
+        px = 0
     ps = {"ok": 3, "partial": 2, "not_probed": 1, "failed": 0}.get(
         str(ch.get("probe_status", "not_probed")), 1
     )
     fcc = (2 if ch.get("fcc_ip") and ch.get("fcc_port") else 0) + (1 if ch.get("fec_port") else 0)
     pkts = int(ch.get("packets", 0) or 0)
-    return (qg, ps, fcc, pkts)
+    return (qg, px, ps, fcc, pkts)

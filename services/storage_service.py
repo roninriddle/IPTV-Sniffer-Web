@@ -135,10 +135,17 @@ class ChannelStore:
             return {"saved": saved, "deleted": deleted, "total": len(data)}
 
     def patch_group_primary(self, group_key: str, primary_key: str) -> int:
-        """Set is_primary=True on primary_key and False on all others in the same group."""
+        """Set is_primary=True on primary_key and False on all others in the same group.
+
+        Returns 0 if primary_key does not exist in group_key (safe no-op).
+        """
         from utils import channel_group_key
         with self._lock:
             data = self.load()
+            # Verify primary_key actually belongs to this group
+            target = data.get(primary_key)
+            if not target or channel_group_key(target) != group_key:
+                return 0
             updated = 0
             for k, ch in data.items():
                 if channel_group_key(ch) == group_key:

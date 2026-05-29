@@ -600,35 +600,6 @@
             </div>
           </section>
 
-        <div id="diagnoseTab" class="tab-panel" hidden>
-          <section class="card">
-            <div class="section-title">
-              <h2>播放链路诊断</h2>
-              <span class="muted small">检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性</span>
-            </div>
-            <p class="task-description">选择频道后点击「运行诊断」，系统检查 rtp2httpd 是否可访问、FCC 是否响应、当前配置是否完整，并给出排查结论。IGMP / 组播回流检测需要宿主机 tcpdump 权限，将在后续版本支持。</p>
-            <div class="form-grid">
-              <label>
-                rtp2httpd 地址
-                <input id="diagHost" type="text" placeholder="留空使用当前设置">
-              </label>
-              <label>
-                rtp2httpd 端口
-                <input id="diagPort" type="number" min="1" max="65535" placeholder="5140">
-              </label>
-              <label>
-                检测频道（组播 IP:端口）
-                <input id="diagChannel" type="text" placeholder="例如 239.3.1.241:8008（可选）">
-              </label>
-            </div>
-            <div class="button-row">
-              <button id="diagRunBtn" class="primary" type="button">运行诊断</button>
-            </div>
-            <div id="diagResult" class="result-box muted" style="margin-top:12px">点击「运行诊断」开始检测。</div>
-            <div id="diagChecklist" style="margin-top:16px"></div>
-          </section>
-        </div>
-
           <section class="card">
             <div class="section-title">
               <h2>频道列表快照</h2>
@@ -639,6 +610,35 @@
               <button id="saveSnapshotBtn" class="secondary" type="button">保存快照</button>
             </div>
             <div id="snapshotList" style="margin-top:12px"></div>
+          </section>
+        </div>
+
+        <div id="diagnoseTab" class="tab-panel" hidden>
+          <section class="card">
+            <div class="section-title">
+              <h2>播放链路诊断</h2>
+              <span class="muted small">检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性</span>
+            </div>
+            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。IGMP / 组播回流检测需要宿主机 tcpdump 权限，将在后续版本支持。</p>
+            <div class="form-grid">
+              <label>
+                rtp2httpd 地址
+                <input id="diagHost" type="text" placeholder="留空使用当前设置">
+              </label>
+              <label>
+                rtp2httpd 端口
+                <input id="diagPort" type="number" min="1" max="65535" placeholder="5140">
+              </label>
+              <label>
+                检测频道（组播 IP:端口，可选）
+                <input id="diagChannel" type="text" placeholder="例如 239.3.1.241:8008">
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="diagRunBtn" class="primary" type="button">运行诊断</button>
+            </div>
+            <div id="diagResult" class="result-box muted" style="margin-top:12px">点击「运行诊断」开始检测。</div>
+            <div id="diagChecklist" style="margin-top:16px"></div>
           </section>
         </div>
 

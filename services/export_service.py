@@ -175,9 +175,9 @@ class ExportService:
         json_path = self.output_dir / "channels.json"
         txt_path  = self.output_dir / "channels.txt"
         csv_path  = self.output_dir / "channels.csv"
-        self._write_m3u(best_channels, quality_groups_best, best_m3u_path,  url_mode="direct", **m3u_kwargs)
+        self._write_m3u(best_channels, quality_groups_best, best_m3u_path,  url_mode="direct", include_quality_section=False, **m3u_kwargs)
         self._write_m3u(channels,      quality_groups_all,  all_m3u_path,   url_mode="direct", **m3u_kwargs)
-        self._write_m3u(best_channels, quality_groups_best, rtp_best_path,  url_mode="source", **m3u_kwargs)
+        self._write_m3u(best_channels, quality_groups_best, rtp_best_path,  url_mode="source", include_quality_section=False, **m3u_kwargs)
         self._write_m3u(channels,      quality_groups_all,  rtp_all_path,   url_mode="source", **m3u_kwargs)
         # Write legacy aliases (same bytes as new files)
         import shutil as _shutil
@@ -214,6 +214,7 @@ class ExportService:
         for members in groups.values():
             primary = max(members, key=lambda c: channel_primary_score({
                 "quality_group": c.quality_group, "probe_status": c.probe_status,
+                "width": c.width, "height": c.height,
                 "fcc_ip": c.fcc_ip, "fcc_port": c.fcc_port,
                 "fec_port": c.fec_port, "packets": c.packets,
             }))
@@ -244,6 +245,7 @@ class ExportService:
         catchup_template: str = "",
         fcc_type: str = "",
         op_ch: dict[str, Any] | None = None,
+        include_quality_section: bool = True,
     ) -> None:
         op_ch = op_ch or {}
         with target.open("w", encoding="utf-8", newline="\n") as handle:
@@ -254,9 +256,10 @@ class ExportService:
                 handle.write("#EXTM3U\n")
             for channel in channels:
                 self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
-            for group_name in QUALITY_GROUP_OPTIONS:
-                for channel in quality_groups.get(group_name, []):
-                    self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
+            if include_quality_section:
+                for group_name in QUALITY_GROUP_OPTIONS:
+                    for channel in quality_groups.get(group_name, []):
+                        self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
 
     def _write_m3u_item(
         self,
