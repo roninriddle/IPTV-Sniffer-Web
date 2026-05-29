@@ -88,9 +88,15 @@ class ExportService:
                 category = "其它频道"
             width = self._safe_int(row.get("width"))
             height = self._safe_int(row.get("height"))
-            quality_group = str(row.get("quality_group") or stream_quality_group(width, height)).strip()
-            if quality_group not in {"4K高清", "高清频道", "普通频道", "未识别"}:
+            # When actual dimensions are known, always recompute quality_group from
+            # them — a stale value (e.g. "高清频道" carried on a 3840x2160 stream)
+            # must not survive into export grouping or the quality statistics.
+            if width and height:
                 quality_group = stream_quality_group(width, height)
+            else:
+                quality_group = str(row.get("quality_group") or stream_quality_group(width, height)).strip()
+                if quality_group not in {"4K高清", "高清频道", "普通频道", "未识别"}:
+                    quality_group = stream_quality_group(width, height)
             channels.append(ChannelRecord(
                 key=key,
                 host=host,
@@ -159,8 +165,7 @@ class ExportService:
         fcc_type = str(settings.get("fcc_type", "") or "").strip()
         op_ch = operator_channels or {}
         best_channels = self._select_best_channels(channels)
-        quality_groups_all  = self._quality_groups(channels)
-        quality_groups_best = self._quality_groups(best_channels)
+        quality_group_counts = self._quality_group_counts(channels)
         m3u_kwargs = dict(http_host=http_host, http_port=http_port, path_mode=path_mode,
                           epg_url=epg_url, catchup_days=catchup_days,
                           catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
@@ -175,21 +180,21 @@ class ExportService:
         json_path = self.output_dir / "channels.json"
         txt_path  = self.output_dir / "channels.txt"
         csv_path  = self.output_dir / "channels.csv"
-        self._write_m3u(best_channels, quality_groups_best, best_m3u_path,  url_mode="direct", include_quality_section=False, **m3u_kwargs)
-        self._write_m3u(channels,      quality_groups_all,  all_m3u_path,   url_mode="direct", **m3u_kwargs)
-        self._write_m3u(best_channels, quality_groups_best, rtp_best_path,  url_mode="source", include_quality_section=False, **m3u_kwargs)
-        self._write_m3u(channels,      quality_groups_all,  rtp_all_path,   url_mode="source", **m3u_kwargs)
+        self._write_m3u(best_channels, best_m3u_path,  url_mode="direct", **m3u_kwargs)
+        self._write_m3u(channels,      all_m3u_path,   url_mode="direct", **m3u_kwargs)
+        self._write_m3u(best_channels, rtp_best_path,  url_mode="source", **m3u_kwargs)
+        self._write_m3u(channels,      rtp_all_path,   url_mode="source", **m3u_kwargs)
         # Write legacy aliases (same bytes as new files)
         import shutil as _shutil
         _shutil.copy2(best_m3u_path, direct_m3u_path)
         _shutil.copy2(rtp_best_path, source_m3u_path)
         self._write_playlist_json(channels, json_path, path_mode, fcc_type=fcc_type)
-        self._write_txt(channels, quality_groups_all, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
-        self._write_csv(channels, quality_groups_all, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
+        self._write_txt(channels, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
+        self._write_csv(channels, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
         return {
             "count": len(channels),
             "best_count": len(best_channels),
-            "quality_group_counts": {name: len(quality_groups_all.get(name, [])) for name in QUALITY_GROUP_OPTIONS},
+            "quality_group_counts": quality_group_counts,
             "unclassified_resolution_count": sum(1 for channel in channels if channel.quality_group not in QUALITY_GROUP_OPTIONS),
             "files": {
                 "best_m3u": best_m3u_path.name,
@@ -222,19 +227,16 @@ class ExportService:
         best.sort(key=self._channel_sort_key)
         return best
 
-    def _quality_groups(self, channels: list[ChannelRecord]) -> dict[str, list[ChannelRecord]]:
-        grouped = {name: [] for name in QUALITY_GROUP_OPTIONS}
+    def _quality_group_counts(self, channels: list[ChannelRecord]) -> dict[str, int]:
+        counts = {name: 0 for name in QUALITY_GROUP_OPTIONS}
         for channel in channels:
-            if channel.quality_group in grouped:
-                grouped[channel.quality_group].append(channel)
-        for group_channels in grouped.values():
-            group_channels.sort(key=self._quality_sort_key)
-        return grouped
+            if channel.quality_group in counts:
+                counts[channel.quality_group] += 1
+        return counts
 
     def _write_m3u(
         self,
         channels: list[ChannelRecord],
-        quality_groups: dict[str, list[ChannelRecord]],
         target: Path,
         http_host: str,
         http_port: int,
@@ -245,8 +247,8 @@ class ExportService:
         catchup_template: str = "",
         fcc_type: str = "",
         op_ch: dict[str, Any] | None = None,
-        include_quality_section: bool = True,
     ) -> None:
+        # Each source is written exactly once, grouped by its original category.
         op_ch = op_ch or {}
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             if epg_url:
@@ -256,10 +258,6 @@ class ExportService:
                 handle.write("#EXTM3U\n")
             for channel in channels:
                 self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
-            if include_quality_section:
-                for group_name in QUALITY_GROUP_OPTIONS:
-                    for channel in quality_groups.get(group_name, []):
-                        self._write_m3u_item(handle, channel, group_name, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
 
     def _write_m3u_item(
         self,
@@ -301,21 +299,21 @@ class ExportService:
     def _write_txt(
         self,
         channels: list[ChannelRecord],
-        quality_groups: dict[str, list[ChannelRecord]],
         target: Path,
         http_host: str,
         http_port: int,
         path_mode: str,
         fcc_type: str = "",
     ) -> None:
+        # Each source is written exactly once, grouped by its original category.
         grouped: dict[str, list[ChannelRecord]] = {category: [] for category in CATEGORY_OPTIONS}
         for channel in channels:
             grouped.setdefault(channel.category, []).append(channel)
         for group_channels in grouped.values():
             group_channels.sort(key=self._quality_sort_key)
-        ordered_sections: list[tuple[str, list[ChannelRecord]]] = []
-        ordered_sections.extend((category, grouped.get(category, [])) for category in CATEGORY_OPTIONS)
-        ordered_sections.extend((group_name, quality_groups.get(group_name, [])) for group_name in QUALITY_GROUP_OPTIONS)
+        ordered_sections: list[tuple[str, list[ChannelRecord]]] = [
+            (category, grouped.get(category, [])) for category in CATEGORY_OPTIONS
+        ]
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             first_group = True
             for category, group_channels in ordered_sections:
@@ -335,13 +333,14 @@ class ExportService:
     def _write_csv(
         self,
         channels: list[ChannelRecord],
-        quality_groups: dict[str, list[ChannelRecord]],
         target: Path,
         http_host: str,
         http_port: int,
         path_mode: str,
         fcc_type: str = "",
     ) -> None:
+        # Each source is written exactly once; the row carries both its
+        # original category and its quality group as columns.
         with target.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow([
@@ -366,9 +365,6 @@ class ExportService:
             ])
             for channel in channels:
                 self._write_csv_row(writer, channel, channel.category, http_host, http_port, path_mode, fcc_type)
-            for group_name in QUALITY_GROUP_OPTIONS:
-                for channel in quality_groups.get(group_name, []):
-                    self._write_csv_row(writer, channel, group_name, http_host, http_port, path_mode, fcc_type)
 
     def _write_csv_row(self, writer: csv.writer, channel: ChannelRecord, display_group: str, http_host: str, http_port: int, path_mode: str, fcc_type: str = "") -> None:
         source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)

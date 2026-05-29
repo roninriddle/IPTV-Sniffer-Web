@@ -1583,6 +1583,45 @@ def api_diagnose():
             checks.append({"item": f"FCC 记录查询 ({channel_addr})", "ok": None,
                            "detail": "此频道无 FCC 记录（不影响正常播放，仅影响快速换台）"})
 
+    # --- Check 6b: Live multicast link (IGMP join + 239.x UDP / mirror-port) ---
+    # Only when a concrete multicast channel is given and we have tcpdump权限.
+    if channel_addr and ":" in channel_addr:
+        mc_host, _, mc_port_raw = channel_addr.partition(":")
+        try:
+            mc_port = int(mc_port_raw)
+        except ValueError:
+            mc_port = 0
+        if valid_ipv4_multicast(mc_host) and mc_port:
+            runtime_ok = capture_service.runtime_check().get("ok")
+            if not runtime_ok:
+                checks.append({"item": f"组播链路检测 ({channel_addr})", "ok": None,
+                               "detail": "缺少 tcpdump/抓包权限，跳过 IGMP/UDP 链路检测（需 NET_ADMIN, NET_RAW）"})
+                conclusions.append("无法进行 IGMP/组播回流检测：宿主机需安装 tcpdump 并授予 NET_ADMIN、NET_RAW 权限。")
+            else:
+                link = capture_service.diagnose_multicast(mc_host, mc_port, iface)
+                igmp_detail = "已发出 IGMP 加入请求" if link.get("igmp_sent") else "未确认 IGMP 加入"
+                checks.append({"item": f"IGMP 组播加入 ({channel_addr})",
+                               "ok": bool(link.get("igmp_sent")),
+                               "detail": f"接口 {link.get('interface')}（{link.get('interface_ip') or '自动'}）→ {igmp_detail}"})
+                verdict_code = link.get("verdict")
+                udp_detail = (f"主动加入后收到 UDP 包：socket={link.get('socket_active_packets')} "
+                              f"/ 线缆={link.get('wire_active_packets')}；"
+                              f"未加入时线缆收到={link.get('wire_passive_packets')}")
+                if verdict_code == "ok":
+                    checks.append({"item": f"收到 239.x UDP 组播流 ({channel_addr})", "ok": True,
+                                   "detail": udp_detail})
+                elif verdict_code == "mirror":
+                    checks.append({"item": f"收到 239.x UDP 组播流 ({channel_addr})", "ok": False,
+                                   "detail": udp_detail + " → 疑似镜像口（SPAN）"})
+                    conclusions.append("疑似镜像/SPAN 抓包口：未加入组播即可收到流量，但主动 IGMP 加入收不到。"
+                                       "镜像口只能被动嗅探，播放器无法主动播放；请改用真实的 IPTV 接入口。")
+                else:
+                    checks.append({"item": f"收到 239.x UDP 组播流 ({channel_addr})", "ok": False,
+                                   "detail": udp_detail})
+                    conclusions.append("未收到该组播流：可能不在 IPTV 组播 VLAN、抓包接口选择错误，或该频道已停播。")
+                for err in link.get("errors", []):
+                    conclusions.append(f"组播链路检测：{err}")
+
     # --- Check 7: Channel list populated ---
     ch_count = len(channel_store.load())
     checks.append({"item": "频道列表已导入", "ok": ch_count > 0,
