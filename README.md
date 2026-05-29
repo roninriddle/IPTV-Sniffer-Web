@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.9
+# IPTV Sniffer Web v0.9.91
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -22,16 +22,16 @@ EPG 与台标来源参考并致谢：
 
 ## 核心特性
 
-- **运营商频道发现（主入口）**：填写机顶盒 IP，重启机顶盒，系统自动从 STB 开机 TCP 流量中解析运营商 EPG 门户的完整频道表，一键导入频道名称、组播地址与 FCC 参数；
-- **嗅探整理（补充入口）**：网页选择接口后实时嗅探 IPTV 组播流，自动过滤无效组播，自动识别编码、分辨率、截图和 EPG，嗅探结果可导入频道列表；
-- **频道列表**：统一管理所有已导入的频道，支持勾选特定频道后生成播放列表；
-- **定时 EPG 刷新**：定时自动刷新所有配置的 EPG 来源，保持频道 EPG 与台标信息持续更新；
-- 抓包时解析 `ChannelFCCIP` / `ChannelFCCPort`，保存到 `data/fcc.json`；
-- 抓包时识别 `POST /bj_stb/V1/STB/channelAcquire` 中的 `UserToken`，保存到 `data/playlist_token.json`；
-- 抓包后使用 `ffprobe` 自动识别编码、分辨率、帧率和流内频道名，并生成 4K / 高清 / 普通频道分组；
-- 支持 XMLTV EPG 与 TVlogo 缓存匹配，导出时写入 `tvg-id` / `tvg-name` / `tvg-logo`；
-- 有效候选右侧自动显示截图（ffmpeg 直连组播抓帧），点击可放大；
-- 导出直连 M3U、rtp2httpd 外部源 M3U、JSON、TXT、CSV。
+| 功能 | 说明 |
+|---|---|
+| **运营商频道发现** | 填写机顶盒 IP，重启机顶盒，自动从 STB 开机流量解析频道表（名称/组播/FCC/FEC）；同步捕获 DHCP 认证信息（MAC/IP/Option60/Option61/Option125） |
+| **频道线路组** | 同名频道自动归组（tvg-id > 规范化名称），4K>HD>SD>未识别优先级自动选主源；支持手动设为主源；分组视图展开备线 |
+| **播放链路诊断** | 检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性，给出排查结论 |
+| **四档导出** | `channels-best.m3u`（主源直连）/ `channels-all.m3u`（全部直连）/ `channels-rtp2httpd-best.m3u`（主源源地址）/ `channels-rtp2httpd-all.m3u`（全部源地址）；旧文件名兼容保留 |
+| **嗅探整理** | 实时嗅探组播流，ffprobe 自动识别 4K/1080p/720p，截图预览，支持 802.1Q/QinQ VLAN |
+| **EPG & 台标** | XMLTV EPG + TVlogo 缓存匹配，定时自动刷新，导出写入 tvg-id/tvg-logo |
+| **iStoreOS 部署向导** | 读取宿主机 `/etc/config/network`，生成 eth0 被动抓包 UCI 脚本（proto=none）；支持 SLL/SLL2 pcap |
+| **顶部认证摘要栏** | 捕获到 DHCP 信息后顶部显示 MAC/IPTV IP/网关/UserToken/FCC 状态 |
 
 ---
 
@@ -336,21 +336,12 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
-- `v0.9.9`：首页拓扑三场景统一（镜像口 / R4S eth0 被动抓包 / IGMP Proxy）；首页与部署向导合并，流程说明更新为频道线路与播放诊断；新增频道线路组（按 tvg-id / 标准化频道名自动归组，4K>HD>SD>未识别优先级自动选主源，支持手动设为主源）；导出重构为四档：channels-best.m3u（主源直连）、channels-all.m3u（全部直连）、channels-rtp2httpd-best.m3u（主源源地址）、channels-rtp2httpd-all.m3u（全部源地址），旧文件名作为别名保留兼容；频道列表新增「分组视图」切换，展开后可查看各备线并一键设为主源；utils 新增 channel_group_key / channel_primary_score / normalize_channel_name_for_group；
-- `v0.9.8`：STB 开机捕获新增 DHCP 认证信息提取：tcpdump 过滤器同步捕获 UDP 67/68，分析完成后自动解析机顶盒 MAC、IPTV IP、网关/掩码/DNS/DHCP 服务器、Option 60 Vendor Class、Option 12 Hostname、Option 61 Client-ID、Option 125 Vendor Specific（含 Enterprise 子选项），结果展示在「运营商频道」页面「机顶盒认证信息」卡片；
-- `v0.9.7`：运营商频道导入后自动从 `is_hd` 字段推导清晰度分组（高清频道 / 普通频道），导入即可在频道列表看到清晰度，无需等待 ffprobe 探测（ffprobe 探测到 4K 后仍可覆盖）；频道列表新增筛选行：按名称实时搜索、按分类下拉筛选、按清晰度下拉筛选，有筛选条件时计数显示"N / 总数 个"；
-- `v0.9.6`：修复部署向导前端 `requestJson()` 重复取 `.data` 导致向导始终显示"检测失败"；修复 `CUSetConfig` 频道表解析回归（单引号与双引号两种外层格式均可正确提取频道，属性值同时兼容单双引号）；新增回归测试套件覆盖 Ethernet / SLL / SLL2 pcap、单双引号频道表解析、FEC/FCC/fcc-type 导出 URL、OpenWrt UCI 解析器与分析器接口契约（25 项全部通过）；
-- `v0.9.5`：新增 iStoreOS / OpenWrt 部署向导（"部署向导"标签页）：自动读取宿主机 `/etc/config/network`（需 `-v /etc/config/network:/host/etc/config/network:ro`），分析 UCI 接口用途，一键生成 eth0 被动监听配置脚本，支持复制 / 下载，并可将 eth0 同步为全局抓包接口；STB 开机 pcap 解析兼容 Linux cooked SLL（DLT=113）与 SLL2（DLT=276）链路类型（`tcpdump -i any` 抓包不再丢失频道数据）；运营商频道发现支持双引号 `CUSetConfig("Channel"...)` 格式；FEC 端口从运营商频道表全链路贯通至导出 URL；候选流预览地址同步携带 `fec_port` 与 `fcc_type`；
-- `v0.9.4`：STB 开机捕获支持 802.1Q / QinQ VLAN Tagged 帧（单线复用 / trunk 镜像场景不再丢包）；FEC 端口全链路贯通（运营商频道表 → 频道存储 → 导出 URL 追加 `?fec=PORT`）；新增 FCC 协议类型选择（telecom / huawei），导出 URL 自动追加 `&fcc-type=VALUE`；README 补充 Docker Hub 拉取方式、网络前置条件说明与北京联通参考流程；
-- `v0.9.2`：修复 STB 开机捕获 TCP 重组：按 seq 排序后拼接，跳过重传包，解决乱序或重传导致的频道表解析失败；修复多 EPG 来源优先级：首个刷新的 EPG 源固定为主源，后续刷新不再替换主源；修复 `epg_source` 字段：记录实际命中的 EPG 来源 URL 而非当前主源 URL；修复多源 EPG / 台标重启后丢失：`epg_cache.json` 现在持久化全部来源数据，重启后自动恢复；频道列表新增「一键探测分辨率」按钮；
-- `v0.9.1`：修复频道列表地址列太窄（64px→170px），改用 `.cl-table` 专用 CSS 类；
-- `v0.9.0`：启动时后台自动刷新全部 EPG 与台标；运营商频道页新增「已保存频道表」重新导入（无需重启机顶盒）；频道列表新增命名快照（保存/恢复/删除）；定时 EPG 页内联 EPG 与台标来源管理（添加/删除/恢复）；全量刷新同时更新台标；每个下载按钮直接触发生成并下载，移除「生成播放列表」按钮；回看（catchup）支持：导出 M3U 时对运营商标记的回看频道写入 `catchup="default" catchup-days=N` 属性；页面底部新增作者 Ronin Riddle；
-- `v0.8.5`：频道列表地址列改用 key 直接渲染，修复端口为 0 时地址显示异常；清晰度/EPG 无数据时显示「-」而非空白；「刷新接口」改为「刷新网卡」，运营商频道的抓包网卡改为下拉选择并随刷新同步更新；
-- `v0.8.4`：修复「刷新接口」移回顶部 header；rtp2httpd 配置移至频道列表导出区；恢复运营商频道名称自动内嵌至嗅探结果；
-- `v0.8.3`：新增「频道列表」独立页面，运营商频道与嗅探结果均通过「导入到频道列表」汇入；导出功能移至频道列表，支持勾选特定频道导出；「定时 EPG」重做为 EPG 来源管理与定时刷新，删除 M3U 更新功能；运营商频道发现移除自动名称内嵌，「刷新接口」按钮移至嗅探整理；README 同步更新；
-- `v0.8.2`：STB 开机捕获页面（运营商频道发现）；运营商频道表持久化；EPG 匹配覆盖所有已配置来源；批量写入 FCC 记录；多来源 EPG 索引合并；
-- `v0.8.0`：STB 开机抓包 TCP 重组与频道解析（getchannellistHWCU.jsp / VSP JSON）；运营商频道导入自动批量写入 FCC；
-- `v0.7.5`：流信息列点击弹出详情窗口；ffprobe 探测补充音频流、节目码率等字段；内置 EPG/台标来源支持删除与恢复；
-- `v0.7.0–v0.7.4`：多项 Bug 修复与性能优化，包括 auto_probe_done 清空 Bug、截图协议修复、EPG 自动来源检测优化等；
-- `v0.6.4–v0.6.9`：首页重做、双 Tab 工作区、定时任务、累积抓包模式、多种 EPG/台标来源管理等；
-- `v0.6`：基于上述两个开源项目思路重构为统一 Web 工作台。
+- `v0.9.91`：修复播放诊断页初始化——从 DOM 表单（httpHost/httpPort）读取配置，不再依赖未初始化的 state.settings；刷新网卡按钮移至「运营商频道」操作栏；README 整理合并历史版本条目；
+- `v0.9.9`：首页拓扑三场景统一（镜像口 / R4S eth0 被动抓包 / IGMP Proxy）；首页与部署向导合并；新增频道线路组（tvg-id > 规范化名称归组，评分自动选主源，支持手动设为主源，分组视图展开备线）；导出重构为四档（best/all × 直连/源地址）；旧文件名别名保留；
+- `v0.9.8`：STB 开机捕获同步捕获 DHCP（UDP 67/68），解析机顶盒 MAC / IPTV IP / 网关 / Option 60/61/125；结果展示在「运营商频道」→「机顶盒认证信息」卡片；顶部摘要栏显示认证与频道状态；新增播放链路诊断页（rtp2httpd 可达性 / FCC 响应 / 认证状态 / 配置检查 / 排查结论）；导航重排：首页/部署向导 → 运营商频道 → 频道线路 → 播放诊断 → 嗅探整理 → 定时EPG；
+- `v0.9.7`：运营商导入自动从 `is_hd` 推导清晰度分组；4K 识别修复（is_hd 推导的高清不再阻止 ffprobe 重探；enrich 时优先用实测宽高重算 quality_group）；频道列表新增名称/分类/清晰度筛选行；
+- `v0.9.6`：修复部署向导 .data 双重解包；修复 CUSetConfig 单/双引号解析回归；属性值兼容 key="val" 与 key='val'；新增 29 项回归测试（Ethernet/SLL/SLL2 pcap、频道表解析、FEC/FCC URL、UCI 解析）；
+- `v0.9.5`：iStoreOS/OpenWrt 被动抓包部署向导（读取 `/host/etc/config/network`，生成 UCI 脚本）；STB pcap 兼容 SLL/SLL2（DLT=113/276）；CUSetConfig 双引号格式支持；FEC 端口全链路贯通；候选流预览地址带 fec_port 和 fcc_type；
+- `v0.9.4`：STB 开机捕获支持 802.1Q/QinQ VLAN Tagged 帧；FCC 协议类型（telecom/huawei）导出追加 `&fcc-type=VALUE`；FEC 端口全链路；
+- `v0.9.0–v0.9.3`：EPG 多来源优先级修复；TCP 重组 seq 排序去重；频道列表快照；定时 EPG 页内联来源管理；catchup/回看属性导出；
+- `v0.6–v0.8.5`：统一 Web 工作台初版（v0.6）；STB 开机抓包 TCP 重组与频道解析（v0.8）；运营商频道发现页面（v0.8.2）；频道列表独立页面、导出区移至频道列表（v0.8.3）；EPG/台标来源管理（v0.7–v0.8）；

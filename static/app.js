@@ -1673,9 +1673,15 @@ async function loadStbSummary() {
 // ── Playback diagnostics tab ──────────────────────────────────────────────
 
 function initDiagnoseTab() {
-  const settings = state.settings || {};
-  if (!$("diagHost").value && settings.http_host)  $("diagHost").value  = settings.http_host;
-  if (!$("diagPort").value && settings.http_port)  $("diagPort").value  = settings.http_port;
+  // Pre-fill from the main settings form (already populated by loadSettings)
+  if (!$("diagHost").value) $("diagHost").value = $("httpHost").value || "";
+  if (!$("diagPort").value || $("diagPort").value === "0")
+    $("diagPort").value = $("httpPort").value || "5140";
+  // Pre-fill channel from first channel in list (if any)
+  if (!$("diagChannel").value && state.channelList && state.channelList.length) {
+    const first = state.channelList[0];
+    if (first.host && first.port) $("diagChannel").value = `${first.host}:${first.port}`;
+  }
 }
 
 async function runDiagnose() {
