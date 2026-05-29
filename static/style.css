@@ -67,8 +67,14 @@ body {
   display: grid;
   gap: 12px;
 }
-.workbench-page, .tab-panel { display: grid; gap: 12px; }
+.workbench-page, .tab-panel { display: grid; gap: 12px; min-width: 0; }
 [hidden] { display: none !important; }
+
+/* Grid items default to min-width:auto, which lets a wide child (e.g. the
+   fixed-width streams table) expand the item to its content's min-content
+   width and break out of the 1040px layout. Forcing min-width:0 lets the
+   inner .table-wrap (overflow-x:auto) clip/scroll instead of overflowing. */
+.layout > *, .workbench-page > *, .tab-panel > *, .home-page > * { min-width: 0; }
 
 .card {
   background: var(--card);
@@ -76,6 +82,7 @@ body {
   border-radius: 8px;
   padding: 14px;
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 .home-page { display: grid; gap: 12px; }
 .home-hero {
@@ -383,7 +390,11 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
   transform: translateX(-100%);
   box-shadow: 12px 0 32px rgba(0, 0, 0, .18);
 }
-.logs-drawer.open { transform: translateX(0); }
+/* Drive the slide-in from either the drawer's own .open class or the body
+   state, so the panel can never stay at translateX(-100%) while the body is
+   already in logs-open (the two are toggled together in JS). */
+.logs-drawer.open,
+body.logs-open .logs-drawer { transform: translateX(0); }
 .logs-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .logs-drawer .download, .logs-drawer button.secondary { background: #18253d; border-color: #31415f; color: #e5edf7; }
 .logs-output {
