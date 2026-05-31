@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.stb_discovery_service import _parse_chanlist_html, _reassemble_tcp_streams
 from services.export_service import ExportService
-from app import _parse_uci_network, _analyze_uci_interfaces, enrich_channel_rows
+from app import _parse_uci_network, _analyze_uci_interfaces, _parse_rtp2httpd_config_text, enrich_channel_rows
 
 
 # ── pcap helpers ─────────────────────────────────────────────────────────
@@ -325,6 +325,26 @@ class TestMulticastDiagnostic:
         counts = svc._stop_diag_tcpdump(_FakeProc(out), "239.1.1.1", 8001)
         assert counts["udp"] == 2
         assert counts["igmp"] == 1
+
+
+# ── rtp2httpd config parser ───────────────────────────────────────────────
+
+def test_parse_rtp2httpd_config_extracts_interfaces_and_external_m3u():
+    parsed = _parse_rtp2httpd_config_text("""
+[global]
+upstream-interface = enp3s0
+upstream-interface-fcc = enp2s0
+external-m3u = file:///vol1/@appshare/rtp2httpd/channels.m3u
+status-page-path = /status
+
+[bind]
+* 5140
+""")
+    values = parsed["values"]
+    assert values["upstream-interface"] == "enp3s0"
+    assert values["upstream-interface-fcc"] == "enp2s0"
+    assert values["external-m3u"].endswith("channels.m3u")
+    assert parsed["bind"] == ["* 5140"]
 
 
 # ── OpenWrt UCI parser + analyzer ─────────────────────────────────────────

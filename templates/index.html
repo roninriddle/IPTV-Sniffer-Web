@@ -195,6 +195,7 @@
               <h2>嗅探参数</h2>
               <span id="runtimeBadge" class="chip neutral">检查中</span>
             </div>
+            <p class="task-description">自动抓流会按顺序完成候选流发现、技术信息识别、EPG/台标补全、低价值流折叠与频道分组。人工只需要确认缺失频道名、分类和主备线路。</p>
             <div class="form-grid">
               <label>
                 抓包网卡
@@ -254,7 +255,7 @@
             </div>
             <span id="epgDetectStatus" class="muted small" hidden></span>
             <div class="button-row">
-              <button id="startBtn" class="primary" type="button">继续抓包</button>
+              <button id="startBtn" class="primary" type="button">自动抓流并整理</button>
               <button id="stopBtn" class="danger" type="button" disabled>停止抓包</button>
               <button id="resetBtn" class="secondary" type="button">重置候选流</button>
               <button id="saveSettingsBtn" class="secondary" type="button">保存默认设置</button>
@@ -472,7 +473,7 @@
           <section class="card">
             <div class="section-title">
               <h2>导出结果</h2>
-              <span class="muted">原分类保留；额外生成"4K高清"、"高清频道"与"普通频道"三个清晰度分组。不勾选则导出全部频道。</span>
+              <span class="muted">最佳线路每组只取主源；全部线路保留所有备线且每条源只写一次。不勾选则导出全部频道。</span>
             </div>
             <div class="section-subtitle">
               <h3>rtp2httpd 配置</h3>
@@ -585,16 +586,17 @@
                 <thead>
                   <tr>
                     <th style="width:28px"></th>
-                    <th>频道名称</th>
-                    <th style="width:90px">清晰度</th>
-                    <th style="width:60px">线路数</th>
-                    <th style="width:90px">分类</th>
-                    <th style="width:130px">EPG 标识</th>
-                    <th style="width:80px">操作</th>
+                    <th>频道 / 线路</th>
+                    <th style="width:82px">角色</th>
+                    <th style="width:86px">清晰度</th>
+                    <th>技术 / FCC</th>
+                    <th style="width:128px">最近状态</th>
+                    <th style="width:120px">EPG</th>
+                    <th style="width:94px">操作</th>
                   </tr>
                 </thead>
                 <tbody id="clGroupTableBody">
-                  <tr><td colspan="7" class="empty">加载中…</td></tr>
+                  <tr><td colspan="8" class="empty">加载中…</td></tr>
                 </tbody>
               </table>
             </div>
@@ -617,9 +619,13 @@
           <section class="card">
             <div class="section-title">
               <h2>播放链路诊断</h2>
-              <span class="muted small">检测 rtp2httpd 可达性、FCC 响应、认证状态与配置完整性</span>
+              <span class="muted small">按 rtp2httpd、认证、FCC、组播、M3U 分层定位播放失败点</span>
             </div>
             <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，并判断是否为镜像口（SPAN，仅能被动嗅探、无法主动播放）。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
+            <div class="notice">
+              <strong>镜像口说明：</strong>
+              <span class="muted">交换机镜像口适合嗅探机顶盒流量，但不能代表本机能主动播放。若诊断显示“未加入也能看到流量、主动加入收不到”，应改用真实 IPTV 上游口、IGMP Proxy 或让 rtp2httpd 运行在完成认证的路由侧。</span>
+            </div>
             <div class="form-grid">
               <label>
                 rtp2httpd 地址
@@ -632,6 +638,10 @@
               <label>
                 检测频道（组播 IP:端口，可选）
                 <input id="diagChannel" type="text" placeholder="例如 239.3.1.241:8008">
+              </label>
+              <label class="span-2">
+                rtp2httpd 配置文件路径（可选）
+                <input id="diagConfigPath" type="text" placeholder="/host/vol1/@appconf/rtp2httpd/rtp2httpd.conf">
               </label>
             </div>
             <div class="button-row">

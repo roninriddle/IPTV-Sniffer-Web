@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 import zlib
 import json
 import re
@@ -41,6 +42,7 @@ from config import (
     SETTINGS_FILE,
     STB_TOKEN_FILE,
     CUSTOM_SOURCES_FILE,
+    DEFAULT_RTP2HTTPD_CONFIG_PATH,
     OPERATOR_CHANNELS_FILE,
     SNAPSHOTS_FILE,
     WAITRESS_THREADS,
@@ -1493,6 +1495,105 @@ def api_stb_summary():
     })
 
 
+def _parse_rtp2httpd_config_text(text: str) -> dict[str, Any]:
+    """Parse the small INI-like subset used by rtp2httpd configs."""
+    section = "global"
+    values: dict[str, str] = {}
+    bind_lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip() or "global"
+            continue
+        if section == "bind" and "=" not in line:
+            bind_lines.append(line)
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.split("#", 1)[0].split(";", 1)[0].strip()
+        if key:
+            values[f"{section}.{key}"] = value
+            values.setdefault(key, value)
+    return {"values": values, "bind": bind_lines}
+
+
+def _rtp2httpd_config_candidates(path_hint: str) -> list[Path]:
+    candidates: list[str] = []
+    if path_hint:
+        candidates.append(path_hint)
+    if DEFAULT_RTP2HTTPD_CONFIG_PATH:
+        candidates.append(DEFAULT_RTP2HTTPD_CONFIG_PATH)
+    candidates.extend([
+        "/vol1/@appconf/rtp2httpd/rtp2httpd.conf",
+        "/host/vol1/@appconf/rtp2httpd/rtp2httpd.conf",
+        "/etc/rtp2httpd/rtp2httpd.conf",
+        "/host/etc/rtp2httpd/rtp2httpd.conf",
+        "/config/rtp2httpd.conf",
+    ])
+    seen: set[str] = set()
+    result: list[Path] = []
+    for item in candidates:
+        if not item:
+            continue
+        expanded = os.path.expanduser(str(item))
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        result.append(Path(expanded))
+    return result
+
+
+def _load_rtp2httpd_config(path_hint: str) -> dict[str, Any]:
+    checked: list[str] = []
+    for path in _rtp2httpd_config_candidates(path_hint):
+        checked.append(str(path))
+        try:
+            if not path.exists() or not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")[:128_000]
+            parsed = _parse_rtp2httpd_config_text(text)
+            values = parsed["values"]
+            return {
+                "ok": True,
+                "path": str(path),
+                "checked": checked,
+                "upstream_interface": values.get("upstream-interface", ""),
+                "upstream_interface_multicast": values.get("upstream-interface-multicast", ""),
+                "upstream_interface_fcc": values.get("upstream-interface-fcc", ""),
+                "external_m3u": values.get("external-m3u", ""),
+                "status_page_path": values.get("status-page-path", "/status"),
+                "player_page_path": values.get("player-page-path", "/player"),
+                "bind": parsed["bind"],
+            }
+        except Exception as exc:
+            return {"ok": False, "path": str(path), "checked": checked, "error": str(exc)}
+    return {"ok": None, "path": path_hint, "checked": checked, "error": "未找到可读取的 rtp2httpd 配置文件"}
+
+
+def _diagnose_sections(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = ["rtp2httpd", "network", "auth", "fcc", "multicast", "playlist"]
+    names = {
+        "rtp2httpd": "rtp2httpd 服务",
+        "network": "网络接口",
+        "auth": "接入认证",
+        "fcc": "FCC / FEC",
+        "multicast": "组播链路",
+        "playlist": "频道资产 / M3U",
+    }
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for check in checks:
+        buckets.setdefault(str(check.get("layer") or "playlist"), []).append(check)
+    return [
+        {"id": key, "title": names.get(key, key), "checks": buckets[key]}
+        for key in order
+        if key in buckets
+    ]
+
+
 @app.post("/api/diagnose")
 def api_diagnose():
     """Playback chain diagnostic: rtp2httpd reachability + FCC + config review."""
@@ -1501,36 +1602,72 @@ def api_diagnose():
     http_host = str(data.get("http_host") or settings.get("http_host", "")).strip()
     http_port = int(data.get("http_port") or settings.get("http_port") or 5140)
     channel_addr = str(data.get("channel", "")).strip()  # "ip:port"
+    config_path = str(data.get("config_path") or settings.get("rtp2httpd_config_path", "")).strip()
+    iface = str(settings.get("interface", "")).strip()
 
     checks: list[dict] = []
     conclusions: list[str] = []
+
+    def add_check(layer: str, item: str, ok: bool | None, detail: str) -> None:
+        checks.append({"layer": layer, "item": item, "ok": ok, "detail": detail})
 
     # --- Check 1: rtp2httpd reachability ---
     rtp2httpd_ok = False
     if http_host:
         url = f"http://{http_host}:{http_port}/"
+        cfg = _load_rtp2httpd_config(config_path)
         try:
             req = Request(url)
             req.add_header("User-Agent", "IPTV-Sniffer-Web-Diag/1.0")
             with urlopen(req, timeout=5) as resp:
                 code = resp.getcode()
                 rtp2httpd_ok = code < 500
-            checks.append({"item": "rtp2httpd 可访问", "ok": True,
-                           "detail": f"{url} → HTTP {code}"})
+            add_check("rtp2httpd", "rtp2httpd 可访问", True, f"{url} → HTTP {code}")
         except Exception as exc:
             err = str(exc)
-            checks.append({"item": "rtp2httpd 可访问", "ok": False,
-                           "detail": f"{url} → {err}"})
+            add_check("rtp2httpd", "rtp2httpd 可访问", False, f"{url} → {err}")
             conclusions.append("rtp2httpd 不可访问：请确认地址/端口正确且服务已运行。")
+
+        status_path = cfg.get("status_page_path") if cfg.get("ok") is True else "/status"
+        if not str(status_path or "").startswith("/"):
+            status_path = "/" + str(status_path)
+        status_url = f"http://{http_host}:{http_port}{status_path or '/status'}"
+        try:
+            req = Request(status_url)
+            req.add_header("User-Agent", "IPTV-Sniffer-Web-Diag/1.0")
+            with urlopen(req, timeout=5) as resp:
+                code = resp.getcode()
+                body = resp.read(4096).decode("utf-8", errors="replace")
+            marker = "rtp2httpd" if "rtp2httpd" in body.lower() else "HTTP 状态页"
+            add_check("rtp2httpd", "rtp2httpd 状态页", code < 500, f"{status_url} → HTTP {code}（{marker}）")
+        except Exception as exc:
+            add_check("rtp2httpd", "rtp2httpd 状态页", None, f"{status_url} → {exc}")
+            conclusions.append("无法读取 rtp2httpd /status：如果服务可播放但状态页不可访问，请检查 status-page-path 或反向代理。")
+
+        if cfg.get("ok") is True:
+            upstream = cfg.get("upstream_interface_multicast") or cfg.get("upstream_interface") or "系统路由表"
+            fcc_iface = cfg.get("upstream_interface_fcc") or cfg.get("upstream_interface") or "系统路由表"
+            detail = (
+                f"配置={cfg.get('path')}；组播接口={upstream}；FCC接口={fcc_iface}；"
+                f"external-m3u={cfg.get('external_m3u') or '未配置'}"
+            )
+            add_check("rtp2httpd", "rtp2httpd 配置文件", True, detail)
+            if cfg.get("upstream_interface") and iface and cfg.get("upstream_interface") == iface:
+                add_check("network", "上游接口与抓包接口一致", True, f"rtp2httpd upstream-interface={cfg.get('upstream_interface')}，抓包接口={iface}")
+            elif cfg.get("upstream_interface") and iface:
+                add_check("network", "上游接口与抓包接口一致", None, f"rtp2httpd upstream-interface={cfg.get('upstream_interface')}，抓包接口={iface}；如前者不是 IPTV 上游口会无法主动播放")
+        elif cfg.get("ok") is False:
+            add_check("rtp2httpd", "rtp2httpd 配置文件", False, f"{cfg.get('path')} → {cfg.get('error')}")
+        else:
+            checked = "、".join(cfg.get("checked") or []) or "未配置路径"
+            add_check("rtp2httpd", "rtp2httpd 配置文件", None, f"{cfg.get('error')}；已检查：{checked}")
+            conclusions.append("如需诊断 upstream-interface，请把 rtp2httpd.conf 挂载进容器并设置 RTP2HTTPD_CONFIG_PATH 或在诊断页填写路径。")
     else:
-        checks.append({"item": "rtp2httpd 可访问", "ok": None,
-                       "detail": "未配置 rtp2httpd 地址，跳过检测。"})
+        add_check("rtp2httpd", "rtp2httpd 可访问", None, "未配置 rtp2httpd 地址，跳过检测。")
         conclusions.append("未配置 rtp2httpd 地址，直连 M3U 使用 rtp:// 源地址。")
 
     # --- Check 2: Interface configured ---
-    iface = str(settings.get("interface", "")).strip()
-    checks.append({"item": "抓包接口已配置", "ok": bool(iface),
-                   "detail": f"interface = {iface or '（未设置）'}"})
+    add_check("network", "抓包接口已配置", bool(iface), f"interface = {iface or '（未设置）'}")
     if not iface:
         conclusions.append("未设置抓包接口，嗅探将使用默认接口 any。")
 
@@ -1538,23 +1675,26 @@ def api_diagnose():
     auth = stb_discovery_service.status().get("auth_info") or {}
     has_mac = bool(auth.get("mac"))
     has_ip = bool(auth.get("assigned_ip"))
-    checks.append({"item": "DHCP 认证信息已捕获", "ok": has_mac or has_ip,
-                   "detail": f"MAC={auth.get('mac','—')}  IP={auth.get('assigned_ip','—')}"})
+    option60 = auth.get("vendor_class") or auth.get("option60") or ""
+    add_check(
+        "auth",
+        "DHCP 认证信息已捕获",
+        has_mac or has_ip,
+        f"MAC={auth.get('mac','—')}  IP={auth.get('assigned_ip','—')}  网关={auth.get('gateway','—')}  Option60={option60 or '—'}",
+    )
     if not (has_mac or has_ip):
         conclusions.append("未捕获到 DHCP 认证信息，如需 Option60 认证，请重启机顶盒并再次捕获。")
 
     # --- Check 4: UserToken captured ---
     token_data = token_store.load()
     has_token = bool(token_data.get("history"))
-    checks.append({"item": "UserToken 已捕获", "ok": has_token,
-                   "detail": f"历史记录 {len(token_data.get('history') or [])} 条"})
+    add_check("auth", "UserToken 已捕获", has_token, f"历史记录 {len(token_data.get('history') or [])} 条")
     if not has_token:
         conclusions.append("未捕获到 UserToken，channelAcquire 鉴权播放列表不可用。")
 
     # --- Check 5: FCC records ---
     fcc_count = len(fcc_store.load())
-    checks.append({"item": "FCC 记录", "ok": fcc_count > 0,
-                   "detail": f"已记录 {fcc_count} 条 FCC 服务器地址"})
+    add_check("fcc", "FCC 记录", fcc_count > 0, f"已记录 {fcc_count} 条 FCC 服务器地址")
     if fcc_count == 0:
         conclusions.append("没有 FCC 记录，快速换台功能不可用（不影响正常播放）。")
 
@@ -1573,15 +1713,12 @@ def api_diagnose():
             try:
                 with _socket.create_connection((fcc_ip, int(fcc_port)), timeout=3):
                     pass
-                checks.append({"item": f"FCC 服务器端口可达 ({channel_addr})", "ok": True,
-                               "detail": f"TCP connect {fcc_ip}:{fcc_port} → 成功（注：仅验证端口可达，非 FCC 协议握手）"})
+                add_check("fcc", f"FCC 服务器端口可达 ({channel_addr})", True, f"TCP connect {fcc_ip}:{fcc_port} → 成功（注：仅验证端口可达，非 FCC 协议握手）")
             except Exception as exc:
-                checks.append({"item": f"FCC 服务器端口可达 ({channel_addr})", "ok": False,
-                               "detail": f"TCP connect {fcc_ip}:{fcc_port} → {exc}"})
+                add_check("fcc", f"FCC 服务器端口可达 ({channel_addr})", False, f"TCP connect {fcc_ip}:{fcc_port} → {exc}")
                 conclusions.append(f"FCC 服务器 {fcc_ip}:{fcc_port} 端口不可达，rtp2httpd FCC 快速换台将超时。")
         else:
-            checks.append({"item": f"FCC 记录查询 ({channel_addr})", "ok": None,
-                           "detail": "此频道无 FCC 记录（不影响正常播放，仅影响快速换台）"})
+            add_check("fcc", f"FCC 记录查询 ({channel_addr})", None, "此频道无 FCC 记录（不影响正常播放，仅影响快速换台）")
 
     # --- Check 6b: Live multicast link (IGMP join + 239.x UDP / mirror-port) ---
     # Only when a concrete multicast channel is given and we have tcpdump权限.
@@ -1594,38 +1731,36 @@ def api_diagnose():
         if valid_ipv4_multicast(mc_host) and mc_port:
             runtime_ok = capture_service.runtime_check().get("ok")
             if not runtime_ok:
-                checks.append({"item": f"组播链路检测 ({channel_addr})", "ok": None,
-                               "detail": "缺少 tcpdump/抓包权限，跳过 IGMP/UDP 链路检测（需 NET_ADMIN, NET_RAW）"})
+                add_check("multicast", f"组播链路检测 ({channel_addr})", None, "缺少 tcpdump/抓包权限，跳过 IGMP/UDP 链路检测（需 NET_ADMIN, NET_RAW）")
                 conclusions.append("无法进行 IGMP/组播回流检测：宿主机需安装 tcpdump 并授予 NET_ADMIN、NET_RAW 权限。")
             else:
                 link = capture_service.diagnose_multicast(mc_host, mc_port, iface)
                 igmp_detail = "已发出 IGMP 加入请求" if link.get("igmp_sent") else "未确认 IGMP 加入"
-                checks.append({"item": f"IGMP 组播加入 ({channel_addr})",
-                               "ok": bool(link.get("igmp_sent")),
-                               "detail": f"接口 {link.get('interface')}（{link.get('interface_ip') or '自动'}）→ {igmp_detail}"})
+                add_check(
+                    "multicast",
+                    f"IGMP 组播加入 ({channel_addr})",
+                    bool(link.get("igmp_sent")),
+                    f"接口 {link.get('interface')}（{link.get('interface_ip') or '自动'}）→ {igmp_detail}",
+                )
                 verdict_code = link.get("verdict")
                 udp_detail = (f"主动加入后收到 UDP 包：socket={link.get('socket_active_packets')} "
                               f"/ 线缆={link.get('wire_active_packets')}；"
                               f"未加入时线缆收到={link.get('wire_passive_packets')}")
                 if verdict_code == "ok":
-                    checks.append({"item": f"收到 239.x UDP 组播流 ({channel_addr})", "ok": True,
-                                   "detail": udp_detail})
+                    add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", True, udp_detail)
                 elif verdict_code == "mirror":
-                    checks.append({"item": f"收到 239.x UDP 组播流 ({channel_addr})", "ok": False,
-                                   "detail": udp_detail + " → 疑似镜像口（SPAN）"})
+                    add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", False, udp_detail + " → 疑似镜像口（SPAN）")
                     conclusions.append("疑似镜像/SPAN 抓包口：未加入组播即可收到流量，但主动 IGMP 加入收不到。"
                                        "镜像口只能被动嗅探，播放器无法主动播放；请改用真实的 IPTV 接入口。")
                 else:
-                    checks.append({"item": f"收到 239.x UDP 组播流 ({channel_addr})", "ok": False,
-                                   "detail": udp_detail})
+                    add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", False, udp_detail)
                     conclusions.append("未收到该组播流：可能不在 IPTV 组播 VLAN、抓包接口选择错误，或该频道已停播。")
                 for err in link.get("errors", []):
                     conclusions.append(f"组播链路检测：{err}")
 
     # --- Check 7: Channel list populated ---
     ch_count = len(channel_store.load())
-    checks.append({"item": "频道列表已导入", "ok": ch_count > 0,
-                   "detail": f"已保存 {ch_count} 个频道"})
+    add_check("playlist", "频道列表已导入", ch_count > 0, f"已保存 {ch_count} 个频道")
     if ch_count == 0:
         conclusions.append("频道列表为空，请先运行运营商频道发现或嗅探并导入。")
 
@@ -1643,6 +1778,7 @@ def api_diagnose():
     return api_success({
         "verdict": verdict,
         "checks": checks,
+        "sections": _diagnose_sections(checks),
         "conclusions": conclusions,
     })
 

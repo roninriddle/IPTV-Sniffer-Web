@@ -48,6 +48,13 @@ function formatTime(seconds) {
   return mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
 }
 
+function formatDateTime(ts) {
+  const value = Number(ts || 0);
+  if (!value) return "—";
+  try { return new Date(value * 1000).toLocaleString("zh-CN", {hour12: false}); }
+  catch { return "—"; }
+}
+
 function formSettings() {
   const epgUrl = state.epgAuto
     ? (state.detectedEpgUrl || $("epgUrl").value.trim() || state.epgSources[0]?.url || "")
@@ -59,6 +66,7 @@ function formSettings() {
     interface: $("interface").value,
     http_host: $("httpHost").value.trim(),
     http_port: Number($("httpPort").value || 5140),
+    rtp2httpd_config_path: $("diagConfigPath")?.value.trim() || "",
     path_mode: $("pathMode").value,
     duration: Number($("duration").value || 0),
     auto_probe: $("autoProbe").checked,
@@ -350,9 +358,11 @@ async function loadEpgSources() {
 
 async function loadSettings() {
   const data = await requestJson("/api/settings");
+  state.settings = data;
   $("interface").value = data.interface || $("interface").value;
   $("httpHost").value = data.http_host || "";
   $("httpPort").value = data.http_port ?? 5140;
+  if ($("diagConfigPath")) $("diagConfigPath").value = data.rtp2httpd_config_path || "";
   $("pathMode").value = data.path_mode || "rtp";
   $("duration").value = data.duration ?? 30;
   $("autoProbe").checked = data.auto_probe !== false;
@@ -1677,6 +1687,8 @@ function initDiagnoseTab() {
   if (!$("diagHost").value) $("diagHost").value = $("httpHost").value || "";
   if (!$("diagPort").value || $("diagPort").value === "0")
     $("diagPort").value = $("httpPort").value || "5140";
+  if (!$("diagConfigPath").value && state.settings?.rtp2httpd_config_path)
+    $("diagConfigPath").value = state.settings.rtp2httpd_config_path;
   // Pre-fill channel from first channel in list (if any)
   if (!$("diagChannel").value && state.channelList && state.channelList.length) {
     const first = state.channelList[0];
@@ -1695,6 +1707,7 @@ async function runDiagnose() {
       http_host: $("diagHost").value.trim(),
       http_port: parseInt($("diagPort").value) || 5140,
       channel: $("diagChannel").value.trim(),
+      config_path: $("diagConfigPath").value.trim(),
     };
     const d = await requestJson("/api/diagnose", {method: "POST", body: JSON.stringify(body)});
     $("diagResult").textContent = d.verdict || "诊断完成。";
@@ -1702,11 +1715,17 @@ async function runDiagnose() {
     $("diagResult").className = "result-box " + (allOk ? "ok" : "warning");
     const checkIcon = ok => ok === true ? "✓" : ok === false ? "✗" : "–";
     const checkCls  = ok => ok === true ? "diag-ok" : ok === false ? "diag-fail" : "diag-skip";
-    let html = '<table class="diag-table">';
-    for (const c of (d.checks || [])) {
-      html += `<tr class="${checkCls(c.ok)}"><td class="diag-icon">${checkIcon(c.ok)}</td><td class="diag-item">${escapeHtml(c.item)}</td><td class="diag-detail mono small">${escapeHtml(c.detail || "")}</td></tr>`;
+    let html = "";
+    const sections = d.sections?.length
+      ? d.sections
+      : [{title: "诊断项", checks: d.checks || []}];
+    for (const section of sections) {
+      html += `<div class="diag-section"><div class="diag-section-title">${escapeHtml(section.title || "诊断项")}</div><table class="diag-table">`;
+      for (const c of (section.checks || [])) {
+        html += `<tr class="${checkCls(c.ok)}"><td class="diag-icon">${checkIcon(c.ok)}</td><td class="diag-item">${escapeHtml(c.item)}</td><td class="diag-detail mono small">${escapeHtml(c.detail || "")}</td></tr>`;
+      }
+      html += "</table></div>";
     }
-    html += "</table>";
     if (d.conclusions?.length) {
       html += '<div class="diag-conclusions"><strong>排查建议：</strong><ul>';
       for (const line of d.conclusions) html += `<li>${escapeHtml(line)}</li>`;
@@ -1734,36 +1753,97 @@ function _qualityBadge(qg) {
   return '<span class="badge neutral">—</span>';
 }
 
+function _roleBadge(role, manual = false) {
+  if (role === "primary") {
+    return `<span class="source-role ${manual ? "manual" : "primary"}">${manual ? "手动主源" : "自动主源"}</span>`;
+  }
+  return '<span class="source-role alt">备选线路</span>';
+}
+
+function _lineTech(ch) {
+  const resolution = ch.width && ch.height
+    ? `${ch.width}x${ch.height}`
+    : (ch.resolution_label && ch.resolution_label !== "未识别" ? ch.resolution_label : "未识别");
+  const codec = ch.codec_name || "编码未知";
+  const fps = ch.frame_rate ? `${ch.frame_rate}fps` : "";
+  const packets = Number(ch.packets || 0) > 0 ? `${ch.packets} 包` : "";
+  return [codec, resolution, fps, packets].filter(Boolean);
+}
+
+function _lineFcc(ch) {
+  const parts = [];
+  if (ch.fcc_ip && ch.fcc_port) parts.push(`FCC ${ch.fcc_ip}:${ch.fcc_port}`);
+  if (ch.fec_port) parts.push(`FEC ${ch.fec_port}`);
+  return parts.length ? parts : ["无 FCC/FEC"];
+}
+
+function _lineStatus(ch) {
+  const status = ch.probe_status || "not_probed";
+  const label = status === "ok" ? "探测成功"
+    : status === "partial" ? "部分识别"
+    : status === "failed" ? "探测失败"
+    : "未探测";
+  const when = ch.probed_at || ch.updated_at || ch.last_seen || ch.epg_matched_at;
+  const detail = ch.probe_message && ch.probe_message !== "未识别" ? ch.probe_message : "";
+  return {label, detail, when: formatDateTime(when)};
+}
+
 function renderChannelGroups(groups) {
   const tbody = $("clGroupTableBody");
   if (!groups.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无频道组，请先导入频道。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无频道组，请先导入频道。</td></tr>';
     return;
   }
   const rows = [];
   for (const g of groups) {
     const p = g.primary;
-    const qg = (p.quality_group && p.quality_group !== "未识别") ? p.quality_group : "—";
     const hasAlts = g.alternates.length > 0;
-    const groupId = `grp-${CSS.escape(g.group_key)}`;
+    const pStatus = _lineStatus(p);
     rows.push(`<tr data-group="${escapeHtml(g.group_key)}">
       <td><button class="expand-btn" data-group="${escapeHtml(g.group_key)}" aria-expanded="false">${hasAlts ? "▶" : ""}</button></td>
-      <td>${escapeHtml(p.name || "")}</td>
+      <td>
+        <div class="line-stack">
+          <span class="line-title">${escapeHtml(p.name || "")}</span>
+          <span class="line-sub mono">${escapeHtml(p.key || "")}</span>
+          <span class="line-sub">${g.count} 条线路，${g.alternates.length} 条备选</span>
+        </div>
+      </td>
+      <td>${_roleBadge("primary", Boolean(p.is_primary))}</td>
       <td>${_qualityBadge(p.quality_group)}</td>
-      <td>${g.count}</td>
-      <td>${escapeHtml(p.category || "")}</td>
-      <td class="mono small">${escapeHtml(p.tvg_id || "—")}</td>
+      <td>
+        <div class="line-meta">${_lineTech(p).map(x => `<span>${escapeHtml(x)}</span>`).join("")}</div>
+        <div class="line-sub">${_lineFcc(p).map(escapeHtml).join(" · ")}</div>
+      </td>
+      <td class="line-status">
+        <strong>${escapeHtml(pStatus.label)}</strong>
+        ${pStatus.detail ? `<div class="line-sub">${escapeHtml(pStatus.detail)}</div>` : ""}
+        <div class="line-sub">${escapeHtml(pStatus.when)}</div>
+      </td>
+      <td class="mono small">${escapeHtml(p.tvg_id || p.tvg_name || "—")}</td>
       <td><button class="secondary xs-btn diag-ch-btn" data-key="${escapeHtml(p.key||"")}">诊断</button></td>
     </tr>`);
     for (const alt of g.alternates) {
-      const altQg = (alt.quality_group && alt.quality_group !== "未识别") ? alt.quality_group : "—";
+      const altStatus = _lineStatus(alt);
       rows.push(`<tr class="alt-row hidden" data-parent="${escapeHtml(g.group_key)}">
         <td></td>
-        <td class="mono small">${escapeHtml(alt.name || "")} <span class="muted">${escapeHtml(alt.key || "")}</span></td>
+        <td>
+          <div class="line-stack">
+            <span class="line-title">${escapeHtml(alt.name || "")}</span>
+            <span class="line-sub mono">${escapeHtml(alt.key || "")}</span>
+          </div>
+        </td>
+        <td>${_roleBadge("alt")}</td>
         <td>${_qualityBadge(alt.quality_group)}</td>
-        <td></td>
-        <td class="muted small">${escapeHtml(alt.probe_status || "")}</td>
-        <td class="mono small">${escapeHtml(alt.tvg_id || "—")}</td>
+        <td>
+          <div class="line-meta">${_lineTech(alt).map(x => `<span>${escapeHtml(x)}</span>`).join("")}</div>
+          <div class="line-sub">${_lineFcc(alt).map(escapeHtml).join(" · ")}</div>
+        </td>
+        <td class="line-status">
+          <strong>${escapeHtml(altStatus.label)}</strong>
+          ${altStatus.detail ? `<div class="line-sub">${escapeHtml(altStatus.detail)}</div>` : ""}
+          <div class="line-sub">${escapeHtml(altStatus.when)}</div>
+        </td>
+        <td class="mono small">${escapeHtml(alt.tvg_id || alt.tvg_name || "—")}</td>
         <td><button class="secondary xs-btn set-primary-btn"
             data-group="${escapeHtml(g.group_key)}"
             data-key="${escapeHtml(alt.key||"")}">设为主源</button></td>
@@ -1797,6 +1877,13 @@ function renderChannelGroups(groups) {
       } catch (err) { alert(err.message); }
     });
   });
+
+  tbody.querySelectorAll(".diag-ch-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      $("diagChannel").value = btn.dataset.key || "";
+      showTab("diagnose");
+    });
+  });
 }
 
 async function loadChannelGroups() {
@@ -1806,7 +1893,7 @@ async function loadChannelGroups() {
     const total = (state.channelList || []).length;
     $("clChannelCount").textContent = `${d.total} 组 / ${total} 条`;
   } catch (err) {
-    $("clGroupTableBody").innerHTML = `<tr><td colspan="7" class="empty">加载失败：${escapeHtml(err.message)}</td></tr>`;
+    $("clGroupTableBody").innerHTML = `<tr><td colspan="8" class="empty">加载失败：${escapeHtml(err.message)}</td></tr>`;
   }
 }
 

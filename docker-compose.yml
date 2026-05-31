@@ -1,7 +1,7 @@
 services:
   iptv-sniffer-web:
     build: .
-    image: iptv-sniffer-web:v0.9.91
+    image: iptv-sniffer-web:v0.9.93
     container_name: iptv-sniffer-web
     network_mode: host
     cap_add:
@@ -14,6 +14,8 @@ services:
       WEB_HOST: 0.0.0.0
       WEB_PORT: 8787
       RTP2HTTPD_PORT: 5140
+      # 可选：挂载 rtp2httpd 配置后填写路径，播放诊断会读取 upstream-interface / external-m3u。
+      # RTP2HTTPD_CONFIG_PATH: /host/vol1/@appconf/rtp2httpd/rtp2httpd.conf
       CAPTURE_SECONDS: 30
     volumes:
       - ./data:/app/data

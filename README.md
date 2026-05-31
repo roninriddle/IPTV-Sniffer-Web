@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.91
+# IPTV Sniffer Web v0.9.93
 
 适用于 **OpenWrt / iStoreOS / 飞牛 NAS / 其它 Linux Docker 宿主机** 的 IPTV 组播嗅探、运营商频道发现与 `rtp2httpd` 播放列表统一工作台。
 
@@ -243,19 +243,17 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 文件会生成到 `output/`：
 
-- `channels-direct.m3u`：可直接导入播放器的 HTTP 播放地址；
-- `channels-rtp2httpd-source.m3u`：保留 `rtp://` / `udp://` 源地址，可作为 rtp2httpd `external-m3u`；
+- `channels-best.m3u`：每个频道组只导出自动选择的主线路，适合直接导入播放器；
+- `channels-all.m3u`：导出所有线路，每条线路只出现一次，适合人工比较多清晰度/多线路；
+- `channels-rtp2httpd-best.m3u`：主线路的 `rtp://` / `udp://` 源文件，可作为 rtp2httpd `external-m3u`；
+- `channels-rtp2httpd-all.m3u`：全部线路的 rtp2httpd 源文件，适合保留备线；
+- `channels-direct.m3u`：兼容旧文件名，内容同 `channels-best.m3u`；
+- `channels-rtp2httpd-source.m3u`：兼容旧文件名，内容同 `channels-rtp2httpd-best.m3u`；
 - `channels.json`：保留 `live` 源结构与 EPG 字段，便于二次转换或迁移；
 - `channels.txt`：常见 IPTV 软件可用的 TXT 格式；
 - `channels.csv`：频道、清晰度、EPG、FCC、源地址和播放地址明细。
 
-M3U / TXT 会保留原始分类，并额外生成：
-
-```text
-4K高清
-高清频道
-普通频道
-```
+`best` 每个频道组只保留一条主线路；`all` 保留同名频道的所有备选线路，但不再重复写入“原分类 + 清晰度分类”两份 M3U 条目。
 
 ---
 
@@ -321,6 +319,7 @@ M3U / TXT 会保留原始分类，并额外生成：
 ```text
 RTP2HTTPD_HOST=
 RTP2HTTPD_PORT=5140
+RTP2HTTPD_CONFIG_PATH=/host/vol1/@appconf/rtp2httpd/rtp2httpd.conf
 EPG_URL=http://epg.51zmt.top:8000/e.xml.gz
 LOGO_URL=https://raw.githubusercontent.com/wanglindl/TVlogo/main/TVlist.m3u
 CAPTURE_SECONDS=30
@@ -336,6 +335,8 @@ CAPTURE_FILTER=(udp and dst net 224.0.0.0/4) or tcp
 
 ## 版本
 
+- `v0.9.93`：播放诊断改为分层输出（rtp2httpd / 网络接口 / 接入认证 / FCC / 组播链路 / 频道资产）；支持读取 rtp2httpd 配置文件并展示 upstream-interface / external-m3u；频道线路分组视图增强主源、备线、技术信息、FCC/FEC 与最近状态；嗅探页明确自动抓流整理流程；
+- `v0.9.92`：修复嗅探整理页横向溢出；修复实时日志抽屉打开后仍停在屏幕外的问题；明确 best/all 导出文件语义；
 - `v0.9.91`：修复播放诊断页初始化——从 DOM 表单（httpHost/httpPort）读取配置，不再依赖未初始化的 state.settings；刷新网卡按钮移至「运营商频道」操作栏；README 整理合并历史版本条目；
 - `v0.9.9`：首页拓扑三场景统一（镜像口 / R4S eth0 被动抓包 / IGMP Proxy）；首页与部署向导合并；新增频道线路组（tvg-id > 规范化名称归组，评分自动选主源，支持手动设为主源，分组视图展开备线）；导出重构为四档（best/all × 直连/源地址）；旧文件名别名保留；
 - `v0.9.8`：STB 开机捕获同步捕获 DHCP（UDP 67/68），解析机顶盒 MAC / IPTV IP / 网关 / Option 60/61/125；结果展示在「运营商频道」→「机顶盒认证信息」卡片；顶部摘要栏显示认证与频道状态；新增播放链路诊断页（rtp2httpd 可达性 / FCC 响应 / 认证状态 / 配置检查 / 排查结论）；导航重排：首页/部署向导 → 运营商频道 → 频道线路 → 播放诊断 → 嗅探整理 → 定时EPG；

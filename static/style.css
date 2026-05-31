@@ -57,6 +57,16 @@ body {
 .group-table .alt-row.hidden { display: none; }
 .expand-btn { background: none; border: none; cursor: pointer; font-size: 13px; padding: 0 4px; color: var(--text-secondary,#6b7280); }
 .expand-btn:hover { color: var(--text,#111); }
+.line-stack { display: grid; gap: 3px; min-width: 0; }
+.line-title { font-weight: 700; overflow-wrap: anywhere; }
+.line-sub { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.source-role { display: inline-flex; min-height: 22px; padding: 0 7px; border-radius: 999px; align-items: center; font-size: 12px; font-weight: 750; background: #edf1f5; color: #384152; }
+.source-role.primary { color: #1749cc; background: #e8efff; }
+.source-role.manual { color: #6b2fb3; background: #f3eaff; }
+.source-role.alt { color: var(--muted); background: #eef2f6; }
+.line-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 0; }
+.line-meta span { white-space: nowrap; }
+.line-status { line-height: 1.45; }
 .cl-filter { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; flex-wrap: wrap; }
 .cl-filter-name { flex: 1; min-width: 160px; }
 .cl-filter select { min-width: 110px; }
@@ -66,8 +76,21 @@ body {
   margin: 16px auto 28px;
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
-.workbench-page, .tab-panel { display: grid; gap: 12px; }
+.layout > *,
+.workbench-page > *,
+.tab-panel > *,
+.card > * {
+  min-width: 0;
+}
+.workbench-page, .tab-panel {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
 [hidden] { display: none !important; }
 
 .card {
@@ -76,6 +99,8 @@ body {
   border-radius: 8px;
   padding: 14px;
   box-shadow: var(--shadow);
+  max-width: 100%;
+  min-width: 0;
 }
 .home-page { display: grid; gap: 12px; }
 .home-hero {
@@ -144,8 +169,9 @@ details summary {
   margin-bottom: 12px;
 }
 
-.form-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-.auto-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+.form-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; min-width: 0; }
+.form-grid > * { min-width: 0; }
+.auto-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; min-width: 0; }
 .auto-grid .checkbox-label { flex: 0 0 150px; }
 .auto-grid .mode-toggle-cell { flex: 0 0 auto; }
 .auto-grid > button { flex: 0 0 auto; }
@@ -255,6 +281,9 @@ td.mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cl-table th:nth-child(6), .cl-table td:nth-child(6) { width: 130px; }
 .diag-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
 .diag-table td { padding: 5px 8px; border-bottom: 1px solid var(--border, #e5e7eb); vertical-align: top; }
+.diag-section { border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; overflow: hidden; background: #fff; }
+.diag-section-title { padding: 9px 12px; background: #f7f9fb; border-bottom: 1px solid var(--line); font-weight: 750; }
+.diag-section .diag-table { margin-top: 0; }
 .diag-icon { width: 24px; font-weight: 700; text-align: center; }
 .diag-item { width: 220px; font-weight: 500; }
 .diag-detail { word-break: break-all; }
@@ -369,21 +398,25 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 .logs-drawer {
   position: fixed;
   top: 0;
-  left: 0;
+  left: -360px;
   width: min(360px, 100vw);
   height: 100vh;
   padding: 16px;
   background: #0f172a;
   color: #e5edf7;
   z-index: 20;
-  transition: transform .18s ease;
+  transition: left .18s ease;
   display: grid;
   grid-template-rows: auto auto 1fr;
   gap: 12px;
-  transform: translateX(-100%);
+  transform: none;
   box-shadow: 12px 0 32px rgba(0, 0, 0, .18);
 }
-.logs-drawer.open { transform: translateX(0); }
+.logs-drawer.open,
+body.logs-open .logs-drawer {
+  left: 0;
+  transform: none;
+}
 .logs-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .logs-drawer .download, .logs-drawer button.secondary { background: #18253d; border-color: #31415f; color: #e5edf7; }
 .logs-output {
