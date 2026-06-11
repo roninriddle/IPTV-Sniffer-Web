@@ -112,7 +112,7 @@ def _mask_to_prefix(mask: str) -> int | None:
 
 
 class IptvAuthService:
-    """Generates IPTV auth scripts and can run a guarded udhcpc-based flow."""
+    """Validates IPTV auth payloads and runs a guarded udhcpc-based flow."""
 
     def __init__(self, backup_path: Path, data_dir: Path, logger: AppLogger) -> None:
         self.backup_path = backup_path

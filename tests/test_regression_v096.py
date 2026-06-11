@@ -4,7 +4,7 @@ Covers:
 - pcap TCP reassembly: Ethernet / SLL (DLT=113) / SLL2 (DLT=276)
 - CUSetConfig channel parsing: single-quote outer, double-quote outer
 - Export URL: FCC / fcc-type / FEC parameter generation
-- IPTV auth helper script generation
+- IPTV auth guarded executor payload / hook generation
 - quality_group derived from is_hd on operator channel import
 """
 import os
@@ -351,9 +351,9 @@ status-page-path = /status
 
 # ── IPTV auth helper ──────────────────────────────────────────────────────
 
-def test_iptv_auth_scripts_include_option60_and_interface(tmp_path):
+def test_iptv_auth_payload_and_hook_include_option60_and_interface(tmp_path):
     svc = IptvAuthService(tmp_path / "auth-backup.json", tmp_path, AppLogger(tmp_path / "app.log"))
-    result = svc.scripts({
+    payload = svc._payload({
         "interface": "enp3s0",
         "mac": "d4:c1:c8:ee:9b:1f",
         "hostname": "18000413001338300000D4C1C8EE9B1F",
@@ -362,11 +362,12 @@ def test_iptv_auth_scripts_include_option60_and_interface(tmp_path):
         "gateway": "10.193.224.1",
         "route_mode": "multicast",
     })
-    assert 'interface "enp3s0"' in result["dhclient_conf"]
-    assert "00:00:1f:39:01:c4:69:3f" in result["dhclient_conf"]
-    assert "-i enp3s0" in result["udhcpc_command"]
-    assert "-x 0x3c:00001f3901c4693f" in result["udhcpc_command"]
-    assert "224.0.0.0/4" in result["udhcpc_hook"]
+    hook = svc._udhcpc_hook_content(payload["interface"], payload["route_mode"])
+    assert payload["interface"] == "enp3s0"
+    assert payload["vendor_class"] == "00001f3901c4693f"
+    assert payload["vendor_class_colon"] == "00:00:1f:39:01:c4:69:3f"
+    assert 'LOG="/app/data/iptv-auth-enp3s0.log"' in hook
+    assert 'ip -4 route replace 224.0.0.0/4 dev "$interface"' in hook
 
 
 # ── quality_group derivation from is_hd ──────────────────────────────────

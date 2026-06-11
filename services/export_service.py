@@ -177,8 +177,6 @@ class ExportService:
         # Legacy aliases (same content as best)
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
-        # 飞牛影视（直连组播 rtp:// 地址，适用于运行在本机的飞牛影视 App）
-        fnos_m3u_path  = self.output_dir / "channels-fnos.m3u"
         json_path = self.output_dir / "channels.json"
         txt_path  = self.output_dir / "channels.txt"
         csv_path  = self.output_dir / "channels.csv"
@@ -190,8 +188,6 @@ class ExportService:
         import shutil as _shutil
         _shutil.copy2(best_m3u_path, direct_m3u_path)
         _shutil.copy2(rtp_best_path, source_m3u_path)
-        # 飞牛影视用直连组播 URL（等同于 rtp2httpd source M3U，无 http_host 依赖）
-        self._write_m3u(best_channels, fnos_m3u_path, url_mode="source", **m3u_kwargs)
         self._write_playlist_json(channels, json_path, path_mode, fcc_type=fcc_type)
         self._write_txt(channels, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
         self._write_csv(channels, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
@@ -207,7 +203,6 @@ class ExportService:
                 "rtp_all_m3u": rtp_all_path.name,
                 "direct_m3u": direct_m3u_path.name,
                 "source_m3u": source_m3u_path.name,
-                "fnos_m3u": fnos_m3u_path.name,
                 "json": json_path.name,
                 "txt": txt_path.name,
                 "csv": csv_path.name,

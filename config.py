@@ -51,7 +51,6 @@ PROBE_BUFFER_SIZE = int(os.environ.get("PROBE_BUFFER_SIZE", "131072"))
 CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "(udp and dst net 224.0.0.0/4) or tcp")
 ALLOWED_DOWNLOADS = {
     "channels-best.m3u",
-    "channels-fnos.m3u",
     "channels-all.m3u",
     "channels-rtp2httpd-best.m3u",
     "channels-rtp2httpd-all.m3u",

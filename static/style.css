@@ -171,7 +171,6 @@ details summary {
 .auto-grid .checkbox-label { flex: 0 0 150px; }
 .auto-grid .mode-toggle-cell { flex: 0 0 auto; }
 .auto-grid > button { flex: 0 0 auto; }
-.schedule-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: end; }
 .span-2 { grid-column: span 2; }
 .wide-field { min-width: 0; }
 label { display: grid; gap: 6px; font-weight: 650; }
@@ -455,7 +454,7 @@ body.logs-open .footer {
 
 @media (max-width: 1120px) {
   .topbar-inner, .layout, .footer { width: min(960px, calc(100% - 24px)); }
-  .form-grid, .schedule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .auto-grid .checkbox-label { flex: 0 0 calc(50% - 5px); }
   .span-2 { grid-column: span 2; }
   .metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -466,7 +465,7 @@ body.logs-open .footer {
   .topbar-inner { flex-direction: column; }
   .home-hero { padding: 18px; }
   .home-hero h2 { font-size: 24px; }
-  .grid.two, .home-steps, .form-grid, .schedule-grid, .metrics-grid { grid-template-columns: 1fr; }
+  .grid.two, .home-steps, .form-grid, .metrics-grid { grid-template-columns: 1fr; }
   .auto-grid .checkbox-label { flex: 0 0 100%; }
   .span-2 { grid-column: auto; }
   .layout { width: min(100% - 16px, 960px); }
