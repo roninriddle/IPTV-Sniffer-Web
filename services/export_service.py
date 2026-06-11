@@ -177,7 +177,7 @@ class ExportService:
         # Legacy aliases (same content as best)
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
-        # 飞牛影视 alias (same content as best — HTTP URLs, one entry per channel group)
+        # 飞牛影视（直连组播 rtp:// 地址，适用于运行在本机的飞牛影视 App）
         fnos_m3u_path  = self.output_dir / "channels-fnos.m3u"
         json_path = self.output_dir / "channels.json"
         txt_path  = self.output_dir / "channels.txt"
@@ -190,7 +190,8 @@ class ExportService:
         import shutil as _shutil
         _shutil.copy2(best_m3u_path, direct_m3u_path)
         _shutil.copy2(rtp_best_path, source_m3u_path)
-        _shutil.copy2(best_m3u_path, fnos_m3u_path)
+        # 飞牛影视用直连组播 URL（等同于 rtp2httpd source M3U，无 http_host 依赖）
+        self._write_m3u(best_channels, fnos_m3u_path, url_mode="source", **m3u_kwargs)
         self._write_playlist_json(channels, json_path, path_mode, fcc_type=fcc_type)
         self._write_txt(channels, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
         self._write_csv(channels, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
@@ -432,3 +433,24 @@ class ExportService:
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
+
+    def hls_m3u(self, channels_data: dict, base_url: str, epg_url: str = "") -> str:
+        """Generate in-memory M3U with HLS stream URLs for browser-based players."""
+        channels = self._normalize_channels(list(channels_data.values()))
+        best = self._select_best_channels(channels)
+        best.sort(key=self._channel_sort_key)
+        lines: list[str] = []
+        safe_epg = epg_url.replace('"', "%22")
+        lines.append(f'#EXTM3U x-tvg-url="{safe_epg}"' if epg_url else "#EXTM3U")
+        for ch in best:
+            hls_key = f"{ch.host}_{ch.port}"
+            url = f"{base_url}/hls/{hls_key}/stream.m3u8"
+            tvg_id = (ch.tvg_id or ch.tvg_name or ch.name).replace('"', "'")
+            tvg_name = (ch.tvg_name or ch.name).replace('"', "'")
+            safe_group = ch.category.replace('"', "'")
+            logo_attr = f' tvg-logo="{ch.tvg_logo.replace(chr(34), "%22")}"' if ch.tvg_logo else ""
+            lines.append(
+                f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}",{ch.name}'
+            )
+            lines.append(url)
+        return "\n".join(lines) + "\n"

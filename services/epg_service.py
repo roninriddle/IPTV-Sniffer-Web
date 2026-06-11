@@ -367,6 +367,24 @@ class EpgService:
                 payload.pop("file", None)
             return payload
 
+    @staticmethod
+    def _substring_match_ok(a: str, b: str) -> bool:
+        """True if a is substring of b (or vice versa) without a digit-boundary collision.
+
+        Prevents "cctv1" from matching "cctv10" / "cctv12" — after the shared prefix,
+        if the very next character in the longer string is a digit AND the shorter string
+        already ends with a digit, it means they share only a numeric prefix, not the
+        same channel number.
+        """
+        longer, shorter = (b, a) if len(b) >= len(a) else (a, b)
+        idx = longer.find(shorter)
+        if idx == -1:
+            return False
+        after = longer[idx + len(shorter):]
+        if after and after[0].isdigit() and shorter and shorter[-1].isdigit():
+            return False
+        return True
+
     def match(self, name: str) -> dict[str, Any] | None:
         normalized = normalize_channel_name(name)
         if not normalized:
@@ -378,7 +396,7 @@ class EpgService:
             for key, channel in self._index.items():
                 if not key:
                     continue
-                if normalized in key or key in normalized:
+                if self._substring_match_ok(normalized, key):
                     score = min(len(normalized), len(key))
                     candidates.append((score, channel))
             if not candidates:
@@ -397,7 +415,7 @@ class EpgService:
             for key, logo in self._logo_index.items():
                 if not key:
                     continue
-                if normalized in key or key in normalized:
+                if self._substring_match_ok(normalized, key):
                     candidates.append((min(len(normalized), len(key)), logo))
             if not candidates:
                 return None

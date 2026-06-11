@@ -85,13 +85,15 @@ class ProbeService:
         return result
 
     @staticmethod
-    def _input_url(path_mode: str, host: str, port: int) -> str:
+    def _input_url(path_mode: str, host: str, port: int, localaddr: str = "") -> str:
         scheme = "rtp" if path_mode == "rtp" else "udp"
         # FFmpeg UDP receive options reduce packet drops and bound idle waits.
         query = f"fifo_size={PROBE_BUFFER_SIZE}&overrun_nonfatal=1&timeout={PROBE_TIMEOUT_SECONDS * 1000000}"
+        if localaddr:
+            query += f"&localaddr={localaddr}"
         return f"{scheme}://{host}:{port}?{query}"
 
-    def probe(self, key: str, host: str, port: int, path_mode: str) -> dict[str, Any]:
+    def probe(self, key: str, host: str, port: int, path_mode: str, localaddr: str = "") -> dict[str, Any]:
         runtime = self.runtime_check()
         if not runtime.get("ok"):
             raise RuntimeError("流信息自动识别环境检查未通过：" + "；".join(runtime.get("errors", [])))
@@ -102,7 +104,7 @@ class ProbeService:
         path_mode = str(path_mode or "rtp").strip().lower()
         if path_mode not in {"rtp", "udp"}:
             path_mode = "rtp"
-        url = self._input_url(path_mode, host, int(port))
+        url = self._input_url(path_mode, host, int(port), localaddr)
         cmd = [
             "ffprobe",
             "-v", "error",

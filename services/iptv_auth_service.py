@@ -16,8 +16,8 @@ from typing import Any, Sequence
 from services.log_service import AppLogger
 
 
-CONFIRM_TEXT = "我确认执行IPTV认证"
-RESTORE_CONFIRM_TEXT = "我确认恢复初始网络设置"
+CONFIRM_TEXT = "确认执行"
+RESTORE_CONFIRM_TEXT = "确认恢复"
 
 
 def _safe_load_json(path: Path, default: Any) -> Any:
@@ -165,6 +165,10 @@ class IptvAuthService:
             for item in (addr.get("addr_info") or [])
             if item.get("family") == "inet" and item.get("local") and item.get("prefixlen") is not None
         ] if isinstance(addr, dict) else []
+        routes = route_json if isinstance(route_json, list) else []
+        has_multicast_route = any(
+            str(r.get("dst") or "").startswith("224.") for r in routes
+        )
         return {
             "created_at": time.time(),
             "interface": iface,
@@ -173,7 +177,8 @@ class IptvAuthService:
             "operstate": str(addr.get("operstate") or link.get("operstate") or ""),
             "flags": list(link.get("flags") or addr.get("flags") or []),
             "ipv4": ipv4,
-            "routes": route_json if isinstance(route_json, list) else [],
+            "routes": routes,
+            "has_multicast_route": has_multicast_route,
             "link": link,
             "addr": addr,
         }
@@ -218,6 +223,7 @@ class IptvAuthService:
             route_mode = "multicast"
         gateway = str(data.get("gateway") or auth.get("gateway") or "").strip()
         client_id = _normalize_hex(data.get("client_id") or auth.get("client_id") or "")
+        option125 = _normalize_hex(data.get("vendor_specific_125_raw") or auth.get("vendor_specific_125_raw") or "")
         return {
             "interface": interface,
             "mac": mac,
@@ -228,6 +234,7 @@ class IptvAuthService:
             "gateway": gateway,
             "route_mode": route_mode,
             "client_id": client_id,
+            "option125": option125,
         }
 
     def scripts(self, data: dict[str, Any], auth_info: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -272,12 +279,13 @@ class IptvAuthService:
             "ip -br addr show \"$IFACE\"\n"
         )
         udhcpc_script = self._udhcpc_hook_content(iface, p["route_mode"])
-        client_id_arg = f" -x 0x3d:{p['client_id']}" if p["client_id"] else ""
+        client_id_arg = f" -x 0x3d:0x{p['client_id']}" if p["client_id"] else ""
+        opt125_arg = f" -x 0x7d:0x{p['option125']}" if p["option125"] else ""
         udhcpc_command = (
             f"udhcpc -f -q -n -t 4 -T 3 -i {iface} -C{requested} "
             f"-s /app/data/iptv-auth-{iface}.udhcpc.sh "
             f"-p /app/data/iptv-auth-{iface}.pid "
-            f"-x hostname:{p['hostname']} -x 0x3c:{p['vendor_class']}{client_id_arg}"
+            f"-x hostname:{p['hostname']} -x 0x3c:0x{p['vendor_class']}{client_id_arg}{opt125_arg}"
         )
         return {
             "payload": p,
@@ -346,6 +354,12 @@ exit 0
             "net_admin_hint": self._capability_enabled(12),
             "net_raw_hint": self._capability_enabled(13),
         }
+        # Auto-save initial backup on first status check for this interface
+        bk_data = self._backup_data()
+        iface_entry = bk_data["interfaces"].setdefault(iface, {"history": []})
+        if "initial" not in iface_entry:
+            iface_entry["initial"] = snap
+            self._write_backup_data(bk_data)
         auth = auth_info or {}
         has_auth = bool(auth.get("mac") and auth.get("hostname") and auth.get("vendor_class"))
         ipv4 = snap.get("ipv4") or []
@@ -418,13 +432,29 @@ exit 0
             "-s", str(hook_path),
             "-p", str(pid_path),
             "-x", f"hostname:{p['hostname']}",
-            "-x", f"0x3c:{p['vendor_class']}",
+            "-x", f"0x3c:0x{p['vendor_class']}",
         ]
         if p["client_id"]:
-            cmd.extend(["-x", f"0x3d:{p['client_id']}"])
+            cmd.extend(["-x", f"0x3d:0x{p['client_id']}"])
+        if p["option125"]:
+            cmd.extend(["-x", f"0x7d:0x{p['option125']}"])
         if p["requested_ip"]:
             cmd.extend(["-r", p["requested_ip"]])
         run_step(cmd, timeout=35)
+
+        # Belt-and-suspenders: explicitly set multicast route after udhcpc.
+        # The udhcpc hook does this too, but runs in a subprocess and may race
+        # with the snapshot; doing it here ensures the route is present.
+        if p["route_mode"] in {"multicast", "iptv_private"}:
+            run_step(["ip", "-4", "route", "replace", "224.0.0.0/4", "dev", iface], check=False)
+        if p["route_mode"] == "iptv_private":
+            snap_for_gw = self.snapshot(iface)
+            gw = p.get("gateway") or next(
+                (r.get("gateway") for r in snap_for_gw.get("routes", []) if r.get("gateway")),
+                "",
+            )
+            if gw:
+                run_step(["ip", "-4", "route", "replace", "10.0.0.0/8", "via", gw, "dev", iface, "metric", "50"], check=False)
 
         snap = self.snapshot(iface)
         data_store = self._backup_data()
@@ -498,3 +528,22 @@ exit 0
         snap = self.snapshot(iface)
         self.logger.warning(f"IPTV 认证恢复已执行：接口={iface}，恢复到初始备份")
         return {"interface": iface, "snapshot": snap, "steps": steps, "backup": self.backup_summary(iface)}
+
+    def backup_export(self, iface: str) -> dict[str, Any]:
+        entry = self._backup_data().get("interfaces", {}).get(iface) or {}
+        initial = entry.get("initial")
+        if not initial:
+            raise ValueError(f"接口 {iface} 尚无初始备份，请先刷新状态以创建备份。")
+        return {"interface": iface, "initial": initial}
+
+    def backup_import(self, data: dict[str, Any]) -> dict[str, Any]:
+        iface = str(data.get("interface") or "").strip()
+        initial = data.get("initial")
+        if not iface or not isinstance(initial, dict):
+            raise ValueError("备份文件格式无效，需包含 interface 和 initial 字段。")
+        raw = self._backup_data()
+        entry = raw["interfaces"].setdefault(iface, {"history": []})
+        entry["initial"] = initial
+        self._write_backup_data(raw)
+        self.logger.info(f"IPTV 认证备份已导入：接口={iface}")
+        return {"interface": iface, "saved": True}

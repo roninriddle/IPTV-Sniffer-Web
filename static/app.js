@@ -797,7 +797,11 @@ function closeLogs() {
   if (state.logPoller) clearInterval(state.logPoller);
 }
 
-async function doExportDownload(filename, btn) {
+async function doExportDownload(filename, btn, requireHost = false) {
+  if (requireHost && !$("httpHost").value.trim()) {
+    alert("请先填写 rtp2httpd 主机地址，否则导出文件中的 URL 为 rtp:// 格式，无法在播放器中直接使用。");
+    return;
+  }
   const origText = btn.textContent;
   btn.disabled = true;
   btn.textContent = "生成中…";
@@ -830,6 +834,7 @@ async function loadChannelList() {
 }
 
 function filterAndRenderChannelList() {
+  if (_groupViewActive) { filterAndRenderGroupView(); return; }
   const name = ($("clFilterName").value || "").trim().toLowerCase();
   const category = $("clFilterCategory").value;
   const quality = $("clFilterQuality").value;
@@ -1017,6 +1022,21 @@ $("refreshEpgBtn").addEventListener("click", async () => {
     alert("EPG 刷新已启动");
   } catch (err) { alert(err.message); }
 });
+$("rematchEpgBtn").addEventListener("click", async function () {
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = "匹配中…";
+  try {
+    const d = await requestJson("/api/epg/rematch", { method: "POST" });
+    alert(`节目单重新匹配完成：共 ${d.total} 个频道，更新 ${d.updated} 个。`);
+    await loadChannelList();
+  } catch (err) {
+    alert("重新匹配失败：" + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "重新匹配节目单";
+  }
+});
 $("scheduleUnit").addEventListener("change", updateScheduleUnitState);
 $("scheduleEvery").addEventListener("input", updateScheduleUnitState);
 $("saveScheduleBtn").addEventListener("click", async () => {
@@ -1125,9 +1145,33 @@ $("streamsTableBody").addEventListener("focusout", () => {
     if (!tableHasEditingFocus()) renderStreams(state.streams);
   }, 80);
 });
-$("clDownloadBestM3u").addEventListener("click", function() { doExportDownload("channels-best.m3u", this); });
-$("clDownloadFnosM3u").addEventListener("click", function() { doExportDownload("channels-fnos.m3u", this); });
-$("clDownloadAllM3u").addEventListener("click", function() { doExportDownload("channels-all.m3u", this); });
+$("clDownloadBestM3u").addEventListener("click", function() { doExportDownload("channels-best.m3u", this, true); });
+$("clDownloadFnosM3u").addEventListener("click", function() { doExportDownload("channels-fnos.m3u", this, false); });
+$("clDownloadFnosHlsM3u").addEventListener("click", async function () {
+  const btn = this;
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/hls/m3u");
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      throw new Error(j.error || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "channels-fnos-hls.m3u";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("生成 HLS M3U 失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+$("clDownloadAllM3u").addEventListener("click", function() { doExportDownload("channels-all.m3u", this, true); });
 $("clDownloadRtpBestM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-best.m3u", this); });
 $("clDownloadRtpAllM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-all.m3u", this); });
 $("clDownloadJson").addEventListener("click", function() { doExportDownload("channels.json", this); });
@@ -1606,7 +1650,10 @@ async function applyIptvAuth() {
     const payload = {..._iptvAuthPayload(), confirm: $("iptvAuthConfirm").value.trim()};
     const d = await requestJson("/api/iptv-auth/apply", {method: "POST", body: JSON.stringify(payload)});
     const ips = (d.snapshot?.ipv4 || []).map(x => `${x.local}/${x.prefixlen}`).join(", ") || "无 IPv4";
-    $("iptvAuthApplyResult").textContent = `认证执行完成：${d.interface} 当前 IPv4：${ips}`;
+    const mcastOk = d.snapshot?.has_multicast_route;
+    const mcastLine = mcastOk ? "组播路由 224.0.0.0/4 ✓" : "⚠ 组播路由未设置，请检查路由模式";
+    $("iptvAuthApplyResult").textContent =
+      `认证执行完成：${d.interface} 当前 IPv4：${ips}\n${mcastLine}\n→ 请重启 rtp2httpd 以在此接口上重新加入组播组，否则无法收流。`;
     $("iptvAuthApplyResult").className = "result-box ok";
     await refreshIptvAuthStatus();
   } catch (err) {
@@ -1644,6 +1691,51 @@ $("iptvAuthRefreshBtn").addEventListener("click", refreshIptvAuthStatus);
 $("iptvAuthGenerateBtn").addEventListener("click", generateIptvAuthScripts);
 $("iptvAuthApplyBtn").addEventListener("click", applyIptvAuth);
 $("iptvAuthRestoreBtn").addEventListener("click", restoreIptvAuth);
+
+$("iptvAuthExportBtn").addEventListener("click", async function () {
+  const iface = $("iptvAuthIface").value;
+  if (!iface) { alert("请先选择 IPTV 上游接口。"); return; }
+  const btn = this;
+  btn.disabled = true;
+  try {
+    const data = await requestJson(`/api/iptv-auth/backup-export?interface=${encodeURIComponent(iface)}`);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `iptv-auth-backup-${iface}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("导出失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("iptvAuthImportBtn").addEventListener("click", function () {
+  $("iptvAuthImportFile").value = "";
+  $("iptvAuthImportFile").click();
+});
+
+$("iptvAuthImportFile").addEventListener("change", async function () {
+  const file = this.files[0];
+  if (!file) return;
+  const btn = $("iptvAuthImportBtn");
+  btn.disabled = true;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    await requestJson("/api/iptv-auth/backup-import", { method: "POST", body: JSON.stringify(data) });
+    alert(`接口 ${data.interface} 的初始备份已导入，恢复功能现在可用。`);
+  } catch (e) {
+    alert("导入失败：" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 $("iptvAuthCopyDhclientBtn").addEventListener("click", () => {
   if (!_iptvAuthDhclientScript) return;
   navigator.clipboard.writeText(_iptvAuthDhclientScript).catch(() => alert("复制失败，请手动选择脚本。"));
@@ -1862,12 +1954,30 @@ function renderChannelGroups(groups) {
 async function loadChannelGroups() {
   try {
     const d = await requestJson("/api/channels/groups");
-    renderChannelGroups(d.groups || []);
-    const total = (state.channelList || []).length;
-    $("clChannelCount").textContent = `${d.total} 组 / ${total} 条`;
+    state.channelGroups = d.groups || [];
+    filterAndRenderGroupView();
   } catch (err) {
     $("clGroupTableBody").innerHTML = `<tr><td colspan="8" class="empty">加载失败：${escapeHtml(err.message)}</td></tr>`;
   }
+}
+
+function filterAndRenderGroupView() {
+  const groups = state.channelGroups || [];
+  const name = ($("clFilterName").value || "").trim().toLowerCase();
+  const category = $("clFilterCategory").value;
+  const quality = $("clFilterQuality").value;
+  let filtered = groups;
+  if (name) filtered = filtered.filter(g =>
+    (g.primary.name || "").toLowerCase().includes(name) ||
+    g.alternates.some(a => (a.name || "").toLowerCase().includes(name))
+  );
+  if (category) filtered = filtered.filter(g => g.primary.category === category);
+  if (quality) filtered = filtered.filter(g => g.primary.quality_group === quality);
+  renderChannelGroups(filtered);
+  const total = (state.channelList || []).length;
+  $("clChannelCount").textContent = filtered.length === groups.length
+    ? `${groups.length} 组 / ${total} 条`
+    : `${filtered.length} / ${groups.length} 组 · ${total} 条`;
 }
 
 let _groupViewInit = false;

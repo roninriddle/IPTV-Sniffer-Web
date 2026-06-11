@@ -55,6 +55,7 @@ from services.epg_service import EpgService, normalize_channel_name
 from services.export_service import ExportService
 from services.iptv_auth_service import IptvAuthService
 from services.log_service import AppLogger
+from services.hls_service import HlsService
 from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
 from services.stb_discovery_service import StbDiscoveryService
@@ -75,6 +76,7 @@ discovery_store = DiscoveryStore(DISCOVERY_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
+hls_service = HlsService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
 iptv_auth_service = IptvAuthService(IPTV_AUTH_BACKUP_FILE, DATA_DIR, logger)
 STARTED_AT = time.time()
@@ -312,6 +314,27 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
     return enriched
 
 
+def _iptv_local_ip(settings: dict[str, Any]) -> str:
+    """Return the primary IPv4 of the configured IPTV interface for multicast localaddr binding."""
+    iface = str(settings.get("interface") or "").strip()
+    if not iface:
+        return ""
+    try:
+        out = subprocess.run(
+            ["ip", "-j", "-4", "addr", "show", "dev", iface],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3, check=False,
+        ).stdout
+        addrs = json.loads(out) if out.strip() else []
+        for entry in (addrs or []):
+            for ai in (entry.get("addr_info") or []):
+                ip = str(ai.get("local", "")).strip()
+                if ip:
+                    return ip
+    except Exception:
+        pass
+    return ""
+
+
 def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
     if not settings.get("auto_probe", True):
         return
@@ -331,12 +354,13 @@ def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
             return
         auto_probe_pending.add(key)
     path_mode = str(settings.get("path_mode", "rtp"))
+    localaddr = _iptv_local_ip(settings)
     snapshot = dict(item)
 
     def worker() -> None:
         try:
             logger.info(f"自动识别流信息：{key}")
-            result = probe_service.probe(key, host, port, path_mode)
+            result = probe_service.probe(key, host, port, path_mode, localaddr)
             stored = channel_store.get(key) or {}
             detected_name = str(result.get("detected_name", "")).strip()
             snapshot_name = str(snapshot.get("name", "")).strip() or detected_name
@@ -908,6 +932,31 @@ def api_epg_refresh_all():
         return api_error(str(exc), 500)
 
 
+@app.post("/api/epg/rematch")
+def api_epg_rematch():
+    """Force re-enrich ALL channel records with EPG, overwriting any previous match."""
+    settings = settings_store.load()
+    if not settings.get("auto_epg", True):
+        return api_error("EPG 自动匹配已关闭，请先开启后重试。")
+    epg_url = str(settings.get("epg_url", "")).strip()
+    try:
+        channels = channel_store.load()
+        rows = []
+        updated = 0
+        for ch in channels.values():
+            item = dict(ch)
+            epg_service.enrich_item(item, epg_url, only_missing=False)
+            rows.append(item)
+            if item.get("tvg_id") != ch.get("tvg_id"):
+                updated += 1
+        channel_store.save_rows(rows)
+        logger.info(f"EPG 重新匹配完成：共处理 {len(rows)} 个频道，更新 {updated} 个")
+        return api_success({"total": len(rows), "updated": updated})
+    except Exception as exc:
+        logger.error(f"EPG 重新匹配失败：{exc}")
+        return api_error(str(exc))
+
+
 @app.get("/api/operator_channels")
 def api_operator_channels_get():
     channels = operator_channel_store.load()
@@ -1153,7 +1202,7 @@ def api_probe_one():
     settings = settings_store.load()
     path_mode = str(data.get("path_mode") or settings.get("path_mode", "rtp"))
     try:
-        result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode)
+        result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode, _iptv_local_ip(settings))
         stored = channel_store.get(result["key"]) or {
             "key": result["key"],
             "host": host,
@@ -1183,6 +1232,7 @@ def api_probe_batch():
         return api_error("channels 必须是数组")
     settings = settings_store.load()
     path_mode = str(data.get("path_mode") or settings.get("path_mode", "rtp")) if isinstance(data, dict) else str(settings.get("path_mode", "rtp"))
+    localaddr = _iptv_local_ip(settings)
     results: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -1194,7 +1244,7 @@ def api_probe_batch():
         except (TypeError, ValueError):
             continue
         try:
-            result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode)
+            result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode, localaddr)
         except Exception as exc:
             result = {
                 "key": key or f"{host}:{port}",
@@ -1257,6 +1307,79 @@ def api_download(filename: str):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
+
+
+@app.get("/hls/<hls_key>/stream.m3u8")
+def hls_playlist(hls_key: str):
+    parsed = HlsService.parse_key(hls_key)
+    if not parsed:
+        return api_error("无效的 HLS 流 key", 400)
+    host, port = parsed
+    if not valid_ipv4_multicast(host):
+        return api_error("仅支持 IPv4 组播地址", 400)
+    settings = settings_store.load()
+    path_mode = str(settings.get("path_mode", "rtp"))
+    localaddr = _iptv_local_ip(settings)
+    _, hls_dir = hls_service.ensure(host, port, path_mode, localaddr)
+    m3u8 = hls_dir / "stream.m3u8"
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if m3u8.exists() and m3u8.stat().st_size > 0:
+            break
+        time.sleep(0.25)
+    if not m3u8.exists() or m3u8.stat().st_size == 0:
+        return api_error("HLS 流启动超时，请检查组播路由和 rtp2httpd 上游接口", 504)
+    hls_service.touch(hls_key)
+    content = HlsService.read_playlist(m3u8)
+    resp = Response(content, mimetype="application/vnd.apple.mpegurl")
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Cache-Control"] = "no-cache, no-store"
+    return resp
+
+
+@app.get("/hls/<hls_key>/<segment>")
+def hls_segment(hls_key: str, segment: str):
+    parsed = HlsService.parse_key(hls_key)
+    if not parsed or not segment.endswith(".ts") or "/" in segment or ".." in segment:
+        return ("", 404)
+    host, port = parsed
+    settings = settings_store.load()
+    path_mode = str(settings.get("path_mode", "rtp"))
+    localaddr = _iptv_local_ip(settings)
+    _, hls_dir = hls_service.ensure(host, port, path_mode, localaddr)
+    seg_path = hls_dir / segment
+    if not seg_path.is_file():
+        return ("", 404)
+    hls_service.touch(hls_key)
+    resp = send_file(seg_path, mimetype="video/mp2t")
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.get("/api/hls/status")
+def api_hls_status():
+    return api_success({"streams": hls_service.status()})
+
+
+@app.get("/api/hls/m3u")
+def api_hls_m3u():
+    settings = settings_store.load()
+    epg_url = str(settings.get("epg_url", "") or "").strip()
+    base_url = request.url_root.rstrip("/")
+    channels = channel_store.load()
+    if not channels:
+        return api_error("尚无频道数据，请先完成嗅探和导出。")
+    try:
+        content = export_service.hls_m3u(channels, base_url, epg_url)
+        resp = Response(
+            content,
+            mimetype="audio/x-mpegurl",
+            headers={"Content-Disposition": 'attachment; filename="channels-fnos-hls.m3u"'},
+        )
+        return resp
+    except Exception as exc:
+        return api_error(str(exc))
 
 
 @app.get("/api/snapshot/<host>/<int:port>")
@@ -1426,6 +1549,26 @@ def api_iptv_auth_apply():
         return api_success(iptv_auth_service.apply(data, _latest_stb_auth_info()))
     except Exception as exc:
         logger.error(f"实验性 IPTV 认证执行失败：{exc}")
+        return api_error(str(exc))
+
+
+@app.get("/api/iptv-auth/backup-export")
+def api_iptv_auth_backup_export():
+    iface = str(request.args.get("interface") or "").strip()
+    if not iface:
+        return api_error("请先选择 IPTV 上游接口")
+    try:
+        return api_success(iptv_auth_service.backup_export(iface))
+    except Exception as exc:
+        return api_error(str(exc))
+
+
+@app.post("/api/iptv-auth/backup-import")
+def api_iptv_auth_backup_import():
+    data = request.get_json(silent=True) or {}
+    try:
+        return api_success(iptv_auth_service.backup_import(data))
+    except Exception as exc:
         return api_error(str(exc))
 
 

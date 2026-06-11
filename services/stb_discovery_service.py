@@ -228,6 +228,7 @@ def _extract_dhcp_from_pcap(pcap_path: str) -> dict[str, Any]:
         "hostname": _str(opts_req, 12),
         "client_id": client_id,
         "vendor_specific_125": _parse_opt125(opts_req[125]) if 125 in opts_req else "",
+        "vendor_specific_125_raw": opts_req[125].hex() if 125 in opts_req else "",
     }
 
 
