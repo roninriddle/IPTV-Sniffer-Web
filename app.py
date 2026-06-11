@@ -1041,25 +1041,36 @@ def _do_operator_import(channels: list[dict]) -> dict:
 
     # Bulk-save channel records so EPG enrichment runs immediately
     settings = settings_store.load()
-    rows = [
-        {
-            "key": f"{ch['ip']}:{ch['port']}",
+    # Pre-load stored channels so we can carry probe results (width/height/
+    # probe_status/quality_group) into the row dict.  Without this, enrich_channel_rows
+    # sees no dimensions and overwrites a probed "4K高清" back to "高清频道" via is_hd.
+    existing = channel_store.load()
+    rows = []
+    for ch in channels:
+        if not (ch.get("ip") and ch.get("port") and ch.get("name")):
+            continue
+        key = f"{ch['ip']}:{ch['port']}"
+        stored = existing.get(key, {})
+        rows.append({
+            "key": key,
             "host": ch["ip"],
             "port": ch["port"],
             "name": ch.get("name", ""),
             "category": classify_channel_name(ch.get("name", "")),
-            "packets": 0,
+            "packets": stored.get("packets", 0),
             "fcc_ip": ch.get("fcc_ip", ""),
             "fcc_port": ch.get("fcc_port"),
             "fec_port": ch.get("fec_port"),
             "is_hd": ch.get("is_hd", False),
-        }
-        for ch in channels
-        if ch.get("ip") and ch.get("port") and ch.get("name")
-    ]
+            # Carry probe results so enrich_channel_rows can recompute quality_group
+            # from real dimensions rather than falling back to is_hd inference.
+            "probe_status": stored.get("probe_status", "not_probed"),
+            "width": stored.get("width"),
+            "height": stored.get("height"),
+            "quality_group": stored.get("quality_group", ""),
+        })
     enriched = enrich_channel_rows(rows, settings)
     # Only save rows that don't already have a user-modified name
-    existing = channel_store.load()
     to_save = []
     for row in enriched:
         key = str(row.get("key", ""))

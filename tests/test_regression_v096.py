@@ -467,3 +467,48 @@ class TestQualityGroupFromIsHd:
         row = {"key": "239.1.1.2:8008", "host": "239.1.1.2", "port": 8008, "name": "Test"}
         enriched = enrich_channel_rows([row])
         assert enriched[0].get("quality_group") in (None, "", "未识别")
+
+    # ── Operator re-import must not clobber probed quality_group ──────────
+    # Root cause: _do_operator_import rows omitted width/height/probe_status,
+    # so enrich_channel_rows fell into the is_hd branch and overwrote "4K高清".
+    # Fix: _do_operator_import now seeds those fields from the stored channel.
+
+    def test_4k_preserved_when_dimensions_present(self):
+        """Row carrying actual probe dimensions must compute 4K高清, not 高清频道."""
+        row = {
+            "key": "239.1.1.1:8008", "host": "239.1.1.1", "port": 8008,
+            "name": "CCTV4K",
+            "is_hd": True,           # from operator channel (is_hd=True)
+            "probe_status": "ok",
+            "width": 3840, "height": 2160,
+            "quality_group": "",     # simulates: no quality_group in incoming row
+        }
+        enriched = enrich_channel_rows([row])
+        assert enriched[0]["quality_group"] == "4K高清", (
+            "4K dimensions must override is_hd-derived '高清频道'"
+        )
+
+    def test_1080p_gets_hd_not_4k(self):
+        row = {
+            "key": "239.1.1.2:8008", "host": "239.1.1.2", "port": 8008,
+            "name": "CCTV1HD",
+            "is_hd": True,
+            "probe_status": "ok",
+            "width": 1920, "height": 1080,
+            "quality_group": "",
+        }
+        enriched = enrich_channel_rows([row])
+        assert enriched[0]["quality_group"] == "高清频道"
+
+    def test_4k_not_overwritten_by_reimport_without_dims(self):
+        """If a re-import row has no dimensions but quality_group is already 4K高清,
+        enrich must not downgrade it (the elif guard must hold)."""
+        row = {
+            "key": "239.1.1.3:8008", "host": "239.1.1.3", "port": 8008,
+            "name": "CCTV4K",
+            "is_hd": True,
+            "quality_group": "4K高清",   # preserved from stored channel
+            # no width/height (not yet in this re-import row)
+        }
+        enriched = enrich_channel_rows([row])
+        assert enriched[0]["quality_group"] == "4K高清"
