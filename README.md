@@ -1,9 +1,5 @@
 # IPTV Sniffer Web v1.0.1
 
-
-1.0.0版本iptv认证失败，待修正。
-0.9.96版本可以认证
-
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口嗅探** 的 IPTV 组播嗅探、运营商频道发现、频道线路整理与 `rtp2httpd` 播放列表工作台。
 
 v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一 Web 图形化页面：
@@ -25,12 +21,12 @@ v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一
 | 功能 | 说明 |
 |---|---|
 | 运营商频道发现 | 通过交换机镜像口捕获机顶盒开机流量，解析频道表、组播地址、FCC/FEC、DHCP 认证信息 |
-| IPTV 认证助手 | 集中展示 MAC / Hostname / IPTV IP / 网关 / Option60 / UserToken / FCC 摘要；生成认证脚本；提供实验性一键认证与恢复；支持导出/导入接口初始状态备份 |
+| IPTV 认证助手 | 集中展示 MAC / Hostname / IPTV IP / 网关 / Option60 / UserToken / FCC 摘要；提供实验性一键认证与恢复；支持导出/导入接口初始状态备份 |
 | 频道线路组 | 同名频道自动归组，按 4K > 1080p > 720p > SD > 未识别自动选主源，保留备选线路 |
 | 播放链路诊断 | 检测 rtp2httpd 可达性、配置、FCC、IGMP、组播回流和镜像口误判；探测分辨率使用正确网口 IGMP 加入 |
-| 六档导出 | `channels-best.m3u` / `channels-all.m3u` / `channels-fnos.m3u`（rtp直连）/ `channels-fnos-hls.m3u`（浏览器 HLS）/ `channels-rtp2httpd-best.m3u` / `channels-rtp2httpd-all.m3u` |
+| 五档导出 | `channels-best.m3u` / `channels-all.m3u` / `channels-fnos-hls.m3u`（浏览器 HLS）/ `channels-rtp2httpd-best.m3u` / `channels-rtp2httpd-all.m3u` |
 | 飞牛影视 HLS 支持 | 按需 FFmpeg HLS 转封装，浏览器直接播放组播流；空闲 60 秒自动停止 |
-| EPG & 台标 | XMLTV EPG + TVlogo 缓存匹配，定时刷新；修复数字边界误匹配（CCTV1↔CCTV10）；支持一键重新匹配 |
+| EPG & 台标 | XMLTV EPG + TVlogo 缓存匹配；可在频道线路标签勾选启用/禁用；支持一键重新匹配 |
 
 ## 快速开始
 
@@ -100,28 +96,17 @@ pytest -q
    打开「频道线路」，确认主源和备选线路。导出：
    - `channels-best.m3u`：每个频道组只导出主源（需填写 rtp2httpd 地址）；
    - `channels-all.m3u`：导出全部线路（需填写 rtp2httpd 地址）；
-   - `channels-fnos.m3u`：飞牛影视 rtp 直连（rtp:// 格式，适用于 APTV 等支持组播的播放器）；
    - `channels-fnos-hls.m3u`：飞牛影视 HLS（浏览器可直接播放，地址指向本机 HLS 转封装端点）；
    - `channels-rtp2httpd-best.m3u`：给 rtp2httpd `external-m3u` 使用的主源文件；
    - `channels-rtp2httpd-all.m3u`：给 rtp2httpd 使用的全部线路源文件。
 
 5. **IPTV 认证（需要主动播放时）**  
-   在「IPTV 认证」中先生成脚本，建议先手动执行 `dhclient` 脚本验证。实验性一键认证只会操作选定接口，执行前会备份初始 MAC、IPv4 和路由，并提供恢复按钮。FNOS 容器必须在「高级设置 → 功能」勾选 `NET_ADMIN` 和 `NET_RAW`。
+   在「IPTV 认证」中填写接口、MAC、Hostname 等参数，点击「实验性一键认证」。执行前会备份初始 MAC、IPv4 和路由，并提供恢复按钮。FNOS 容器必须在「高级设置 → 功能」勾选 `NET_ADMIN` 和 `NET_RAW`。
 
 6. **播放诊断**  
    打开「播放诊断」，填写 rtp2httpd 地址和一个频道地址。诊断会检查 rtp2httpd 是否可访问、是否匹配 M3U、FCC 是否超时、是否发出 IGMP、是否收到 239.x UDP。
 
-7. **定时 EPG**  
-   打开「定时 EPG」，设置每天或每小时刷新已经导入的 M3U/EPG 来源。
-
 ## IPTV 认证助手说明
-
-认证助手分两层：
-
-| 层级 | 说明 |
-|---|---|
-| 安全助手 | 只生成 `dhclient` / `udhcpc` 脚本，由你复制后手动执行 |
-| 实验性一键认证 | 容器内执行 `udhcpc`，只更改选定接口；执行前备份；恢复按钮按初始备份回滚 |
 
 实验性一键认证要求：
 
@@ -140,8 +125,7 @@ cap_add: NET_ADMIN, NET_RAW
 
 - 执行前断开机顶盒 IPTV 线，避免 STB MAC 冲突；
 - 确认 Web 管理页面通过另一张网卡访问；
-- 默认路由不会被项目主动替换，只会按页面选择写入 IPTV 相关路由；
-- 如果认证失败，优先使用页面生成的宿主机 `dhclient` 脚本验证。
+- 默认路由不会被项目主动替换，只会按页面选择写入 IPTV 相关路由。
 
 ## rtp2httpd 使用
 
@@ -174,11 +158,11 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 | POST | `/api/stb_discovery/import` | 导入运营商频道 |
 | GET | `/api/stb-summary` | 获取 IPTV 认证摘要 |
 | GET | `/api/iptv-auth/status` | 检查选定接口认证状态和权限 |
-| POST | `/api/iptv-auth/scripts` | 生成认证脚本 |
 | POST | `/api/iptv-auth/apply` | 实验性一键认证 |
 | POST | `/api/iptv-auth/restore` | 恢复选定接口初始设置 |
 | GET | `/api/iptv-auth/backup-export` | 导出接口初始状态备份 JSON |
 | POST | `/api/iptv-auth/backup-import` | 导入接口初始状态备份 JSON |
+| POST | `/api/epg/refresh` | 刷新 EPG 与台标缓存 |
 | POST | `/api/epg/rematch` | 强制重新匹配所有频道节目单 |
 | POST | `/api/diagnose` | 播放链路诊断 |
 | POST | `/api/export` | 导出频道文件 |
