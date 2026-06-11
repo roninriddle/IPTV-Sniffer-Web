@@ -4,7 +4,7 @@ Covers:
 - pcap TCP reassembly: Ethernet / SLL (DLT=113) / SLL2 (DLT=276)
 - CUSetConfig channel parsing: single-quote outer, double-quote outer
 - Export URL: FCC / fcc-type / FEC parameter generation
-- OpenWrt UCI parser + analyzer API contract
+- IPTV auth helper script generation
 - quality_group derived from is_hd on operator channel import
 """
 import os
@@ -18,7 +18,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.stb_discovery_service import _parse_chanlist_html, _reassemble_tcp_streams
 from services.export_service import ExportService
-from app import _parse_uci_network, _analyze_uci_interfaces, _parse_rtp2httpd_config_text, enrich_channel_rows
+from services.iptv_auth_service import IptvAuthService
+from services.log_service import AppLogger
+from app import _parse_rtp2httpd_config_text, enrich_channel_rows
 
 
 # ── pcap helpers ─────────────────────────────────────────────────────────
@@ -347,97 +349,24 @@ status-page-path = /status
     assert parsed["bind"] == ["* 5140"]
 
 
-# ── OpenWrt UCI parser + analyzer ─────────────────────────────────────────
+# ── IPTV auth helper ──────────────────────────────────────────────────────
 
-_R4S_CONFIG = """
-config interface 'loopback'
-    option device 'lo'
-    option proto 'static'
-    option ipaddr '127.0.0.1'
-    option netmask '255.0.0.0'
-
-config interface 'lan'
-    option device 'eth1'
-    option proto 'static'
-    option ipaddr '192.168.10.1'
-
-config interface 'wan'
-    option device 'eth0'
-    option proto 'dhcp'
-
-config interface 'wan6'
-    option device 'eth0'
-    option proto 'dhcpv6'
-"""
-
-_R4S_CONFIGURED = """
-config interface 'lan'
-    option device 'eth1'
-    option proto 'static'
-
-config interface 'iptv_sniff'
-    option device 'eth0'
-    option proto 'none'
-"""
-
-_UNKNOWN_CONFIG = """
-config interface 'lan'
-    option device 'br-lan'
-    option proto 'static'
-
-config interface 'wan'
-    option device 'eth1'
-    option proto 'pppoe'
-"""
-
-
-class TestUciParser:
-    def test_parses_interface_names(self):
-        ifaces = _parse_uci_network(_R4S_CONFIG)
-        assert "lan" in ifaces
-        assert "wan" in ifaces
-
-    def test_parses_option_values(self):
-        ifaces = _parse_uci_network(_R4S_CONFIG)
-        assert ifaces["lan"]["device"] == "eth1"
-        assert ifaces["wan"]["device"] == "eth0"
-        assert ifaces["wan"]["proto"] == "dhcp"
-
-    def test_empty_config(self):
-        assert _parse_uci_network("") == {}
-
-
-class TestUciAnalyzer:
-    def test_r4s_needs_setup(self):
-        ifaces = _parse_uci_network(_R4S_CONFIG)
-        result = _analyze_uci_interfaces(ifaces)
-        assert result["status"] == "needs_setup"
-        assert result["is_r4s"] is True
-        assert result["wan_occupies_eth0"] is True
-        assert result["recommended_capture_iface"] == "eth0"
-
-    def test_r4s_configured(self):
-        ifaces = _parse_uci_network(_R4S_CONFIGURED)
-        result = _analyze_uci_interfaces(ifaces)
-        assert result["status"] == "configured"
-        assert result["iptv_configured"] is True
-        assert result["recommended_capture_iface"] == "eth0"
-
-    def test_unknown_topology(self):
-        ifaces = _parse_uci_network(_UNKNOWN_CONFIG)
-        result = _analyze_uci_interfaces(ifaces)
-        assert result["status"] == "unknown"
-        assert result["recommended_capture_iface"] == ""
-
-    def test_result_keys_present(self):
-        """API contract: these keys must always be present."""
-        ifaces = _parse_uci_network(_R4S_CONFIG)
-        result = _analyze_uci_interfaces(ifaces)
-        for key in ("lan_device", "wan_device", "iptv_sniff_device",
-                    "iptv_configured", "wan_occupies_eth0", "is_r4s",
-                    "status", "message", "recommended_capture_iface",
-                    "all_interfaces"):
-            assert key in result, f"missing key: {key}"
+def test_iptv_auth_scripts_include_option60_and_interface(tmp_path):
+    svc = IptvAuthService(tmp_path / "auth-backup.json", tmp_path, AppLogger(tmp_path / "app.log"))
+    result = svc.scripts({
+        "interface": "enp3s0",
+        "mac": "d4:c1:c8:ee:9b:1f",
+        "hostname": "18000413001338300000D4C1C8EE9B1F",
+        "vendor_class": "00001f3901c4693f",
+        "requested_ip": "10.193.235.26",
+        "gateway": "10.193.224.1",
+        "route_mode": "multicast",
+    })
+    assert 'interface "enp3s0"' in result["dhclient_conf"]
+    assert "00:00:1f:39:01:c4:69:3f" in result["dhclient_conf"]
+    assert "-i enp3s0" in result["udhcpc_command"]
+    assert "-x 0x3c:00001f3901c4693f" in result["udhcpc_command"]
+    assert "224.0.0.0/4" in result["udhcpc_hook"]
 
 
 # ── quality_group derivation from is_hd ──────────────────────────────────

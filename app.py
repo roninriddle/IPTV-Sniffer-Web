@@ -27,6 +27,7 @@ from config import (
     APP_NAME,
     APP_VERSION,
     GITHUB_REPO,
+    IPTV_AUTH_BACKUP_FILE,
     VERSION_CHECK_INTERVAL,
     CHANNELS_FILE,
     DATA_DIR,
@@ -52,6 +53,7 @@ from config import (
 from services.capture_service import CaptureService
 from services.epg_service import EpgService, normalize_channel_name
 from services.export_service import ExportService
+from services.iptv_auth_service import IptvAuthService
 from services.log_service import AppLogger
 from services.probe_service import ProbeService
 from services.schedule_service import ScheduleService
@@ -74,6 +76,7 @@ capture_service = CaptureService(logger, fcc_store, token_store, discovery_store
 export_service = ExportService(OUTPUT_DIR)
 probe_service = ProbeService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
+iptv_auth_service = IptvAuthService(IPTV_AUTH_BACKUP_FILE, DATA_DIR, logger)
 STARTED_AT = time.time()
 _snapshot_cache: dict[str, tuple[float, bytes]] = {}
 _snapshot_cache_ttl = 30
@@ -618,120 +621,6 @@ def api_interfaces():
         return api_success({"interfaces": capture_service.list_interfaces()})
     except Exception as exc:
         return api_error(str(exc), 500)
-
-
-def _parse_uci_network(text: str) -> dict[str, dict[str, str]]:
-    interfaces: dict[str, dict[str, str]] = {}
-    current: str | None = None
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("config interface"):
-            m = re.match(r"config interface\s+['\"]?(\w+)['\"]?", line)
-            if m:
-                current = m.group(1)
-                interfaces[current] = {}
-        elif line.startswith("option ") and current is not None:
-            m = re.match(r"option\s+(\w+)\s+['\"]?(.*?)['\"]?\s*$", line)
-            if m:
-                interfaces[current][m.group(1)] = m.group(2)
-    return interfaces
-
-
-def _analyze_uci_interfaces(ifaces: dict[str, dict[str, str]]) -> dict[str, Any]:
-    def _dev(d: dict) -> str:
-        return str(d.get("device") or d.get("ifname") or "").strip()
-
-    lan_dev = _dev(ifaces.get("lan", {}))
-    wan_dev = _dev(ifaces.get("wan", {}))
-    sniff_cfg = ifaces.get("iptv_sniff", {})
-    sniff_dev = _dev(sniff_cfg)
-    sniff_proto = str(sniff_cfg.get("proto", "")).strip()
-    iptv_configured = bool(sniff_dev == "eth0" and sniff_proto == "none")
-    wan_occupies_eth0 = wan_dev == "eth0" and not iptv_configured
-    is_r4s = lan_dev == "eth1" and (wan_dev == "eth0" or iptv_configured)
-    if iptv_configured:
-        status = "configured"
-        message = "检测到 iptv_sniff 接口（eth0，proto=none），已满足被动抓包要求。"
-    elif wan_occupies_eth0:
-        status = "needs_setup"
-        message = "LAN 管理口：eth1，WAN 当前占用 eth0，需释放 eth0 并创建 iptv_sniff 抓包接口。"
-    elif lan_dev:
-        status = "unknown"
-        message = f"LAN 管理口：{lan_dev}，WAN：{wan_dev or '未知'}。无法自动判断是否适合抓包，请手动确认。"
-    else:
-        status = "unknown"
-        message = "未能识别标准 LAN/WAN 接口定义，请手动确认配置。"
-    return {
-        "lan_device": lan_dev,
-        "wan_device": wan_dev,
-        "iptv_sniff_device": sniff_dev,
-        "iptv_configured": iptv_configured,
-        "wan_occupies_eth0": wan_occupies_eth0,
-        "is_r4s": is_r4s,
-        "status": status,
-        "message": message,
-        "recommended_capture_iface": "eth0" if (is_r4s or iptv_configured) else "",
-        "all_interfaces": list(ifaces.keys()),
-    }
-
-
-@app.get("/api/openwrt/network-analysis")
-def api_openwrt_network_analysis():
-    host_cfg = Path("/host/etc/config/network")
-    if not host_cfg.exists():
-        return api_success({
-            "available": False,
-            "reason": "未检测到 /host/etc/config/network（容器未挂载宿主机网络配置，或不是 OpenWrt 宿主机）",
-        })
-    try:
-        text = host_cfg.read_text(encoding="utf-8", errors="replace")
-        ifaces = _parse_uci_network(text)
-        result = _analyze_uci_interfaces(ifaces)
-        result["available"] = True
-        return api_success(result)
-    except Exception as exc:
-        logger.warning(f"解析 OpenWrt 网络配置失败：{exc}")
-        return api_error(str(exc), 500)
-
-
-@app.get("/api/openwrt/generate-script")
-def api_openwrt_generate_script():
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    backup_path = f"/etc/config/network.backup-iptv-sniffer-{ts}"
-    script = f"""#!/bin/sh
-# IPTV Sniffer Web — R4S 被动抓包配置脚本
-# 生成时间：{ts}
-# 说明：将 eth0 从 WAN 释放，改为 IPTV 被动抓包接口（proto=none）
-# 被动抓包不需要 IP、不配置防火墙、不配置 VLAN、不做路由转发。
-
-set -e
-
-# 1. 备份当前配置
-cp /etc/config/network {backup_path}
-echo "已备份：{backup_path}"
-
-# 2. 删除 WAN 对 eth0 的占用
-uci -q delete network.wan  || true
-uci -q delete network.wan6 || true
-
-# 3. 创建 IPTV 被动抓包接口
-uci -q delete network.iptv_sniff || true
-uci set network.iptv_sniff='interface'
-uci set network.iptv_sniff.proto='none'
-uci set network.iptv_sniff.device='eth0'
-
-# 4. 提交并重启网络
-uci commit network
-/etc/init.d/network restart
-
-echo ""
-echo "完成！eth0 现在是 IPTV 被动抓包接口。"
-echo "回滚命令："
-echo "  cp {backup_path} /etc/config/network && /etc/init.d/network restart"
-"""
-    rollback = f"cp {backup_path} /etc/config/network && /etc/init.d/network restart"
-    return api_success({"script": script, "rollback": rollback, "timestamp": ts})
-
 
 @app.get("/api/settings")
 def api_settings_get():
@@ -1504,6 +1393,50 @@ def api_stb_summary():
         "fcc_count": fcc_count,
         "channel_count": ch_count,
     })
+
+
+def _latest_stb_auth_info() -> dict[str, Any]:
+    return stb_discovery_service.status().get("auth_info") or {}
+
+
+@app.get("/api/iptv-auth/status")
+def api_iptv_auth_status():
+    iface = str(request.args.get("interface") or settings_store.load().get("interface") or "").strip()
+    if not iface:
+        return api_error("请先选择 IPTV 上游接口")
+    try:
+        return api_success(iptv_auth_service.status(iface, _latest_stb_auth_info()))
+    except Exception as exc:
+        return api_error(str(exc))
+
+
+@app.post("/api/iptv-auth/scripts")
+def api_iptv_auth_scripts():
+    data = request.get_json(silent=True) or {}
+    try:
+        return api_success(iptv_auth_service.scripts(data, _latest_stb_auth_info()))
+    except Exception as exc:
+        return api_error(str(exc))
+
+
+@app.post("/api/iptv-auth/apply")
+def api_iptv_auth_apply():
+    data = request.get_json(silent=True) or {}
+    try:
+        return api_success(iptv_auth_service.apply(data, _latest_stb_auth_info()))
+    except Exception as exc:
+        logger.error(f"实验性 IPTV 认证执行失败：{exc}")
+        return api_error(str(exc))
+
+
+@app.post("/api/iptv-auth/restore")
+def api_iptv_auth_restore():
+    data = request.get_json(silent=True) or {}
+    try:
+        return api_success(iptv_auth_service.restore(data))
+    except Exception as exc:
+        logger.error(f"IPTV 认证恢复失败：{exc}")
+        return api_error(str(exc))
 
 
 def _parse_rtp2httpd_config_text(text: str) -> dict[str, Any]:

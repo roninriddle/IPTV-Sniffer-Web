@@ -15,8 +15,9 @@
         <p class="top-subtitle">{{ app_description }}</p>
       </div>
       <div class="top-actions">
-        <button class="nav-pill active" data-page="home" type="button">首页 / 部署向导</button>
+        <button class="nav-pill active" data-page="home" type="button">首页 / 使用向导</button>
         <button class="nav-pill" data-tab="stbDiscovery" type="button">运营商频道</button>
+        <button class="nav-pill" data-tab="iptvAuth" type="button">IPTV 认证</button>
         <button class="nav-pill" data-tab="channelList" type="button">频道线路</button>
         <button class="nav-pill" data-tab="diagnose" type="button">播放诊断</button>
         <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
@@ -26,18 +27,6 @@
       </div>
     </div>
   </header>
-
-  <div id="stbSummaryBar" class="stb-summary-bar" hidden>
-    <span class="ssb-item" id="ssbMac" title="机顶盒 MAC"></span>
-    <span class="ssb-item" id="ssbHostname" title="Hostname"></span>
-    <span class="ssb-item" id="ssbIp" title="IPTV IP"></span>
-    <span class="ssb-item" id="ssbGateway" title="网关"></span>
-    <span class="ssb-sep">|</span>
-    <span class="ssb-item" id="ssbOption60" title="Option 60 Vendor Class"></span>
-    <span class="ssb-item" id="ssbToken" title="UserToken"></span>
-    <span class="ssb-item" id="ssbFcc" title="FCC 记录数"></span>
-    <span class="ssb-item" id="ssbChannels" title="频道数"></span>
-  </div>
 
   <div class="app-shell">
     <aside id="logsDrawer" class="logs-drawer" aria-hidden="true">
@@ -61,10 +50,11 @@
           <div>
             <div class="eyebrow">使用说明</div>
             <h2>先确认拓扑，再嗅探整理，最后导出或定时更新 EPG。</h2>
-            <p>容器只能抓到宿主机实际可见的 IPTV 流量。推荐使用交换机镜像机顶盒端口，或让 IPTV 流量真实经过运行 Docker 的设备。</p>
+            <p>容器只能抓到宿主机实际可见的 IPTV 流量。本向导只保留交换机镜像机顶盒端口这一种嗅探方式，用于发现频道、整理线路与提取认证信息。</p>
           </div>
           <div class="home-actions">
             <button class="primary" data-tab="stbDiscovery" type="button">运营商频道发现</button>
+            <button class="secondary" data-tab="iptvAuth" type="button">IPTV 认证助手</button>
             <button class="secondary" data-tab="channelList" type="button">查看频道列表</button>
             <button class="secondary" data-tab="schedule" type="button">配置定时 EPG</button>
           </div>
@@ -73,31 +63,16 @@
         <section class="card topology-card">
           <details open>
             <summary>
-              <span>三种拓扑模式</span>
-              <span class="chip warning">容器只能抓到宿主机实际可见的流量</span>
+              <span>唯一推荐拓扑：交换机镜像口</span>
+              <span class="chip warning">只嗅探，不主动拉流</span>
             </summary>
-            <div class="grid three-col">
+            <div class="grid">
               <article class="notice compact">
-                <h3>① 交换机镜像口（只嗅探）</h3>
+                <h3>交换机镜像口（只嗅探）</h3>
                 <pre>光猫 IPTV 口 → 交换机
   ├─ 机顶盒端口（被镜像源）
   └─ 宿主机端口（镜像目标）</pre>
-                <p class="muted small">✓ 可嗅探频道表 / 候选流<br>✗ 不可主动拉流播放（镜像口被动）</p>
-              </article>
-              <article class="notice compact">
-                <h3>② R4S eth0 直连光猫 IPTV 口（推荐）</h3>
-                <pre>光猫 IPTV 口 → R4S eth0（被动监听）
-家庭交换机
-  ├─ 机顶盒（DHCP 认证后播放）
-  └─ R4S eth1（管理口）</pre>
-                <p class="muted small">✓ 可嗅探开机流量 / 频道表<br>✓ 认证后 rtp2httpd 可主动播放<br>⚠ 需释放 eth0 为 proto=none（见向导）</p>
-              </article>
-              <article class="notice compact">
-                <h3>③ IGMP Proxy / 光猫桥接（LAN 内播放）</h3>
-                <pre>光猫（桥接）→ OpenWrt/RouterOS
-  └─ LAN / VLAN → Docker 宿主机
-                    └─ rtp2httpd</pre>
-                <p class="muted small">✓ 路由器完成 IPTV 认证与 IGMP Proxy<br>✓ LAN 内设备可直接播放组播<br>✗ 需路由器支持 IGMP Snooping/Proxy</p>
+                <p class="muted small">✓ 抓机顶盒开机流量、频道表、FCC/FEC、Option60<br>✓ 生成频道线路和 rtp2httpd 源文件<br>✓ FNOS 容器需在「高级设置 → 功能」勾选 NET_RAW；实验性认证还需 NET_ADMIN<br>✗ 镜像口不能主动发 IGMP/FCC，因此不能代表 rtp2httpd 可直接播放</p>
               </article>
             </div>
           </details>
@@ -109,86 +84,25 @@
             <span>填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统自动从 STB 开机流量中解析频道表与 DHCP 认证信息（MAC / IPTV IP / Option60 等），一键「导入到频道线路」。</span>
           </article>
           <article>
-            <strong>2. 频道线路管理</strong>
+            <strong>2. IPTV 认证助手（需要主动播放时）</strong>
+            <span>使用已捕获的 MAC / Hostname / Option60 生成认证脚本；实验模式可只对选定接口执行认证，并在执行前备份初始网络状态，支持恢复。FNOS 中请到容器「高级设置 → 功能」勾选 NET_ADMIN 和 NET_RAW。</span>
+          </article>
+          <article>
+            <strong>3. 频道线路管理</strong>
             <span>同名频道自动归组，按清晰度（4K → 1080p → 720p → SD）与探测状态自动选主源；也可手动设为主源。导出「最佳线路 M3U」（每组只取主源）或「全部线路 M3U」。</span>
           </article>
           <article>
-            <strong>3. 播放诊断</strong>
+            <strong>4. 播放诊断</strong>
             <span>检测 rtp2httpd 可达性、FCC 响应与认证状态，给出「M3U 问题 / rtp2httpd 配置问题 / 上游组播问题」结论，帮助定位播放失败原因。</span>
           </article>
           <article>
-            <strong>4. 定时 EPG 刷新</strong>
+            <strong>5. 定时 EPG 刷新</strong>
             <span>在「定时 EPG」中管理 XMLTV EPG 来源，定时刷新保持 tvg-id / tvg-logo 持续更新。</span>
           </article>
-        </section>
-
-        <section class="card" id="openwrtWizardHomeCard">
-          <div class="section-title">
-            <h2>iStoreOS / OpenWrt 被动抓包部署向导</h2>
-            <span id="openwrtWizardHomeBadge" class="chip neutral">检测中</span>
-          </div>
-          <p class="muted">NanoPi R4S 默认 eth0=WAN、eth1=LAN。向导将读取宿主机 UCI 网络配置，判断 eth0 是否已释放为被动抓包口，并生成一键配置脚本。<strong>被动抓包：eth0 无 IP、无路由，仅供 tcpdump 监听。</strong></p>
-          <div id="openwrtWizardHomeSummary" class="notice compact" style="margin-top:8px">正在读取宿主机配置…</div>
-          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-            <button class="secondary" data-tab="openwrt" type="button">查看 UCI 脚本与详细向导</button>
-            <button id="openwrtHomeApplyBtn" class="primary" type="button" hidden>将 eth0 应用为抓包网卡</button>
-          </div>
         </section>
       </section>
 
       <section id="workbenchPage" class="workbench-page" hidden>
-        <div id="openwrtTab" class="tab-panel" hidden>
-          <section class="card">
-            <div class="section-title">
-              <h2>iStoreOS / OpenWrt 被动抓包部署向导</h2>
-              <span id="openwrtAnalysisBadge" class="chip neutral">检测中</span>
-            </div>
-            <p class="muted">
-              NanoPi R4S 使用 iStoreOS 时，默认 LAN 为 <code>eth1</code>，WAN 为 <code>eth0</code>。<br>
-              本向导推荐保留 <code>eth1</code> 作为管理口，将 <code>eth0</code> 改为 IPTV 被动抓包口。<br>
-              被动抓包模式：<strong>eth0 不需要 IP、不配置防火墙、不配置 VLAN、不做路由转发</strong>，只作为 tcpdump 原始流量监听入口。
-            </p>
-
-            <div class="section-subtitle"><h3>推荐拓扑</h3></div>
-            <pre class="notice compact" style="font-size:12px;line-height:1.6">家庭主网络 / 主路由
-        │
-      eth1  ← 管理口（保持上网，访问 Web 界面）
-   R4S iStoreOS
-      eth0  ← IPTV 被动抓包口（直连光猫 IPTV 口）
-        │
-  光猫 IPTV 口</pre>
-
-            <div class="section-subtitle" style="margin-top:16px"><h3>宿主机配置检测</h3></div>
-            <div id="openwrtAnalysisResult" class="notice compact">正在读取 /host/etc/config/network…</div>
-
-            <div id="openwrtScriptSection" hidden style="margin-top:16px">
-              <div class="section-subtitle"><h3>UCI 配置脚本</h3></div>
-              <p class="muted" style="margin-bottom:8px">
-                以下脚本将在 iStoreOS 宿主机上执行（<strong>非容器内</strong>）。执行前会自动备份原配置，执行后 eth0 不再作为 WAN 口。
-              </p>
-              <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-                <button id="openwrtCopyScriptBtn" class="secondary" type="button">复制脚本</button>
-                <button id="openwrtDownloadScriptBtn" class="secondary" type="button">下载脚本</button>
-              </div>
-              <pre id="openwrtScriptContent" class="logs-output" style="max-height:300px;overflow:auto;font-size:12px"></pre>
-              <div class="notice compact" style="margin-top:8px">
-                <strong>回滚命令：</strong><code id="openwrtRollbackCmd" style="font-size:11px;word-break:break-all"></code>
-              </div>
-              <p class="muted" style="margin-top:8px">⚠️ 执行脚本后请等待网络重启（约 10 秒），然后刷新本页面。</p>
-            </div>
-
-            <div id="openwrtWarningSection" class="notice compact" style="margin-top:12px;display:none">
-              <strong>注意：</strong>执行后 eth0 将不再作为普通 WAN 口使用。该方案适合将 R4S 作为 IPTV 抓包设备，而非继续作为主路由 WAN 使用。
-            </div>
-
-            <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-              <button id="openwrtRefreshBtn" class="secondary" type="button">重新检测</button>
-              <button id="openwrtGenerateScriptBtn" class="secondary" type="button" hidden>生成配置脚本</button>
-              <button id="openwrtApplyIfaceBtn" class="primary" type="button" hidden>将 eth0 应用为抓包网卡</button>
-            </div>
-          </section>
-        </div>
-
         <div id="snifferTab" class="tab-panel" hidden>
           <section class="card">
             <div class="section-title">
@@ -456,17 +370,111 @@
               </table>
             </div>
           </section>
+        </div>
 
-          <section class="card" id="stbAuthInfoSection" hidden>
+        <div id="iptvAuthTab" class="tab-panel" hidden>
+          <section class="card">
             <div class="section-title">
-              <h2>机顶盒认证信息</h2>
-              <span class="muted small">从 DHCP 开机流量中提取</span>
+              <h2>IPTV 认证助手</h2>
+              <span id="iptvAuthBadge" class="chip neutral">等待检测</span>
             </div>
-            <table class="auth-info-table">
-              <tbody id="stbAuthInfoBody"></tbody>
-            </table>
+            <div class="notice danger compact">
+              <strong>强提醒：</strong>
+              <span>实验性一键认证会改选定网口的 MAC、IPv4 地址和指向该网口的 IPTV 路由。执行前请断开机顶盒 IPTV 线避免 MAC 冲突，并确认当前页面可从其它网口访问。系统会在更改前备份该接口初始状态，恢复按钮只恢复这个接口。FNOS 里需要在容器「高级设置 → 功能」勾选 NET_ADMIN 与 NET_RAW。</span>
+            </div>
+            <div class="auth-summary-grid" id="iptvAuthSummary" style="margin-top:12px">
+              <div><span>STB MAC</span><strong id="iptvAuthSummaryMac">未捕获</strong></div>
+              <div><span>Hostname</span><strong id="iptvAuthSummaryHostname">未捕获</strong></div>
+              <div><span>IPTV IP</span><strong id="iptvAuthSummaryIp">未捕获</strong></div>
+              <div><span>网关</span><strong id="iptvAuthSummaryGateway">未捕获</strong></div>
+              <div class="span-2"><span>Option60</span><strong id="iptvAuthSummaryOption60">未捕获</strong></div>
+              <div><span>UserToken</span><strong id="iptvAuthSummaryToken">未捕获</strong></div>
+              <div><span>FCC / 频道</span><strong id="iptvAuthSummaryCounts">0 / 0</strong></div>
+            </div>
+            <div class="form-grid" style="margin-top:12px">
+              <label>
+                IPTV 上游接口
+                <select id="iptvAuthIface"></select>
+              </label>
+              <label>
+                STB MAC
+                <input id="iptvAuthMac" type="text" placeholder="d4:c1:c8:ee:9b:1f">
+              </label>
+              <label class="span-2">
+                Hostname
+                <input id="iptvAuthHostname" type="text" placeholder="18000413001338300000D4C1C8EE9B1F">
+              </label>
+              <label class="span-2">
+                Option60 / Vendor Class（十六进制）
+                <input id="iptvAuthOption60" type="text" placeholder="00001f39...">
+              </label>
+              <label>
+                请求 IPTV IP（可选）
+                <input id="iptvAuthRequestedIp" type="text" placeholder="10.193.235.26">
+              </label>
+              <label>
+                IPTV 网关（只展示/脚本参考）
+                <input id="iptvAuthGateway" type="text" placeholder="10.193.224.1">
+              </label>
+              <label>
+                路由策略
+                <select id="iptvAuthRouteMode">
+                  <option value="multicast">仅 IPTV IPv4 + 组播路由</option>
+                  <option value="none">只获取 IPv4，不加路由</option>
+                  <option value="iptv_private">IPv4 + 组播 + 10.0.0.0/8</option>
+                </select>
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="iptvAuthRefreshBtn" class="secondary" type="button">刷新状态</button>
+              <button id="iptvAuthGenerateBtn" class="primary" type="button">生成认证脚本</button>
+            </div>
+            <div id="iptvAuthStatus" class="result-box muted" style="margin-top:12px">请选择接口并刷新状态。</div>
           </section>
 
+          <section class="card">
+            <div class="section-title">
+              <h2>安全助手：复制脚本手动执行</h2>
+              <span class="muted small">推荐先用这一层验证认证参数</span>
+            </div>
+            <div class="script-grid">
+              <div>
+                <div class="section-subtitle"><h3>宿主机 dhclient 脚本</h3></div>
+                <pre id="iptvAuthDhclientScript" class="logs-output small-pre">点击「生成认证脚本」。</pre>
+              </div>
+              <div>
+                <div class="section-subtitle"><h3>容器内 udhcpc 命令</h3></div>
+                <pre id="iptvAuthUdhcpcScript" class="logs-output small-pre">点击「生成认证脚本」。</pre>
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="iptvAuthCopyDhclientBtn" class="secondary" type="button">复制 dhclient 脚本</button>
+              <button id="iptvAuthCopyUdhcpcBtn" class="secondary" type="button">复制 udhcpc 命令</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <h2>实验性一键认证与恢复</h2>
+              <span class="chip warning">高级功能</span>
+            </div>
+            <p class="task-description">一键认证仅操作上方选择的接口：保存初始快照 → 清空该接口 IPv4 → 克隆 STB MAC → 发送 Hostname/Option60 DHCP 请求 → 按路由策略写入 IPTV 路由。恢复会清空该接口 IPv4 与路由，并按首次备份恢复 MAC、IPv4 和路由。</p>
+            <div class="form-grid">
+              <label>
+                执行确认文本
+                <input id="iptvAuthConfirm" type="text" placeholder="我确认执行IPTV认证">
+              </label>
+              <label>
+                恢复确认文本
+                <input id="iptvAuthRestoreConfirm" type="text" placeholder="我确认恢复初始网络设置">
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="iptvAuthApplyBtn" class="danger-btn" type="button">实验性一键认证</button>
+              <button id="iptvAuthRestoreBtn" class="secondary" type="button">恢复到初始设置</button>
+            </div>
+            <div id="iptvAuthApplyResult" class="result-box muted" style="margin-top:12px">未执行。</div>
+          </section>
         </div>
 
         <div id="channelListTab" class="tab-panel" hidden>
@@ -625,7 +633,7 @@
             <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，并判断是否为镜像口（SPAN，仅能被动嗅探、无法主动播放）。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
             <div class="notice">
               <strong>镜像口说明：</strong>
-              <span class="muted">交换机镜像口适合嗅探机顶盒流量，但不能代表本机能主动播放。若诊断显示“未加入也能看到流量、主动加入收不到”，应改用真实 IPTV 上游口、IGMP Proxy 或让 rtp2httpd 运行在完成认证的路由侧。</span>
+              <span class="muted">交换机镜像口只适合嗅探机顶盒流量，不能代表本机能主动播放。若诊断显示“未加入也能看到流量、主动加入收不到”，请到「IPTV 认证」页按选定网口生成脚本或执行实验性认证，再让 rtp2httpd 使用完成认证的上游网口。</span>
             </div>
             <div class="form-grid">
               <label>
@@ -696,7 +704,7 @@
   <footer class="footer">
     <span>{{ app_name }} v{{ app_version }}</span>
     <span>作者：Ronin Riddle</span>
-    <span>适用：OpenWrt / iStoreOS / 飞牛 NAS / Linux Docker</span>
+    <span>适用：飞牛 NAS / Linux Docker / 交换机镜像口嗅探</span>
   </footer>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

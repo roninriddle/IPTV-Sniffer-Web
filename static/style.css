@@ -40,11 +40,6 @@ body {
 .top-subtitle { margin: 6px 0 0; color: rgba(255, 255, 255, .82); line-height: 1.45; max-width: 620px; }
 .eyebrow { font-size: 12px; letter-spacing: 0; text-transform: uppercase; opacity: .9; }
 .version { margin-left: 8px; font-weight: 700; }
-.stb-summary-bar { background: #1e293b; color: rgba(255,255,255,.85); font-size: 12px; padding: 6px 0; }
-.stb-summary-bar > * { display: inline-block; padding: 0 10px; }
-.ssb-sep { opacity: .35; padding: 0 2px; }
-.ssb-item::before { content: attr(title) ": "; opacity: .55; font-size: 11px; }
-
 .top-actions, .button-row, .toolbar, .logs-actions, .home-actions, .preview-actions, .source-links {
   display: flex;
   gap: 8px;
@@ -149,6 +144,7 @@ body {
 .grid { display: grid; gap: 12px; }
 .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .notice { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--panel); }
+.notice.danger { border-color: #fecdd3; background: #fff1f2; color: #881337; }
 .notice h3 { margin: 0 0 8px; font-size: 16px; }
 .notice pre {
   overflow-x: auto;
@@ -226,6 +222,7 @@ button.primary { background: var(--primary); color: #fff; border-color: var(--pr
 button.primary:hover { background: var(--primary-dark); }
 button.secondary, .download { background: #fff; color: var(--text); }
 button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.danger-btn { background: var(--danger); border-color: var(--danger); color: #fff; }
 button:disabled, .download.disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .nav-pill, .tab-button {
   background: transparent;
@@ -335,6 +332,12 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 }
 .snapshot-thumb { width: 100%; height: 100%; display: block; object-fit: cover; }
 .result-box { margin-top: 12px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px; line-height: 1.5; }
+.script-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.small-pre { min-height: 220px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.auth-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.auth-summary-grid > div { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 10px; min-width: 0; }
+.auth-summary-grid span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.auth-summary-grid strong { display: block; font-size: 13px; word-break: break-all; }
 
 .preview-modal, .snapshot-modal {
   position: fixed;

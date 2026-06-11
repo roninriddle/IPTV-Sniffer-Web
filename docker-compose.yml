@@ -1,7 +1,7 @@
 services:
   iptv-sniffer-web:
     build: .
-    image: iptv-sniffer-web:v0.9.93
+    image: iptv-sniffer-web:v0.9.96
     container_name: iptv-sniffer-web
     network_mode: host
     cap_add:
@@ -20,6 +20,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./output:/app/output
-      # iStoreOS/OpenWrt 部署向导：挂载宿主机网络配置（只读）
-      # - /etc/config/network:/host/etc/config/network:ro
+      # 如需播放诊断读取 rtp2httpd 配置，可按实际路径挂载为只读。
+      # - /vol1/@appconf/rtp2httpd/rtp2httpd.conf:/host/vol1/@appconf/rtp2httpd/rtp2httpd.conf:ro
     restart: unless-stopped

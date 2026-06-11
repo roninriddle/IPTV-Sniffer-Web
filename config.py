@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "0.9.94"
+APP_VERSION = "0.9.96"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -25,6 +25,7 @@ EPG_CACHE_FILE = DATA_DIR / "epg_cache.json"
 CUSTOM_SOURCES_FILE = DATA_DIR / "custom_sources.json"
 OPERATOR_CHANNELS_FILE = DATA_DIR / "operator_channels.json"
 SNAPSHOTS_FILE = DATA_DIR / "channel_snapshots.json"
+IPTV_AUTH_BACKUP_FILE = DATA_DIR / "iptv_auth_backups.json"
 
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8787"))

@@ -107,13 +107,13 @@ function showTab(tabName) {
   $("snifferTab").hidden = tabName !== "sniffer";
   $("scheduleTab").hidden = tabName !== "schedule";
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
+  $("iptvAuthTab").hidden = tabName !== "iptvAuth";
   $("channelListTab").hidden = tabName !== "channelList";
-  $("openwrtTab").hidden = tabName !== "openwrt";
   $("diagnoseTab").hidden = tabName !== "diagnose";
   if (tabName === "channelList") { loadChannelList(); loadSnapshots(); }
   if (tabName === "schedule") loadScheduleEpgSources();
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
-  if (tabName === "openwrt") loadOpenwrtAnalysis();
+  if (tabName === "iptvAuth") initIptvAuthTab();
   if (tabName === "diagnose") initDiagnoseTab();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-tab]").forEach((item) => {
@@ -193,7 +193,7 @@ function renderEpgStatus(epg) {
 
 async function loadInterfaces() {
   const data = await requestJson("/api/interfaces");
-  for (const id of ["interface", "stbDiscoveryIface"]) {
+  for (const id of ["interface", "stbDiscoveryIface", "iptvAuthIface"]) {
     const select = $(id);
     if (!select) continue;
     const current = select.value;
@@ -360,6 +360,7 @@ async function loadSettings() {
   const data = await requestJson("/api/settings");
   state.settings = data;
   $("interface").value = data.interface || $("interface").value;
+  if ($("iptvAuthIface") && data.interface) $("iptvAuthIface").value = data.interface;
   $("httpHost").value = data.http_host || "";
   $("httpPort").value = data.http_port ?? 5140;
   if ($("diagConfigPath")) $("diagConfigPath").value = data.rtp2httpd_config_path || "";
@@ -983,8 +984,7 @@ async function bootstrap() {
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
   startPolling(initialState === "running");
-  loadOpenwrtAnalysis().catch(() => {});
-  loadStbSummary().catch(() => {});
+  loadIptvAuthSummary().catch(() => {});
 }
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
@@ -1409,7 +1409,7 @@ function renderStbDiscoveryStatus(state) {
     box.textContent = n > 0 ? `捕获完成，共发现 ${n} 个频道。` : "捕获完成，未发现频道。请确认机顶盒已完成开机流程。";
     box.className = n > 0 ? "result-box ok" : "result-box warning";
     renderStbDiscoveryChannels(state.channels || []);
-    renderStbAuthInfo(state.auth_info || {});
+    loadIptvAuthSummary().catch(() => {});
   } else if (isError) {
     box.textContent = `捕获出错：${escapeHtml(state.error || "未知错误")}`;
     box.className = "result-box error";
@@ -1417,31 +1417,6 @@ function renderStbDiscoveryStatus(state) {
     box.textContent = "等待开始…";
     box.className = "result-box muted";
   }
-}
-
-function renderStbAuthInfo(info) {
-  const section = $("stbAuthInfoSection");
-  if (!info || !Object.values(info).some(v => v && (Array.isArray(v) ? v.length : true))) {
-    section.hidden = true;
-    return;
-  }
-  section.hidden = false;
-  const rows = [
-    ["机顶盒 MAC",            info.mac],
-    ["IPTV IP（DHCP 分配）",  info.assigned_ip],
-    ["子网掩码",              info.netmask],
-    ["网关",                  info.gateway],
-    ["DNS 服务器",            (info.dns || []).join("  /  ")],
-    ["DHCP 服务器",           info.dhcp_server],
-    ["Option 60 / Vendor Class",  info.vendor_class],
-    ["Option 12 / Hostname",      info.hostname],
-    ["Option 61 / Client-ID",     info.client_id],
-    ["Option 125 / Vendor Specific", info.vendor_specific_125],
-  ];
-  $("stbAuthInfoBody").innerHTML = rows
-    .filter(([, v]) => v)
-    .map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td class="mono small">${escapeHtml(v)}</td></tr>`)
-    .join("");
 }
 
 function renderStbDiscoveryChannels(channels) {
@@ -1511,7 +1486,7 @@ $("stbDiscoveryResetBtn").addEventListener("click", async () => {
     const data = await requestJson("/api/stb_discovery/reset", {method: "POST", body: "{}"});
     renderStbDiscoveryStatus(data);
     $("stbDiscoveryResultSection").hidden = true;
-    $("stbAuthInfoSection").hidden = true;
+    loadIptvAuthSummary().catch(() => {});
   } catch (err) { alert(err.message); }
 });
 
@@ -1523,163 +1498,160 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
   } catch (err) { alert(err.message); }
 });
 
-// ── iStoreOS / OpenWrt 部署向导 ──────────────────────────────────────────────
+// ── IPTV auth helper ──────────────────────────────────────────────────────
 
-let _openwrtScript = "";
-let _openwrtRollback = "";
+let _iptvAuthDhclientScript = "";
+let _iptvAuthUdhcpcCommand = "";
 
-function _renderOpenwrtBadge(status, el) {
-  const map = {
-    configured: ["ok", "已配置"],
-    needs_setup: ["warning", "需配置"],
-    unknown: ["neutral", "未知"],
+function _iptvAuthPayload() {
+  return {
+    interface: $("iptvAuthIface").value,
+    mac: $("iptvAuthMac").value.trim(),
+    hostname: $("iptvAuthHostname").value.trim(),
+    vendor_class: $("iptvAuthOption60").value.trim(),
+    requested_ip: $("iptvAuthRequestedIp").value.trim(),
+    gateway: $("iptvAuthGateway").value.trim(),
+    route_mode: $("iptvAuthRouteMode").value,
   };
-  const [cls, text] = map[status] || ["neutral", "检测中"];
-  el.className = `chip ${cls}`;
-  el.textContent = text;
 }
 
-function _renderOpenwrtAnalysis(data, badgeEl, resultEl) {
-  _renderOpenwrtBadge(data.status, badgeEl);
-  if (!data.available) {
-    resultEl.innerHTML = `<strong>未检测到宿主机配置</strong><br><span class="muted">${escapeHtml(data.reason || "")}</span>
-      <br><br>请确认容器启动参数包含：<code>-v /etc/config/network:/host/etc/config/network:ro</code>`;
-    return;
-  }
-  const rows = [
-    ["LAN 管理口", data.lan_device || "（未检测到）"],
-    ["WAN 接口", data.wan_device || "（未检测到）"],
-    ["iptv_sniff 抓包口", data.iptv_sniff_device || "（未创建）"],
-  ];
-  const table = rows.map(([k, v]) => `<tr><td style="padding:2px 12px 2px 0;color:#888">${k}</td><td><strong>${escapeHtml(v)}</strong></td></tr>`).join("");
-  const msgClass = data.status === "configured" ? "ok" : data.status === "needs_setup" ? "warning" : "";
-  resultEl.innerHTML = `<table style="border-collapse:collapse;margin-bottom:8px">${table}</table>
-    <span class="chip ${msgClass}" style="display:inline">${escapeHtml(data.message || "")}</span>`;
+function _setAuthField(id, value, fallback = "未捕获") {
+  const el = $(id);
+  if (el) el.textContent = value || fallback;
 }
 
-async function loadOpenwrtAnalysis() {
-  const badge = $("openwrtAnalysisBadge");
-  const result = $("openwrtAnalysisResult");
-  const scriptSection = $("openwrtScriptSection");
-  const generateBtn = $("openwrtGenerateScriptBtn");
-  const applyBtn = $("openwrtApplyIfaceBtn");
-  const warningSection = $("openwrtWarningSection");
-  badge.className = "chip neutral"; badge.textContent = "检测中";
-  result.textContent = "正在读取 /host/etc/config/network…";
-  scriptSection.hidden = true;
-  generateBtn.hidden = true;
-  applyBtn.hidden = true;
-  warningSection.style.display = "none";
-  try {
-    const data = await requestJson("/api/openwrt/network-analysis");
-    _renderOpenwrtAnalysis(data, badge, result);
-    if (data.available && data.status === "needs_setup") {
-      generateBtn.hidden = false;
-      warningSection.style.display = "";
-    }
-    if (data.available && (data.status === "configured" || data.recommended_capture_iface === "eth0")) {
-      applyBtn.hidden = false;
-    }
-    // 同步首页卡片
-    const homeBadge = $("openwrtWizardHomeBadge");
-    const homeSummary = $("openwrtWizardHomeSummary");
-    const homeApplyBtn = $("openwrtHomeApplyBtn");
-    if (homeBadge) _renderOpenwrtBadge(data.available ? data.status : "unknown", homeBadge);
-    if (homeSummary) {
-      if (!data.available) {
-        homeSummary.textContent = "未检测到宿主机配置（容器未挂载 /etc/config/network）。";
-      } else {
-        homeSummary.textContent = data.message || "";
-      }
-    }
-    if (homeApplyBtn) homeApplyBtn.hidden = !(data.available && data.recommended_capture_iface === "eth0");
-  } catch (err) {
-    badge.className = "chip warning"; badge.textContent = "检测失败";
-    result.textContent = `检测失败：${err.message}`;
-  }
-}
-
-async function generateOpenwrtScript() {
-  const scriptSection = $("openwrtScriptSection");
-  const scriptContent = $("openwrtScriptContent");
-  const rollbackCmd = $("openwrtRollbackCmd");
-  try {
-    const data = await requestJson("/api/openwrt/generate-script");
-    _openwrtScript = data.script || "";
-    _openwrtRollback = data.rollback || "";
-    scriptContent.textContent = _openwrtScript;
-    rollbackCmd.textContent = _openwrtRollback;
-    scriptSection.hidden = false;
-    scriptSection.scrollIntoView({behavior: "smooth", block: "nearest"});
-  } catch (err) { alert(`生成脚本失败：${err.message}`); }
-}
-
-function applyOpenwrtCaptureIface() {
-  // 同步 eth0 到嗅探整理和运营商频道发现的接口选择器
-  const snifferIface = $("interface");
-  const stbIface = $("stbDiscoveryIface");
-  if (snifferIface) {
-    for (const opt of snifferIface.options) {
-      if (opt.value === "eth0") { snifferIface.value = "eth0"; break; }
-    }
-  }
-  if (stbIface) {
-    for (const opt of stbIface.options) {
-      if (opt.value === "eth0") { stbIface.value = "eth0"; break; }
-    }
-  }
-  // 保存设置
-  requestJson("/api/settings", {method: "POST", body: JSON.stringify({...formSettings(), interface: "eth0"})})
-    .then(() => alert("已将 eth0 应用为抓包网卡（嗅探整理 + 运营商频道发现），设置已保存。"))
-    .catch((err) => alert(`保存失败：${err.message}`));
-}
-
-$("openwrtRefreshBtn").addEventListener("click", loadOpenwrtAnalysis);
-$("openwrtGenerateScriptBtn").addEventListener("click", generateOpenwrtScript);
-$("openwrtApplyIfaceBtn").addEventListener("click", applyOpenwrtCaptureIface);
-$("openwrtHomeApplyBtn").addEventListener("click", applyOpenwrtCaptureIface);
-
-$("openwrtCopyScriptBtn").addEventListener("click", () => {
-  if (!_openwrtScript) return;
-  navigator.clipboard.writeText(_openwrtScript)
-    .then(() => { $("openwrtCopyScriptBtn").textContent = "已复制！"; setTimeout(() => { $("openwrtCopyScriptBtn").textContent = "复制脚本"; }, 2000); })
-    .catch(() => alert("复制失败，请手动选择脚本文本后复制。"));
-});
-
-$("openwrtDownloadScriptBtn").addEventListener("click", () => {
-  if (!_openwrtScript) return;
-  const blob = new Blob([_openwrtScript], {type: "text/plain"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "iptv-sniffer-openwrt-setup.sh"; a.click();
-  URL.revokeObjectURL(url);
-});
-
-// ── STB summary bar ───────────────────────────────────────────────────────
-
-async function loadStbSummary() {
+async function loadIptvAuthSummary() {
   try {
     const d = await requestJson("/api/stb-summary");
-    const bar = $("stbSummaryBar");
-    const any = d.mac || d.assigned_ip || d.has_token || d.fcc_count > 0 || d.channel_count > 0;
-    bar.hidden = !any;
-    if (!any) return;
-    const set = (id, val) => { if (val) $("ssb" + id).textContent = val; else $("ssb" + id).parentElement && ($("ssb" + id).textContent = ""); };
-    $("ssbMac").textContent       = d.mac        || "";
-    $("ssbHostname").textContent  = d.hostname   || "";
-    $("ssbIp").textContent        = d.assigned_ip|| "";
-    $("ssbGateway").textContent   = d.gateway    || "";
-    $("ssbOption60").textContent  = d.vendor_class ? d.vendor_class : "Option60: 未捕获";
-    $("ssbToken").textContent     = d.has_token   ? "UserToken: 已捕获" : "UserToken: 未捕获";
-    $("ssbFcc").textContent       = `FCC: ${d.fcc_count} 条`;
-    $("ssbChannels").textContent  = `频道: ${d.channel_count} 个`;
-    // Hide blank MAC/IP fields rather than showing empty labels
-    $("ssbMac").hidden     = !d.mac;
-    $("ssbHostname").hidden= !d.hostname;
-    $("ssbIp").hidden      = !d.assigned_ip;
-    $("ssbGateway").hidden = !d.gateway;
-  } catch (_) {}
+    _setAuthField("iptvAuthSummaryMac", d.mac);
+    _setAuthField("iptvAuthSummaryHostname", d.hostname);
+    _setAuthField("iptvAuthSummaryIp", d.assigned_ip);
+    _setAuthField("iptvAuthSummaryGateway", d.gateway);
+    _setAuthField("iptvAuthSummaryOption60", d.vendor_class);
+    _setAuthField("iptvAuthSummaryToken", d.has_token ? "已捕获" : "");
+    _setAuthField("iptvAuthSummaryCounts", `FCC ${d.fcc_count || 0} 条 / 频道 ${d.channel_count || 0} 个`, "0 / 0");
+    if (!$("iptvAuthMac").value && d.mac) $("iptvAuthMac").value = d.mac;
+    if (!$("iptvAuthHostname").value && d.hostname) $("iptvAuthHostname").value = d.hostname;
+    if (!$("iptvAuthOption60").value && d.vendor_class) $("iptvAuthOption60").value = d.vendor_class;
+    if (!$("iptvAuthRequestedIp").value && d.assigned_ip) $("iptvAuthRequestedIp").value = d.assigned_ip;
+    if (!$("iptvAuthGateway").value && d.gateway) $("iptvAuthGateway").value = d.gateway;
+    return d;
+  } catch (_) { return null; }
 }
+
+function _renderIptvAuthStatus(d) {
+  const badge = $("iptvAuthBadge");
+  const status = $("iptvAuthStatus");
+  const snap = d.snapshot || {};
+  const ipv4 = (snap.ipv4 || []).map(x => `${x.local}/${x.prefixlen}`).join(", ") || "无 IPv4";
+  const tools = d.tools || {};
+  const caps = d.caps || {};
+  const backup = d.backup || {};
+  const ok = d.auth_ready && tools.ip && tools.udhcpc && caps.root && caps.net_admin_hint && caps.net_raw_hint;
+  badge.className = `chip ${d.has_iptv_ip ? "ok" : ok ? "warning" : "neutral"}`;
+  badge.textContent = d.has_iptv_ip ? "已获取 IPTV 地址" : ok ? "可尝试认证" : "需检查权限/参数";
+  const lines = [
+    `<strong>接口：${escapeHtml(d.interface || "-")}</strong>`,
+    `当前 MAC：<span class="mono">${escapeHtml(snap.mac || "-")}</span>`,
+    `当前 IPv4：<span class="mono">${escapeHtml(ipv4)}</span>`,
+    `工具：ip=${tools.ip ? "可用" : "缺失"}，udhcpc=${tools.udhcpc ? "可用" : "缺失"}，dhclient=${tools.dhclient ? "可用" : "缺失"}`,
+    `权限：root=${caps.root ? "是" : "否"}，NET_ADMIN=${caps.net_admin_hint ? "可用" : "不可用"}，NET_RAW=${caps.net_raw_hint ? "可用" : "不可用"}`,
+    `备份：${backup.has_initial ? `已有初始备份，历史 ${backup.history_count || 0} 次` : "尚未创建"}`,
+  ];
+  status.innerHTML = lines.map(line => `<div>${line}</div>`).join("");
+  status.className = "result-box " + (d.has_iptv_ip ? "ok" : ok ? "warning" : "muted");
+}
+
+async function refreshIptvAuthStatus() {
+  await loadIptvAuthSummary();
+  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  if (!iface) return;
+  if (!$("iptvAuthIface").value) $("iptvAuthIface").value = iface;
+  try {
+    const d = await requestJson(`/api/iptv-auth/status?interface=${encodeURIComponent(iface)}`);
+    _renderIptvAuthStatus(d);
+  } catch (err) {
+    $("iptvAuthBadge").className = "chip warning";
+    $("iptvAuthBadge").textContent = "检测失败";
+    $("iptvAuthStatus").textContent = `检测失败：${err.message}`;
+    $("iptvAuthStatus").className = "result-box error";
+  }
+}
+
+async function generateIptvAuthScripts() {
+  const btn = $("iptvAuthGenerateBtn");
+  btn.disabled = true; btn.textContent = "生成中…";
+  try {
+    const d = await requestJson("/api/iptv-auth/scripts", {method: "POST", body: JSON.stringify(_iptvAuthPayload())});
+    _iptvAuthDhclientScript = d.dhclient_script || "";
+    _iptvAuthUdhcpcCommand = [d.udhcpc_command || "", "", "# udhcpc hook:", d.udhcpc_hook || ""].join("\n");
+    $("iptvAuthDhclientScript").textContent = _iptvAuthDhclientScript || "未生成";
+    $("iptvAuthUdhcpcScript").textContent = _iptvAuthUdhcpcCommand || "未生成";
+    $("iptvAuthApplyResult").textContent = d.route_hint || "脚本已生成。";
+    $("iptvAuthApplyResult").className = "result-box ok";
+  } catch (err) {
+    $("iptvAuthApplyResult").textContent = `生成失败：${err.message}`;
+    $("iptvAuthApplyResult").className = "result-box error";
+  } finally {
+    btn.disabled = false; btn.textContent = "生成认证脚本";
+  }
+}
+
+async function applyIptvAuth() {
+  const btn = $("iptvAuthApplyBtn");
+  btn.disabled = true; btn.textContent = "执行中…";
+  $("iptvAuthApplyResult").textContent = "正在执行认证，请不要断开当前管理网络…";
+  $("iptvAuthApplyResult").className = "result-box warning";
+  try {
+    const payload = {..._iptvAuthPayload(), confirm: $("iptvAuthConfirm").value.trim()};
+    const d = await requestJson("/api/iptv-auth/apply", {method: "POST", body: JSON.stringify(payload)});
+    const ips = (d.snapshot?.ipv4 || []).map(x => `${x.local}/${x.prefixlen}`).join(", ") || "无 IPv4";
+    $("iptvAuthApplyResult").textContent = `认证执行完成：${d.interface} 当前 IPv4：${ips}`;
+    $("iptvAuthApplyResult").className = "result-box ok";
+    await refreshIptvAuthStatus();
+  } catch (err) {
+    $("iptvAuthApplyResult").textContent = `认证执行失败：${err.message}`;
+    $("iptvAuthApplyResult").className = "result-box error";
+  } finally {
+    btn.disabled = false; btn.textContent = "实验性一键认证";
+  }
+}
+
+async function restoreIptvAuth() {
+  const btn = $("iptvAuthRestoreBtn");
+  btn.disabled = true; btn.textContent = "恢复中…";
+  try {
+    const payload = {interface: $("iptvAuthIface").value, confirm: $("iptvAuthRestoreConfirm").value.trim()};
+    const d = await requestJson("/api/iptv-auth/restore", {method: "POST", body: JSON.stringify(payload)});
+    const ips = (d.snapshot?.ipv4 || []).map(x => `${x.local}/${x.prefixlen}`).join(", ") || "无 IPv4";
+    $("iptvAuthApplyResult").textContent = `已恢复：${d.interface} 当前 IPv4：${ips}`;
+    $("iptvAuthApplyResult").className = "result-box ok";
+    await refreshIptvAuthStatus();
+  } catch (err) {
+    $("iptvAuthApplyResult").textContent = `恢复失败：${err.message}`;
+    $("iptvAuthApplyResult").className = "result-box error";
+  } finally {
+    btn.disabled = false; btn.textContent = "恢复到初始设置";
+  }
+}
+
+function initIptvAuthTab() {
+  if (!$("iptvAuthIface").value && $("interface")?.value) $("iptvAuthIface").value = $("interface").value;
+  refreshIptvAuthStatus();
+}
+
+$("iptvAuthRefreshBtn").addEventListener("click", refreshIptvAuthStatus);
+$("iptvAuthGenerateBtn").addEventListener("click", generateIptvAuthScripts);
+$("iptvAuthApplyBtn").addEventListener("click", applyIptvAuth);
+$("iptvAuthRestoreBtn").addEventListener("click", restoreIptvAuth);
+$("iptvAuthCopyDhclientBtn").addEventListener("click", () => {
+  if (!_iptvAuthDhclientScript) return;
+  navigator.clipboard.writeText(_iptvAuthDhclientScript).catch(() => alert("复制失败，请手动选择脚本。"));
+});
+$("iptvAuthCopyUdhcpcBtn").addEventListener("click", () => {
+  if (!_iptvAuthUdhcpcCommand) return;
+  navigator.clipboard.writeText(_iptvAuthUdhcpcCommand).catch(() => alert("复制失败，请手动选择脚本。"));
+});
 
 // ── Playback diagnostics tab ──────────────────────────────────────────────
 
