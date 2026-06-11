@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v0.9.96
+# IPTV Sniffer Web v1.0.0
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口嗅探** 的 IPTV 组播嗅探、运营商频道发现、频道线路整理与 `rtp2httpd` 播放列表工作台。
 
@@ -21,11 +21,12 @@ v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一
 | 功能 | 说明 |
 |---|---|
 | 运营商频道发现 | 通过交换机镜像口捕获机顶盒开机流量，解析频道表、组播地址、FCC/FEC、DHCP 认证信息 |
-| IPTV 认证助手 | 集中展示 MAC / Hostname / IPTV IP / 网关 / Option60 / UserToken / FCC 摘要；生成认证脚本；提供实验性一键认证与恢复 |
+| IPTV 认证助手 | 集中展示 MAC / Hostname / IPTV IP / 网关 / Option60 / UserToken / FCC 摘要；生成认证脚本；提供实验性一键认证与恢复；支持导出/导入接口初始状态备份 |
 | 频道线路组 | 同名频道自动归组，按 4K > 1080p > 720p > SD > 未识别自动选主源，保留备选线路 |
-| 播放链路诊断 | 检测 rtp2httpd 可达性、配置、FCC、IGMP、组播回流和镜像口误判 |
-| 四档导出 | `channels-best.m3u` / `channels-all.m3u` / `channels-rtp2httpd-best.m3u` / `channels-rtp2httpd-all.m3u` |
-| EPG & 台标 | XMLTV EPG + TVlogo 缓存匹配，定时刷新并写入导出文件 |
+| 播放链路诊断 | 检测 rtp2httpd 可达性、配置、FCC、IGMP、组播回流和镜像口误判；探测分辨率使用正确网口 IGMP 加入 |
+| 六档导出 | `channels-best.m3u` / `channels-all.m3u` / `channels-fnos.m3u`（rtp直连）/ `channels-fnos-hls.m3u`（浏览器 HLS）/ `channels-rtp2httpd-best.m3u` / `channels-rtp2httpd-all.m3u` |
+| 飞牛影视 HLS 支持 | 按需 FFmpeg HLS 转封装，浏览器直接播放组播流；空闲 60 秒自动停止 |
+| EPG & 台标 | XMLTV EPG + TVlogo 缓存匹配，定时刷新；修复数字边界误匹配（CCTV1↔CCTV10）；支持一键重新匹配 |
 
 ## 快速开始
 
@@ -93,8 +94,10 @@ pytest -q
 
 4. **频道使用与导出**  
    打开「频道线路」，确认主源和备选线路。导出：
-   - `channels-best.m3u`：每个频道组只导出主源；
-   - `channels-all.m3u`：导出全部线路；
+   - `channels-best.m3u`：每个频道组只导出主源（需填写 rtp2httpd 地址）；
+   - `channels-all.m3u`：导出全部线路（需填写 rtp2httpd 地址）；
+   - `channels-fnos.m3u`：飞牛影视 rtp 直连（rtp:// 格式，适用于 APTV 等支持组播的播放器）；
+   - `channels-fnos-hls.m3u`：飞牛影视 HLS（浏览器可直接播放，地址指向本机 HLS 转封装端点）；
    - `channels-rtp2httpd-best.m3u`：给 rtp2httpd `external-m3u` 使用的主源文件；
    - `channels-rtp2httpd-all.m3u`：给 rtp2httpd 使用的全部线路源文件。
 
@@ -170,11 +173,19 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 | POST | `/api/iptv-auth/scripts` | 生成认证脚本 |
 | POST | `/api/iptv-auth/apply` | 实验性一键认证 |
 | POST | `/api/iptv-auth/restore` | 恢复选定接口初始设置 |
+| GET | `/api/iptv-auth/backup-export` | 导出接口初始状态备份 JSON |
+| POST | `/api/iptv-auth/backup-import` | 导入接口初始状态备份 JSON |
+| POST | `/api/epg/rematch` | 强制重新匹配所有频道节目单 |
 | POST | `/api/diagnose` | 播放链路诊断 |
 | POST | `/api/export` | 导出频道文件 |
+| GET | `/api/hls/m3u` | 生成飞牛影视 HLS M3U 文件 |
+| GET | `/api/hls/status` | 查看当前 HLS 转流实例状态 |
+| GET | `/hls/<key>/stream.m3u8` | HLS 播放列表（按需启动 FFmpeg） |
+| GET | `/hls/<key>/<segment>.ts` | HLS 媒体分片 |
 
 ## 版本记录
 
+- `v1.0.0`：飞牛影视 HLS 转封装支持（按需 FFmpeg，空闲自动停止）；飞牛影视 rtp 直连 M3U；EPG 数字边界误匹配修复；探测分辨率使用正确 IPTV 接口 IGMP 加入；IPTV 认证备份导出/导入；重新匹配节目单按钮；iptv_private 路由模式设为默认推荐；
 - `v0.9.96`：简化部署向导为交换机镜像口嗅探单一路径；删除 R4S / OpenWrt / iStoreOS 相关内容；认证摘要移动到 IPTV 认证页；补充 FNOS「高级设置 → 功能」中 `NET_ADMIN` / `NET_RAW` 权限说明；
 - `v0.9.94`：新增 IPTV 认证助手；支持脚本生成、实验性一键认证、接口级备份与恢复；使用说明简化为交换机镜像口嗅探单一路径；认证摘要移动到 IPTV 认证页；
 - `v0.9.93`：播放诊断分层输出；支持读取 rtp2httpd 配置文件；频道线路分组视图增强主源、备线、FCC/FEC 与最近状态；
