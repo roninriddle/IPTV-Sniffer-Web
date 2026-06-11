@@ -33,16 +33,13 @@ from config import (
     DATA_DIR,
     DISCOVERY_FILE,
     EPG_CACHE_FILE,
-    EPG_SOURCES,
     FCC_FILE,
-    LOGO_SOURCES,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
     MIN_PACKET_COUNT,
     OUTPUT_DIR,
     SETTINGS_FILE,
     STB_TOKEN_FILE,
-    CUSTOM_SOURCES_FILE,
     DEFAULT_RTP2HTTPD_CONFIG_PATH,
     OPERATOR_CHANNELS_FILE,
     SNAPSHOTS_FILE,
@@ -57,9 +54,8 @@ from services.iptv_auth_service import IptvAuthService
 from services.log_service import AppLogger
 from services.hls_service import HlsService
 from services.probe_service import ProbeService
-from services.schedule_service import ScheduleService
 from services.stb_discovery_service import StbDiscoveryService
-from services.storage_service import ChannelSnapshotStore, ChannelStore, CustomSourcesStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
+from services.storage_service import ChannelSnapshotStore, ChannelStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
 from utils import channel_group_key, channel_primary_score, classify_channel_name, natural_key, resolution_label_from_size, stream_filter_reason, stream_quality_group, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
@@ -67,7 +63,6 @@ logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
 settings_store = SettingsStore(SETTINGS_FILE)
 channel_store = ChannelStore(CHANNELS_FILE)
 fcc_store = FccStore(FCC_FILE)
-custom_sources_store = CustomSourcesStore(CUSTOM_SOURCES_FILE)
 operator_channel_store = OperatorChannelStore(OPERATOR_CHANNELS_FILE)
 snapshot_store = ChannelSnapshotStore(SNAPSHOTS_FILE)
 stb_discovery_service = StbDiscoveryService(logger)
@@ -134,43 +129,6 @@ def _start_version_check_loop() -> None:
             _do_version_check()
             time.sleep(VERSION_CHECK_INTERVAL)
     threading.Thread(target=worker, daemon=True).start()
-_epg_detect_lock = threading.RLock()
-_epg_detect_state: dict[str, Any] = {"status": "idle", "best_url": "", "best_name": "", "best_channels": 0, "checked_at": None}
-
-
-def _count_epg_channels(url: str, timeout: int = 20) -> int:
-    req = Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-    with urlopen(req, timeout=timeout) as resp:
-        raw = resp.read(4 * 1024 * 1024)
-    if url.lower().endswith(".gz") or raw[:2] == b"\x1f\x8b":
-        d = zlib.decompressobj(zlib.MAX_WBITS | 16)
-        try:
-            raw = d.decompress(raw) + d.flush()
-        except zlib.error:
-            raw = b""
-    return raw.count(b"<channel ")
-
-
-def _do_epg_detect_best(sources: list[dict[str, Any]]) -> None:
-    with _epg_detect_lock:
-        _epg_detect_state["status"] = "detecting"
-    results: list[tuple[int, str, str]] = []
-    for src in sources:
-        try:
-            count = _count_epg_channels(src["url"])
-            results.append((count, src["url"], src["name"]))
-            logger.info(f"EPG 源检测：{src['name']} → {count} 个频道")
-        except Exception as exc:
-            logger.warning(f"EPG 源检测失败：{src['name']}，{exc}")
-    with _epg_detect_lock:
-        if results:
-            best = max(results, key=lambda x: x[0])
-            _epg_detect_state.update({"status": "done", "best_url": best[1], "best_name": best[2], "best_channels": best[0], "checked_at": int(time.time())})
-            logger.info(f"EPG 最佳来源：{best[2]}（{best[0]} 频道）")
-        else:
-            _epg_detect_state.update({"status": "error", "checked_at": int(time.time())})
-
-
 auto_probe_lock = threading.RLock()
 auto_probe_pending: set[str] = set()
 auto_probe_done: set[str] = set()
@@ -307,7 +265,7 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
             item["is_hd"] = op_ch["is_hd"]
             if not (w and h) and (not cur_qg or cur_qg == "未识别"):
                 item["quality_group"] = "高清频道" if op_ch["is_hd"] else "普通频道"
-        if settings.get("auto_epg", True):
+        if settings.get("use_epg", True) and settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
             fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(row, item))
         enriched.append(item)
@@ -424,7 +382,7 @@ def merge_streams_with_channels() -> list[dict[str, Any]]:
         item["tvg_logo"] = str(channel.get("tvg_logo", ""))
         item["epg_source"] = str(channel.get("epg_source", ""))
         item["epg_matched_at"] = channel.get("epg_matched_at")
-        if settings.get("auto_epg", True):
+        if settings.get("use_epg", True) and settings.get("auto_epg", True):
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
             fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(channel, item))
         _auto_cat = classify_channel_name(str(item.get("name", "")))
@@ -522,45 +480,6 @@ def write_m3u_channels(items: list[dict[str, Any]], epg_url: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def refresh_all_epg_sources_task(settings: dict[str, Any]) -> dict[str, Any]:
-    custom = custom_sources_store.load()
-    deleted_epg = set((custom.get("deleted_builtin") or {}).get("epg") or [])
-    deleted_logo = set((custom.get("deleted_builtin") or {}).get("logo") or [])
-    active_epg = [s for s in EPG_SOURCES if s["id"] not in deleted_epg] + (custom.get("epg") or [])
-    active_logo = [s for s in LOGO_SOURCES if s["id"] not in deleted_logo] + (custom.get("logo") or [])
-    if not active_epg:
-        raise ValueError("没有配置 EPG 来源")
-    results = []
-    errors = []
-    for source in active_epg:
-        url = source.get("url", "")
-        name = source.get("name", url)
-        try:
-            status = epg_service.refresh(url)
-            results.append({"name": name, "url": url, "channels": status.get("channels", 0)})
-        except Exception as exc:
-            errors.append({"name": name, "url": url, "error": str(exc)})
-    logo_results = []
-    for source in active_logo:
-        url = source.get("url", "")
-        name = source.get("name", url)
-        try:
-            count = epg_service.refresh_logo(url)
-            logo_results.append({"name": name, "url": url, "logos": count})
-        except Exception as exc:
-            errors.append({"name": name, "url": url, "error": str(exc)})
-    total = sum(r.get("channels", 0) for r in results)
-    total_logos = sum(r.get("logos", 0) for r in logo_results)
-    return {
-        "count": len(results),
-        "total_channels": total,
-        "sources": results,
-        "logo_sources": logo_results,
-        "total_logos": total_logos,
-        "errors": errors,
-    }
-
-
 def start_auto_enrichment_loop() -> None:
     global auto_enrichment_started
     if auto_enrichment_started:
@@ -577,9 +496,6 @@ def start_auto_enrichment_loop() -> None:
             time.sleep(5 if capturing else 15)
 
     threading.Thread(target=worker, daemon=True).start()
-
-
-schedule_service = ScheduleService(logger, settings_store, refresh_all_epg_sources_task)
 
 
 @app.get("/")
@@ -625,7 +541,6 @@ def api_metrics():
         "capture": capture_service.metrics(),
         "probe_runtime": probe_service.runtime_check(),
         "logs": logger.stats(),
-        "schedule": schedule_service.status(),
         "saved_channels": len(channel_store.load()),
         "discovered_channels": len(discovery_store.load()),
         "fcc_records": len(fcc_store.load()),
@@ -659,53 +574,19 @@ def api_settings_save():
     saved = settings_store.save(data)
     epg_url = str(saved.get("epg_url", "")).strip()
     logo_url = str(saved.get("logo_url", "")).strip()
-    epg_status = epg_service.status(summary=True)
-    if (
-        saved.get("auto_epg", True)
-        and epg_url
-        and not epg_status.get("refreshing")
-        and (
-            epg_status.get("url") != epg_url
-            or epg_status.get("logo_url") != logo_url
-            or int(epg_status.get("channels") or 0) == 0
-        )
-    ):
-        epg_service.refresh_async(epg_url, logo_url)
-        _start_extra_epg_refresh(skip_url=epg_url)
+    if saved.get("use_epg", True) and saved.get("auto_epg", True) and epg_url:
+        epg_status = epg_service.status(summary=True)
+        if (
+            not epg_status.get("refreshing")
+            and (
+                epg_status.get("url") != epg_url
+                or epg_status.get("logo_url") != logo_url
+                or int(epg_status.get("channels") or 0) == 0
+            )
+        ):
+            epg_service.refresh_async(epg_url, logo_url if saved.get("use_logo", True) else "")
     logger.info("已保存网页默认设置")
     return api_success(saved)
-
-
-@app.get("/api/schedule")
-def api_schedule_get():
-    return api_success(schedule_service.status())
-
-
-@app.post("/api/schedule")
-def api_schedule_save():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return api_error("请求体格式不正确")
-    try:
-        return api_success(schedule_service.configure(data))
-    except ValueError as exc:
-        return api_error(str(exc), 400)
-    except Exception as exc:
-        logger.error(f"保存定时任务失败：{exc}")
-        return api_error(str(exc), 500)
-
-
-@app.post("/api/schedule/run-now")
-def api_schedule_run_now():
-    try:
-        return api_success(schedule_service.run_now())
-    except ValueError as exc:
-        return api_error(str(exc), 400)
-    except RuntimeError as exc:
-        return api_error(str(exc), 409)
-    except Exception as exc:
-        logger.error(f"立即更新 EPG 清单失败：{exc}")
-        return api_error(str(exc), 500)
 
 
 @app.get("/api/status")
@@ -790,129 +671,16 @@ def api_epg_status():
     return api_success(status)
 
 
-@app.get("/api/epg/sources")
-def api_epg_sources():
-    custom = custom_sources_store.load()
-    deleted = custom.get("deleted_builtin", {})
-    deleted_epg = set(deleted.get("epg") or [])
-    deleted_logo = set(deleted.get("logo") or [])
-    epg_sources = [{**s, "builtin": True} for s in EPG_SOURCES if s["id"] not in deleted_epg] + custom.get("epg", [])
-    logo_sources = [{**s, "builtin": True} for s in LOGO_SOURCES if s["id"] not in deleted_logo] + custom.get("logo", [])
-    all_epg = [{**s, "builtin": True, "deleted": s["id"] in deleted_epg} for s in EPG_SOURCES] + custom.get("epg", [])
-    all_logo = [{**s, "builtin": True, "deleted": s["id"] in deleted_logo} for s in LOGO_SOURCES] + custom.get("logo", [])
-    return api_success({"epg_sources": epg_sources, "logo_sources": logo_sources, "all_epg_sources": all_epg, "all_logo_sources": all_logo})
-
-
-@app.get("/api/sources/custom")
-def api_sources_custom_get():
-    return api_success(custom_sources_store.load())
-
-
-@app.post("/api/sources/custom")
-def api_sources_custom_add():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return api_error("请求体格式不正确")
-    try:
-        entry = custom_sources_store.add(str(data.get("type", "")), str(data.get("name", "")), str(data.get("url", "")))
-        return api_success(entry)
-    except ValueError as exc:
-        return api_error(str(exc), 400)
-
-
-@app.delete("/api/sources/custom/<source_type>/<source_id>")
-def api_sources_custom_delete(source_type: str, source_id: str):
-    if custom_sources_store.delete(source_type, source_id):
-        return api_success()
-    return api_error("未找到该来源", 404)
-
-
-@app.delete("/api/sources/builtin/<source_type>/<source_id>")
-def api_sources_builtin_delete(source_type: str, source_id: str):
-    if custom_sources_store.delete_builtin(source_type, source_id):
-        return api_success()
-    return api_error("来源类型不正确", 400)
-
-
-@app.post("/api/sources/builtin/<source_type>/<source_id>/restore")
-def api_sources_builtin_restore(source_type: str, source_id: str):
-    if custom_sources_store.restore_builtin(source_type, source_id):
-        return api_success()
-    return api_error("未找到该内置来源记录", 404)
-
-
-@app.post("/api/epg/detect-best")
-def api_epg_detect_best():
-    with _epg_detect_lock:
-        current = dict(_epg_detect_state)
-    if current["status"] == "detecting":
-        return api_success(current)
-    custom = custom_sources_store.load()
-    deleted_epg = set((custom.get("deleted_builtin") or {}).get("epg") or [])
-    active_builtin = [s for s in EPG_SOURCES if s["id"] not in deleted_epg]
-    all_sources = active_builtin + custom.get("epg", [])
-    threading.Thread(target=_do_epg_detect_best, args=(all_sources,), daemon=True).start()
-    with _epg_detect_lock:
-        _epg_detect_state["status"] = "detecting"
-    return api_success({"status": "detecting"})
-
-
-@app.get("/api/epg/detect-best")
-def api_epg_detect_best_status():
-    with _epg_detect_lock:
-        return api_success(dict(_epg_detect_state))
-
-
-def _all_epg_urls() -> list[str]:
-    """Return all configured EPG URLs: built-in + custom."""
-    custom = custom_sources_store.load()
-    urls = [s["url"] for s in EPG_SOURCES]
-    urls += [s["url"] for s in (custom.get("epg") or []) if s.get("url")]
-    seen: set[str] = set()
-    result = []
-    for u in urls:
-        if u and u not in seen:
-            seen.add(u)
-            result.append(u)
-    return result
-
-
-def _start_extra_epg_refresh(skip_url: str = "") -> None:
-    """Fetch all EPG sources other than skip_url into the merged index, in background."""
-    extra = [u for u in _all_epg_urls() if u != skip_url]
-    if not extra:
-        return
-
-    def worker() -> None:
-        for u in extra:
-            try:
-                epg_service.refresh(u)
-            except Exception as exc:
-                logger.warning(f"附加 EPG 来源刷新失败：{u}，{exc}")
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
 @app.post("/api/epg/refresh")
 def api_epg_refresh():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return api_error("请求体格式不正确")
     settings = settings_store.load()
-    url = str(data.get("epg_url") or settings.get("epg_url", "")).strip()
-    logo_url = str(data.get("logo_url") or settings.get("logo_url", "")).strip()
-    if not url:
-        return api_error("EPG 地址不能为空")
-    settings_store.save({
-        "epg_url": url,
-        "logo_url": logo_url,
-        "auto_epg": bool(data.get("auto_epg", settings.get("auto_epg", True))),
-    })
     try:
-        status = epg_service.refresh_async(url, logo_url)
-        logger.info(f"已启动 EPG 刷新：{url}")
-        # Also refresh all other configured EPG sources in background so match() covers all
-        _start_extra_epg_refresh(skip_url=url)
+        epg_url = str(settings.get("epg_url", "")).strip()
+        logo_url = str(settings.get("logo_url", "")).strip() if settings.get("use_logo", True) else ""
+        if not epg_url:
+            return api_error("EPG 地址不能为空，请先在频道线路中配置 EPG 来源")
+        status = epg_service.refresh_async(epg_url, logo_url)
+        logger.info(f"已启动 EPG 刷新：{epg_url}")
         return api_success(status)
     except ValueError as exc:
         return api_error(str(exc), 400)
@@ -921,23 +689,12 @@ def api_epg_refresh():
         return api_error(str(exc), 500)
 
 
-@app.post("/api/epg/refresh-all")
-def api_epg_refresh_all():
-    try:
-        result = refresh_all_epg_sources_task(settings_store.load())
-        logger.info(f"已触发全量 EPG 来源刷新：{result.get('count', 0)} 个来源")
-        return api_success(result)
-    except Exception as exc:
-        logger.error(f"全量 EPG 刷新失败：{exc}")
-        return api_error(str(exc), 500)
-
-
 @app.post("/api/epg/rematch")
 def api_epg_rematch():
     """Force re-enrich ALL channel records with EPG, overwriting any previous match."""
     settings = settings_store.load()
-    if not settings.get("auto_epg", True):
-        return api_error("EPG 自动匹配已关闭，请先开启后重试。")
+    if not settings.get("use_epg", True):
+        return api_error("EPG 已关闭，请先在频道线路中开启 EPG。")
     epg_url = str(settings.get("epg_url", "")).strip()
     try:
         channels = channel_store.load()
@@ -1279,6 +1036,10 @@ def api_export():
     if not isinstance(rows, list):
         return api_error("channels 必须是数组")
     settings = {**settings_store.load(), **{k: v for k, v in data.items() if k != "channels"}}
+    if not settings.get("use_epg", True):
+        settings["epg_url"] = ""
+    if not settings.get("use_logo", True):
+        settings["logo_url"] = ""
     try:
         rows = enrich_channel_rows(rows, settings)
         operator_channels = operator_channel_store.load()
@@ -1365,7 +1126,7 @@ def api_hls_status():
 @app.get("/api/hls/m3u")
 def api_hls_m3u():
     settings = settings_store.load()
-    epg_url = str(settings.get("epg_url", "") or "").strip()
+    epg_url = str(settings.get("epg_url", "") or "").strip() if settings.get("use_epg", True) else ""
     base_url = request.url_root.rstrip("/")
     channels = channel_store.load()
     if not channels:
@@ -1529,15 +1290,6 @@ def api_iptv_auth_status():
         return api_error("请先选择 IPTV 上游接口")
     try:
         return api_success(iptv_auth_service.status(iface, _latest_stb_auth_info()))
-    except Exception as exc:
-        return api_error(str(exc))
-
-
-@app.post("/api/iptv-auth/scripts")
-def api_iptv_auth_scripts():
-    data = request.get_json(silent=True) or {}
-    try:
-        return api_success(iptv_auth_service.scripts(data, _latest_stb_auth_info()))
     except Exception as exc:
         return api_error(str(exc))
 
@@ -1872,8 +1624,16 @@ def api_diagnose():
 
 def _startup_epg_refresh() -> None:
     try:
-        result = refresh_all_epg_sources_task(settings_store.load())
-        logger.info(f"启动 EPG 自动刷新完成：{result.get('count', 0)} 个来源，{result.get('total_channels', 0)} 个频道，台标 {result.get('total_logos', 0)} 个")
+        settings = settings_store.load()
+        if not settings.get("use_epg", True):
+            return
+        epg_url = str(settings.get("epg_url", "")).strip()
+        logo_url = str(settings.get("logo_url", "")).strip() if settings.get("use_logo", True) else ""
+        if epg_url:
+            epg_service.refresh(epg_url)
+        if logo_url:
+            epg_service.refresh_logo(logo_url)
+        logger.info(f"启动 EPG 自动刷新完成：{epg_url}")
     except Exception as exc:
         logger.warning(f"启动 EPG 自动刷新失败：{exc}")
 
@@ -1883,7 +1643,6 @@ def boot() -> None:
     capture_service.validate_runtime()
     probe_service.validate_runtime()
     epg_service.start_auto_refresh(settings_store)
-    schedule_service.start()
     start_auto_enrichment_loop()
     threading.Thread(target=_startup_epg_refresh, daemon=True).start()
     _start_version_check_loop()

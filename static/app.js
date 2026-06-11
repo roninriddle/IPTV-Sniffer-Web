@@ -15,14 +15,7 @@ const state = {
   logPoller: null,
   streams: [],
   channelList: [],
-  epgSources: [],
-  logoSources: [],
-  allEpgSources: [],
-  allLogoSources: [],
   ignoredKeys: _loadIgnoredKeys(),
-  logoAuto: true,
-  epgAuto: true,
-  detectedEpgUrl: "",
 };
 
 async function requestJson(url, options = {}) {
@@ -56,12 +49,6 @@ function formatDateTime(ts) {
 }
 
 function formSettings() {
-  const epgUrl = state.epgAuto
-    ? (state.detectedEpgUrl || $("epgUrl").value.trim() || state.epgSources[0]?.url || "")
-    : $("epgUrl").value.trim();
-  const logoUrl = state.logoAuto
-    ? (state.logoSources[0]?.url || "")
-    : $("logoUrl").value.trim();
   return {
     interface: $("interface").value,
     http_host: $("httpHost").value.trim(),
@@ -71,26 +58,9 @@ function formSettings() {
     duration: Number($("duration").value || 0),
     auto_probe: $("autoProbe").checked,
     auto_epg: $("autoEpg").checked,
-    epg_url: epgUrl,
-    logo_url: logoUrl,
     catchup_days: Number($("catchupDays")?.value ?? 7),
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
-  };
-}
-
-function formScheduleSettings() {
-  return {
-    auto_epg: $("autoEpg").checked,
-    epg_url: state.epgAuto
-      ? (state.detectedEpgUrl || $("epgUrl").value.trim() || state.epgSources[0]?.url || "")
-      : $("epgUrl").value.trim(),
-    logo_url: state.logoAuto ? (state.logoSources[0]?.url || "") : $("logoUrl").value.trim(),
-    schedule_enabled: $("scheduleEnabled").checked,
-    schedule_unit: $("scheduleUnit").value,
-    schedule_every: Number($("scheduleEvery").value || 1),
-    schedule_hour: Number($("scheduleHour").value || 0),
-    schedule_minute: Number($("scheduleMinute").value || 0),
   };
 }
 
@@ -105,13 +75,11 @@ function showTab(tabName) {
   $("homePage").hidden = true;
   $("workbenchPage").hidden = false;
   $("snifferTab").hidden = tabName !== "sniffer";
-  $("scheduleTab").hidden = tabName !== "schedule";
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
   $("iptvAuthTab").hidden = tabName !== "iptvAuth";
   $("channelListTab").hidden = tabName !== "channelList";
   $("diagnoseTab").hidden = tabName !== "diagnose";
-  if (tabName === "channelList") { loadChannelList(); loadSnapshots(); }
-  if (tabName === "schedule") loadScheduleEpgSources();
+  if (tabName === "channelList") { loadChannelList(); loadSnapshots(); loadEpgSettings(); }
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
   if (tabName === "iptvAuth") initIptvAuthTab();
   if (tabName === "diagnose") initDiagnoseTab();
@@ -210,150 +178,30 @@ async function loadInterfaces() {
   }
 }
 
-function populatePreset(select, sources) {
-  const current = select.value;
-  select.innerHTML = "";
-  for (const source of sources || []) {
-    const option = document.createElement("option");
-    option.value = source.url;
-    option.textContent = source.name;
-    select.appendChild(option);
-  }
-  const custom = document.createElement("option");
-  custom.value = "";
-  custom.textContent = "自定义";
-  select.appendChild(custom);
-  select.value = [...select.options].some((option) => option.value === current) ? current : (select.options[0]?.value || "");
-}
-
-function syncPresetFromUrl(select, url) {
-  const value = String(url || "").trim();
-  select.value = [...select.options].some((option) => option.value === value) ? value : "";
-}
-
-function setEpgMode(auto, detectNow = auto) {
-  state.epgAuto = auto;
-  $("epgAutoBtn").classList.toggle("active", auto);
-  $("epgManualBtn").classList.toggle("active", !auto);
-  $("epgManualRow").hidden = auto;
-  if (detectNow) triggerEpgDetect();
-}
-
-async function triggerEpgDetect() {
-  const statusEl = $("epgDetectStatus");
-  if (statusEl) { statusEl.textContent = "检测中…"; statusEl.hidden = false; }
+async function loadEpgSettings() {
   try {
-    await requestJson("/api/epg/detect-best", {method: "POST", body: "{}"});
-    const poll = async () => {
-      const d = await requestJson("/api/epg/detect-best");
-      if (!state.epgAuto) return;
-      if (d.status === "detecting") { setTimeout(poll, 1500); return; }
-      if (d.best_url) {
-        state.detectedEpgUrl = d.best_url;
-        if (statusEl) { statusEl.textContent = `已选：${d.best_name}（${d.best_channels} 频道）`; }
-      } else {
-        if (statusEl) { statusEl.textContent = "检测失败，将使用默认源"; }
-      }
-    };
-    poll();
-  } catch (_) {
-    if (statusEl) { statusEl.textContent = ""; statusEl.hidden = true; }
-  }
+    const data = await requestJson("/api/settings");
+    const useEpg = data.use_epg !== false;
+    const useLogo = data.use_logo !== false;
+    $("useEpg").checked = useEpg;
+    $("useLogo").checked = useLogo;
+    $("epgSourceName").value = data.epg_name || "";
+    $("epgSourceUrl").value = data.epg_url || "";
+    $("logoSourceName").value = data.logo_name || "";
+    $("logoSourceUrl").value = data.logo_url || "";
+    $("epgSourceRow").hidden = !useEpg;
+    $("logoSourceRow").hidden = !useLogo;
+    renderEpgBadge(data);
+  } catch (err) { console.warn("loadEpgSettings:", err.message); }
 }
 
-function setLogoMode(auto) {
-  state.logoAuto = auto;
-  $("logoAutoBtn").classList.toggle("active", auto);
-  $("logoManualBtn").classList.toggle("active", !auto);
-  $("logoManualRow").hidden = auto;
-}
-
-let _sourcesModalType = "epg";
-
-function openSourcesModal(type) {
-  _sourcesModalType = type;
-  $("sourcesModalTitle").textContent = type === "epg" ? "管理 EPG 来源" : "管理台标来源";
-  $("sourcesAddName").value = "";
-  $("sourcesAddUrl").value = "";
-  renderSourcesList();
-  $("sourcesModal").hidden = false;
-}
-
-function closeSourcesModal() {
-  $("sourcesModal").hidden = true;
-}
-
-function renderSourcesList() {
-  const type = _sourcesModalType;
-  const sources = type === "epg" ? state.allEpgSources : state.allLogoSources;
-  const list = $("sourcesList");
-  if (!sources.length) {
-    list.innerHTML = `<div class="sources-empty">暂无来源</div>`;
-    return;
-  }
-  list.innerHTML = sources.map((s) => {
-    const nameHtml = `<span class="source-name${s.deleted ? " muted" : ""}">${escapeHtml(s.name)}</span>`;
-    const urlHtml = `<span class="source-url muted small">${escapeHtml(s.url)}</span>`;
-    let action;
-    if (s.builtin) {
-      action = s.deleted
-        ? `<button class="secondary xs-btn source-restore-btn" type="button" data-id="${escapeHtml(s.id)}">恢复</button>`
-        : `<button class="secondary xs-btn source-del-btn" type="button" data-id="${escapeHtml(s.id)}" data-builtin="1">删除</button>`;
-    } else {
-      action = `<button class="secondary xs-btn source-del-btn" type="button" data-id="${escapeHtml(s.id)}" data-builtin="0">删除</button>`;
-    }
-    return `<div class="source-row${s.deleted ? " source-row--deleted" : ""}" data-id="${escapeHtml(s.id)}">${nameHtml}${urlHtml}${action}</div>`;
-  }).join("");
-}
-
-async function addCustomSource() {
-  const name = $("sourcesAddName").value.trim();
-  const url = $("sourcesAddUrl").value.trim();
-  if (!name || !url) { alert("名称和地址不能为空"); return; }
-  try {
-    await requestJson("/api/sources/custom", {
-      method: "POST",
-      body: JSON.stringify({type: _sourcesModalType, name, url}),
-    });
-    $("sourcesAddName").value = "";
-    $("sourcesAddUrl").value = "";
-    await loadEpgSources();
-    renderSourcesList();
-  } catch (err) { alert(err.message); }
-}
-
-async function deleteCustomSource(id) {
-  try {
-    await requestJson(`/api/sources/custom/${_sourcesModalType}/${id}`, {method: "DELETE"});
-    await loadEpgSources();
-    renderSourcesList();
-  } catch (err) { alert(err.message); }
-}
-
-async function deleteBuiltin(id) {
-  try {
-    await requestJson(`/api/sources/builtin/${_sourcesModalType}/${id}`, {method: "DELETE"});
-    await loadEpgSources();
-    renderSourcesList();
-  } catch (err) { alert(err.message); }
-}
-
-async function restoreBuiltin(id) {
-  try {
-    await requestJson(`/api/sources/builtin/${_sourcesModalType}/${id}/restore`, {method: "POST", body: "{}"});
-    await loadEpgSources();
-    renderSourcesList();
-  } catch (err) { alert(err.message); }
-}
-
-async function loadEpgSources() {
-  const data = await requestJson("/api/epg/sources");
-  state.epgSources = data.epg_sources || [];
-  state.logoSources = data.logo_sources || [];
-  state.allEpgSources = data.all_epg_sources || [];
-  state.allLogoSources = data.all_logo_sources || [];
-  populatePreset($("epgPreset"), state.epgSources);
-  populatePreset($("logoPreset"), state.logoSources);
+function renderEpgBadge(settings) {
+  const badge2 = $("epgBadge2");
+  if (!badge2) return;
+  const epg = settings?.epg_status;
+  if (!settings?.use_epg) { badge2.className = "chip neutral"; badge2.textContent = "未启用"; return; }
+  if (epg?.channels > 0) { badge2.className = "chip ok"; badge2.textContent = `${epg.channels} 个频道`; }
+  else { badge2.className = "chip neutral"; badge2.textContent = "未加载"; }
 }
 
 async function loadSettings() {
@@ -368,71 +216,9 @@ async function loadSettings() {
   $("duration").value = data.duration ?? 30;
   $("autoProbe").checked = data.auto_probe !== false;
   $("autoEpg").checked = data.auto_epg !== false;
-  $("epgUrl").value = data.epg_url || "";
-  $("logoUrl").value = data.logo_url || "";
-  syncPresetFromUrl($("epgPreset"), $("epgUrl").value);
-  syncPresetFromUrl($("logoPreset"), $("logoUrl").value);
-  const knownEpgUrls = new Set(state.epgSources.map((s) => s.url));
-  const savedEpgUrl = data.epg_url || "";
-  setEpgMode(!savedEpgUrl || knownEpgUrls.has(savedEpgUrl), false);
-  const knownLogoUrls = new Set(state.logoSources.map((s) => s.url));
-  const savedLogoUrl = data.logo_url || "";
-  setLogoMode(!savedLogoUrl || knownLogoUrls.has(savedLogoUrl));
-  $("scheduleEnabled").checked = Boolean(data.schedule_enabled);
-  $("scheduleUnit").value = data.schedule_unit || "days";
-  $("scheduleEvery").value = data.schedule_every ?? 1;
-  $("scheduleHour").value = data.schedule_hour ?? 3;
-  $("scheduleMinute").value = data.schedule_minute ?? 0;
   $("catchupDays").value = data.catchup_days ?? 7;
   $("catchupSourceTemplate").value = data.catchup_source_template || "";
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
-  updateScheduleUnitState();
-}
-
-function updateScheduleUnitState() {
-  const unit = $("scheduleUnit").value;
-  const every = Math.max(1, Number($("scheduleEvery").value || 1));
-  if (unit === "hours") {
-    $("scheduleEvery").max = 168;
-    $("scheduleEveryHint").textContent = `每 ${every} 小时`;
-    $("scheduleHour").disabled = true;
-    $("scheduleMinute").disabled = true;
-  } else {
-    $("scheduleEvery").max = 30;
-    $("scheduleEveryHint").textContent = `每 ${every} 天`;
-    $("scheduleHour").disabled = false;
-    $("scheduleMinute").disabled = false;
-  }
-}
-
-function renderSchedule(schedule) {
-  const badge = $("scheduleBadge");
-  if (schedule.running) {
-    badge.className = "chip warning";
-    badge.textContent = "更新中";
-  } else if (schedule.enabled) {
-    badge.className = schedule.last_error ? "chip warning" : "chip ok";
-    badge.textContent = schedule.last_error ? "已启用，有错误" : "已启用";
-  } else {
-    badge.className = "chip neutral";
-    badge.textContent = "未启用";
-  }
-  const mode = schedule.unit === "hours"
-    ? `每 ${escapeHtml(schedule.every || 1)} 小时`
-    : `每 ${escapeHtml(schedule.every || 1)} 天 ${String(schedule.hour ?? 0).padStart(2, "0")}:${String(schedule.minute ?? 0).padStart(2, "0")}`;
-  const lines = [
-    `<strong>${escapeHtml(schedule.last_message || (schedule.enabled ? "定时刷新已启用" : "定时刷新未启用"))}</strong>`,
-    `模式：<span class="mono">${mode}</span>`,
-    `下次执行：<span class="mono">${escapeHtml(schedule.next_run_text || "-")}</span>`,
-    `上次执行：<span class="mono">${escapeHtml(schedule.last_run_text || "-")}</span>`,
-  ];
-  if (schedule.last_result) {
-    const r = schedule.last_result;
-    lines.push(`上次结果：刷新 ${escapeHtml(r.count ?? 0)} 个来源，合计 ${escapeHtml(r.total_channels ?? 0)} 个频道`);
-    if (r.errors?.length) lines.push(`失败 ${r.errors.length} 个来源`);
-  }
-  if (schedule.last_error) lines.push(`错误：${escapeHtml(schedule.last_error)}`);
-  $("schedulePanel").innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
 }
 
 function renderStatus(status) {
@@ -738,17 +524,15 @@ function closeProbeDetail() {
 }
 
 async function refreshStatusAndStreams() {
-  const [status, streams, metrics, tokenData, schedule, epg] = await Promise.all([
+  const [status, streams, metrics, tokenData, epg] = await Promise.all([
     requestJson("/api/status"),
     requestJson("/api/streams"),
     requestJson("/api/metrics"),
     requestJson("/api/stb-token"),
-    requestJson("/api/schedule"),
     requestJson("/api/epg/status"),
   ]);
   renderStatus(status);
   renderMetrics(metrics, tokenData);
-  renderSchedule(schedule);
   renderEpgStatus(epg);
   if (tableHasEditingFocus()) {
     state.streams = preserveRowEdits(streams.streams || []);
@@ -911,62 +695,6 @@ function renderSnapshots(snapshots) {
     </div>`).join("");
 }
 
-async function loadScheduleEpgSources() {
-  try {
-    await loadEpgSources();
-    const epgStatus = await requestJson("/api/epg/status");
-    const sourceStats = epgStatus.source_stats || {};
-    renderScheduleEpgSources(state.allEpgSources, sourceStats);
-    renderScheduleLogoSources(state.allLogoSources);
-  } catch (err) { console.warn("loadScheduleEpgSources:", err.message); }
-}
-
-function renderScheduleEpgSources(sources, stats) {
-  const list = $("scheduleEpgSourceList");
-  if (!sources.length) {
-    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无 EPG 来源。</div>';
-    return;
-  }
-  list.innerHTML = sources.map((src) => {
-    const deleted = src.deleted === true;
-    const s = stats[src.url] || {};
-    const lastRefresh = s.last_refresh ? new Date(s.last_refresh * 1000).toLocaleString("zh-CN") : "从未刷新";
-    const channelCount = s.channels != null ? `　${s.channels} 个频道` : "";
-    const rowStyle = deleted ? ' style="opacity:0.45"' : "";
-    const actionBtns = deleted
-      ? `<button class="secondary xs-btn epg-src-restore-btn" data-src-type="epg" data-src-id="${escapeHtml(src.id)}" type="button">恢复</button>`
-      : `<button class="secondary xs-btn epg-src-refresh-btn" data-epg-url="${escapeHtml(src.url)}" type="button">刷新</button>
-         <button class="danger xs-btn epg-src-del-btn" data-src-type="epg" data-src-id="${escapeHtml(src.id)}" data-src-builtin="${src.builtin ? "1" : "0"}" type="button">删除</button>`;
-    return `<div class="epg-source-row"${rowStyle}>
-      <span class="epg-source-name">${escapeHtml(src.name)}${deleted ? " <em>(已删除)</em>" : ""}</span>
-      <span class="muted small" style="overflow-wrap:anywhere">${escapeHtml(src.url)}</span>
-      <span class="muted small">${deleted ? "" : escapeHtml(lastRefresh) + escapeHtml(channelCount)}</span>
-      ${actionBtns}
-    </div>`;
-  }).join("");
-}
-
-function renderScheduleLogoSources(sources) {
-  const list = $("scheduleLogoSourceList");
-  if (!sources.length) {
-    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无台标来源。</div>';
-    return;
-  }
-  list.innerHTML = sources.map((src) => {
-    const deleted = src.deleted === true;
-    const rowStyle = deleted ? ' style="opacity:0.45"' : "";
-    const actionBtns = deleted
-      ? `<button class="secondary xs-btn epg-src-restore-btn" data-src-type="logo" data-src-id="${escapeHtml(src.id)}" type="button">恢复</button>`
-      : `<button class="secondary xs-btn logo-src-refresh-btn" data-logo-url="${escapeHtml(src.url)}" type="button">刷新</button>
-         <button class="danger xs-btn epg-src-del-btn" data-src-type="logo" data-src-id="${escapeHtml(src.id)}" data-src-builtin="${src.builtin ? "1" : "0"}" type="button">删除</button>`;
-    return `<div class="epg-source-row"${rowStyle}>
-      <span class="epg-source-name">${escapeHtml(src.name)}${deleted ? " <em>(已删除)</em>" : ""}</span>
-      <span class="muted small" style="overflow-wrap:anywhere">${escapeHtml(src.url)}</span>
-      <span class="muted small"></span>
-      ${actionBtns}
-    </div>`;
-  }).join("");
-}
 
 async function checkVersion() {
   try {
@@ -983,7 +711,7 @@ async function checkVersion() {
 }
 
 async function bootstrap() {
-  await Promise.all([loadHealth(), loadInterfaces(), loadEpgSources()]);
+  await Promise.all([loadHealth(), loadInterfaces()]);
   await loadSettings();
   await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
@@ -994,19 +722,9 @@ async function bootstrap() {
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
 document.querySelectorAll("[data-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.tab)));
-$("epgPreset").addEventListener("change", () => {
-  if ($("epgPreset").value) $("epgUrl").value = $("epgPreset").value;
-});
-$("logoPreset").addEventListener("change", () => {
-  if ($("logoPreset").value) $("logoUrl").value = $("logoPreset").value;
-});
-$("epgUrl").addEventListener("input", () => syncPresetFromUrl($("epgPreset"), $("epgUrl").value));
-$("logoUrl").addEventListener("input", () => syncPresetFromUrl($("logoPreset"), $("logoUrl").value));
 $("filterBestPerIp").addEventListener("change", () => renderStreams(state.streams));
-$("epgAutoBtn").addEventListener("click", () => setEpgMode(true));
-$("epgManualBtn").addEventListener("click", () => setEpgMode(false));
-$("logoAutoBtn").addEventListener("click", () => setLogoMode(true));
-$("logoManualBtn").addEventListener("click", () => setLogoMode(false));
+$("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
+$("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("useLogo").checked; });
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
 $("saveSettingsBtn").addEventListener("click", async () => {
   try {
@@ -1015,12 +733,51 @@ $("saveSettingsBtn").addEventListener("click", async () => {
     alert("默认设置已保存");
   } catch (err) { alert(err.message); }
 });
-$("refreshEpgBtn").addEventListener("click", async () => {
+$("saveEpgSettingsBtn").addEventListener("click", async () => {
   try {
-    const epg = await requestJson("/api/epg/refresh", {method: "POST", body: JSON.stringify(formSettings())});
+    await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
+      use_epg: $("useEpg").checked,
+      epg_name: $("epgSourceName").value.trim(),
+      epg_url: $("epgSourceUrl").value.trim(),
+      use_logo: $("useLogo").checked,
+      logo_name: $("logoSourceName").value.trim(),
+      logo_url: $("logoSourceUrl").value.trim(),
+    })});
+    alert("EPG 与台标设置已保存");
+  } catch (err) { alert(err.message); }
+});
+$("refreshEpgBtn").addEventListener("click", async () => {
+  const btn = $("refreshEpgBtn");
+  btn.disabled = true;
+  try {
+    await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
+      use_epg: $("useEpg").checked,
+      epg_name: $("epgSourceName").value.trim(),
+      epg_url: $("epgSourceUrl").value.trim(),
+      use_logo: $("useLogo").checked,
+      logo_name: $("logoSourceName").value.trim(),
+      logo_url: $("logoSourceUrl").value.trim(),
+    })});
+    const epg = await requestJson("/api/epg/refresh", {method: "POST", body: "{}"});
     renderEpgStatus(epg);
     alert("EPG 刷新已启动");
   } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; }
+});
+$("refreshLogoBtn").addEventListener("click", async () => {
+  const btn = $("refreshLogoBtn");
+  btn.disabled = true;
+  try {
+    const logoUrl = $("logoSourceUrl").value.trim();
+    if (!logoUrl) { alert("请先填写台标 M3U 地址"); return; }
+    await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
+      use_logo: $("useLogo").checked,
+      logo_name: $("logoSourceName").value.trim(),
+      logo_url: logoUrl,
+    })});
+    alert("台标刷新已启动");
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; }
 });
 $("rematchEpgBtn").addEventListener("click", async function () {
   const btn = this;
@@ -1036,29 +793,6 @@ $("rematchEpgBtn").addEventListener("click", async function () {
     btn.disabled = false;
     btn.textContent = "重新匹配节目单";
   }
-});
-$("scheduleUnit").addEventListener("change", updateScheduleUnitState);
-$("scheduleEvery").addEventListener("input", updateScheduleUnitState);
-$("saveScheduleBtn").addEventListener("click", async () => {
-  try {
-    const data = await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
-    renderSchedule(data);
-    alert(data.enabled ? "定时任务已保存并启用" : "定时任务已保存为停用状态");
-  } catch (err) { alert(err.message); }
-});
-$("disableScheduleBtn").addEventListener("click", async () => {
-  try {
-    $("scheduleEnabled").checked = false;
-    const data = await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
-    renderSchedule(data);
-  } catch (err) { alert(err.message); }
-});
-$("runScheduleNowBtn").addEventListener("click", async () => {
-  try {
-    await requestJson("/api/schedule", {method: "POST", body: JSON.stringify(formScheduleSettings())});
-    const data = await requestJson("/api/schedule/run-now", {method: "POST", body: "{}"});
-    renderSchedule(data);
-  } catch (err) { alert(err.message); }
 });
 $("startBtn").addEventListener("click", async () => {
   try {
@@ -1146,7 +880,6 @@ $("streamsTableBody").addEventListener("focusout", () => {
   }, 80);
 });
 $("clDownloadBestM3u").addEventListener("click", function() { doExportDownload("channels-best.m3u", this, true); });
-$("clDownloadFnosM3u").addEventListener("click", function() { doExportDownload("channels-fnos.m3u", this, false); });
 $("clDownloadFnosHlsM3u").addEventListener("click", async function () {
   const btn = this;
   btn.disabled = true;
@@ -1204,121 +937,28 @@ $("clFilterName").addEventListener("input", filterAndRenderChannelList);
 $("clFilterCategory").addEventListener("change", filterAndRenderChannelList);
 $("clFilterQuality").addEventListener("change", filterAndRenderChannelList);
 $("clProbeBtn").addEventListener("click", async function() {
-  // Probe anything not yet confirmed by ffprobe (probe_status ok/partial = already probed)
-  const unprobed = (state.channelList || []).filter(ch =>
-    !ch.probe_status || ch.probe_status === "not_probed"
-  );
-  if (!unprobed.length) { alert("所有频道均已通过 ffprobe 探测。"); return; }
-  if (!confirm(`将对 ${unprobed.length} 个频道运行 ffprobe 探测（含从 is_hd 推导的高清频道），每个约 10 秒，请耐心等待。继续？`)) return;
-  this.disabled = true; this.textContent = `探测中… (0/${unprobed.length})`;
+  const selectedKeys = new Set([...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
+    .filter((row) => row.querySelector(".cl-check")?.checked)
+    .map((row) => row.dataset.key));
+  const toProbe = selectedKeys.size > 0
+    ? (state.channelList || []).filter(ch => selectedKeys.has(ch.key))
+    : (state.channelList || []);
+  if (!toProbe.length) { alert("请先勾选要探测的频道。"); return; }
+  if (!confirm(`将对 ${toProbe.length} 个频道运行 ffprobe 探测，每个约 10 秒，请耐心等待。继续？`)) return;
+  this.disabled = true; this.textContent = `探测中… (0/${toProbe.length})`;
   const btn = this;
   const settings = formSettings();
   let done = 0;
-  for (const ch of unprobed) {
+  for (const ch of toProbe) {
     try {
       await requestJson("/api/probe/batch", {method: "POST", body: JSON.stringify({channels: [ch], path_mode: settings.path_mode})});
     } catch (_) {}
     done++;
-    btn.textContent = `探测中… (${done}/${unprobed.length})`;
+    btn.textContent = `探测中… (${done}/${toProbe.length})`;
   }
-  btn.disabled = false; btn.textContent = "一键探测分辨率";
+  btn.disabled = false; btn.textContent = "探测选中频道分辨率";
   await loadChannelList();
   alert(`探测完成，已更新 ${done} 个频道。`);
-});
-$("refreshAllEpgBtn").addEventListener("click", async () => {
-  const btn = $("refreshAllEpgBtn");
-  btn.disabled = true; btn.textContent = "刷新中…";
-  try {
-    const result = await requestJson("/api/epg/refresh-all", {method: "POST", body: "{}"});
-    await loadScheduleEpgSources();
-    const logoMsg = result.total_logos > 0 ? `，台标 ${result.total_logos} 个` : "";
-    alert(`已刷新 ${result.count} 个 EPG 来源，合计 ${result.total_channels} 个频道${logoMsg}。`);
-  } catch (err) { alert(err.message); }
-  finally { btn.disabled = false; btn.textContent = "立即刷新全部（含台标）"; }
-});
-$("scheduleEpgSourceList").addEventListener("click", async (event) => {
-  const refreshBtn = event.target.closest(".epg-src-refresh-btn");
-  if (refreshBtn) {
-    const url = refreshBtn.dataset.epgUrl;
-    refreshBtn.disabled = true; refreshBtn.textContent = "刷新中…";
-    try {
-      await requestJson("/api/epg/refresh", {method: "POST", body: JSON.stringify({epg_url: url})});
-      await loadScheduleEpgSources();
-    } catch (err) { alert(err.message); }
-    finally { refreshBtn.disabled = false; refreshBtn.textContent = "刷新"; }
-    return;
-  }
-  const delBtn = event.target.closest(".epg-src-del-btn");
-  if (delBtn) {
-    const type = delBtn.dataset.srcType, id = delBtn.dataset.srcId, builtin = delBtn.dataset.srcBuiltin === "1";
-    if (!confirm("确定删除该来源？")) return;
-    try {
-      if (builtin) await requestJson(`/api/sources/builtin/${type}/${id}`, {method: "DELETE"});
-      else await requestJson(`/api/sources/custom/${type}/${id}`, {method: "DELETE"});
-      await loadScheduleEpgSources();
-    } catch (err) { alert(err.message); }
-    return;
-  }
-  const restoreBtn = event.target.closest(".epg-src-restore-btn");
-  if (restoreBtn) {
-    const type = restoreBtn.dataset.srcType, id = restoreBtn.dataset.srcId;
-    try {
-      await requestJson(`/api/sources/builtin/${type}/${id}/restore`, {method: "POST", body: "{}"});
-      await loadScheduleEpgSources();
-    } catch (err) { alert(err.message); }
-  }
-});
-$("scheduleLogoSourceList").addEventListener("click", async (event) => {
-  const refreshBtn = event.target.closest(".logo-src-refresh-btn");
-  if (refreshBtn) {
-    const url = refreshBtn.dataset.logoUrl;
-    refreshBtn.disabled = true; refreshBtn.textContent = "刷新中…";
-    try {
-      await requestJson("/api/logo/refresh", {method: "POST", body: JSON.stringify({logo_url: url})});
-      await loadScheduleEpgSources();
-    } catch (err) { alert(err.message); }
-    finally { refreshBtn.disabled = false; refreshBtn.textContent = "刷新"; }
-    return;
-  }
-  const delBtn = event.target.closest(".epg-src-del-btn");
-  if (delBtn) {
-    const type = delBtn.dataset.srcType, id = delBtn.dataset.srcId, builtin = delBtn.dataset.srcBuiltin === "1";
-    if (!confirm("确定删除该台标来源？")) return;
-    try {
-      if (builtin) await requestJson(`/api/sources/builtin/${type}/${id}`, {method: "DELETE"});
-      else await requestJson(`/api/sources/custom/${type}/${id}`, {method: "DELETE"});
-      await loadScheduleEpgSources();
-    } catch (err) { alert(err.message); }
-    return;
-  }
-  const restoreBtn = event.target.closest(".epg-src-restore-btn");
-  if (restoreBtn) {
-    const type = restoreBtn.dataset.srcType, id = restoreBtn.dataset.srcId;
-    try {
-      await requestJson(`/api/sources/builtin/${type}/${id}/restore`, {method: "POST", body: "{}"});
-      await loadScheduleEpgSources();
-    } catch (err) { alert(err.message); }
-  }
-});
-$("scheduleEpgAddBtn").addEventListener("click", async () => {
-  const name = $("scheduleEpgAddName").value.trim();
-  const url = $("scheduleEpgAddUrl").value.trim();
-  if (!url) { alert("请填写 EPG 地址"); return; }
-  try {
-    await requestJson("/api/sources/custom", {method: "POST", body: JSON.stringify({type: "epg", name: name || url, url})});
-    $("scheduleEpgAddName").value = ""; $("scheduleEpgAddUrl").value = "";
-    await loadScheduleEpgSources();
-  } catch (err) { alert(err.message); }
-});
-$("scheduleLogoAddBtn").addEventListener("click", async () => {
-  const name = $("scheduleLogoAddName").value.trim();
-  const url = $("scheduleLogoAddUrl").value.trim();
-  if (!url) { alert("请填写台标 M3U 地址"); return; }
-  try {
-    await requestJson("/api/sources/custom", {method: "POST", body: JSON.stringify({type: "logo", name: name || url, url})});
-    $("scheduleLogoAddName").value = ""; $("scheduleLogoAddUrl").value = "";
-    await loadScheduleEpgSources();
-  } catch (err) { alert(err.message); }
 });
 $("reimportOperatorBtn").addEventListener("click", async () => {
   const btn = $("reimportOperatorBtn");
@@ -1366,23 +1006,6 @@ $("snapshotList").addEventListener("click", async (event) => {
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
-$("manageEpgSourcesBtn").addEventListener("click", () => openSourcesModal("epg"));
-$("manageLogoSourcesBtn").addEventListener("click", () => openSourcesModal("logo"));
-$("closeSourcesBtn").addEventListener("click", closeSourcesModal);
-$("sourcesModal").addEventListener("click", (event) => {
-  if (event.target.id === "sourcesModal") closeSourcesModal();
-});
-$("sourcesAddBtn").addEventListener("click", addCustomSource);
-$("sourcesList").addEventListener("click", (event) => {
-  const delBtn = event.target.closest(".source-del-btn");
-  if (delBtn) {
-    if (delBtn.dataset.builtin === "1") deleteBuiltin(delBtn.dataset.id);
-    else deleteCustomSource(delBtn.dataset.id);
-    return;
-  }
-  const restoreBtn = event.target.closest(".source-restore-btn");
-  if (restoreBtn) restoreBuiltin(restoreBtn.dataset.id);
-});
 $("closeSnapshotBtn").addEventListener("click", closeSnapshot);
 $("snapshotModal").addEventListener("click", (event) => {
   if (event.target.id === "snapshotModal") closeSnapshot();
@@ -1443,7 +1066,12 @@ function renderStbDiscoveryStatus(state) {
 
   if (isCapturing) {
     const elapsed = state.started_at ? Math.round(Date.now() / 1000 - state.started_at) : 0;
-    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒）…请立即重启机顶盒。`;
+    const liveCount = state.live_channel_count || 0;
+    const liveParts = [];
+    if (liveCount > 0) liveParts.push(`已发现 ${liveCount} 个频道`);
+    if (state.live_has_auth) liveParts.push("已捕获认证信息");
+    const liveHint = liveParts.length ? `，${liveParts.join("、")}` : "";
+    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒${liveHint}）…请立即重启机顶盒。`;
     box.className = "result-box ok";
   } else if (isAnalyzing) {
     box.textContent = "正在分析 pcap 数据，提取频道信息…";
@@ -1544,9 +1172,6 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
 
 // ── IPTV auth helper ──────────────────────────────────────────────────────
 
-let _iptvAuthDhclientScript = "";
-let _iptvAuthUdhcpcCommand = "";
-
 function _iptvAuthPayload() {
   return {
     interface: $("iptvAuthIface").value,
@@ -1598,7 +1223,7 @@ function _renderIptvAuthStatus(d) {
     `<strong>接口：${escapeHtml(d.interface || "-")}</strong>`,
     `当前 MAC：<span class="mono">${escapeHtml(snap.mac || "-")}</span>`,
     `当前 IPv4：<span class="mono">${escapeHtml(ipv4)}</span>`,
-    `工具：ip=${tools.ip ? "可用" : "缺失"}，udhcpc=${tools.udhcpc ? "可用" : "缺失"}，dhclient=${tools.dhclient ? "可用" : "缺失"}`,
+    `工具：ip=${tools.ip ? "可用" : "缺失"}，udhcpc=${tools.udhcpc ? "可用" : "缺失"}`,
     `权限：root=${caps.root ? "是" : "否"}，NET_ADMIN=${caps.net_admin_hint ? "可用" : "不可用"}，NET_RAW=${caps.net_raw_hint ? "可用" : "不可用"}`,
     `备份：${backup.has_initial ? `已有初始备份，历史 ${backup.history_count || 0} 次` : "尚未创建"}`,
   ];
@@ -1619,25 +1244,6 @@ async function refreshIptvAuthStatus() {
     $("iptvAuthBadge").textContent = "检测失败";
     $("iptvAuthStatus").textContent = `检测失败：${err.message}`;
     $("iptvAuthStatus").className = "result-box error";
-  }
-}
-
-async function generateIptvAuthScripts() {
-  const btn = $("iptvAuthGenerateBtn");
-  btn.disabled = true; btn.textContent = "生成中…";
-  try {
-    const d = await requestJson("/api/iptv-auth/scripts", {method: "POST", body: JSON.stringify(_iptvAuthPayload())});
-    _iptvAuthDhclientScript = d.dhclient_script || "";
-    _iptvAuthUdhcpcCommand = [d.udhcpc_command || "", "", "# udhcpc hook:", d.udhcpc_hook || ""].join("\n");
-    $("iptvAuthDhclientScript").textContent = _iptvAuthDhclientScript || "未生成";
-    $("iptvAuthUdhcpcScript").textContent = _iptvAuthUdhcpcCommand || "未生成";
-    $("iptvAuthApplyResult").textContent = d.route_hint || "脚本已生成。";
-    $("iptvAuthApplyResult").className = "result-box ok";
-  } catch (err) {
-    $("iptvAuthApplyResult").textContent = `生成失败：${err.message}`;
-    $("iptvAuthApplyResult").className = "result-box error";
-  } finally {
-    btn.disabled = false; btn.textContent = "生成认证脚本";
   }
 }
 
@@ -1688,7 +1294,6 @@ function initIptvAuthTab() {
 }
 
 $("iptvAuthRefreshBtn").addEventListener("click", refreshIptvAuthStatus);
-$("iptvAuthGenerateBtn").addEventListener("click", generateIptvAuthScripts);
 $("iptvAuthApplyBtn").addEventListener("click", applyIptvAuth);
 $("iptvAuthRestoreBtn").addEventListener("click", restoreIptvAuth);
 
@@ -1736,15 +1341,6 @@ $("iptvAuthImportFile").addEventListener("change", async function () {
     btn.disabled = false;
   }
 });
-$("iptvAuthCopyDhclientBtn").addEventListener("click", () => {
-  if (!_iptvAuthDhclientScript) return;
-  navigator.clipboard.writeText(_iptvAuthDhclientScript).catch(() => alert("复制失败，请手动选择脚本。"));
-});
-$("iptvAuthCopyUdhcpcBtn").addEventListener("click", () => {
-  if (!_iptvAuthUdhcpcCommand) return;
-  navigator.clipboard.writeText(_iptvAuthUdhcpcCommand).catch(() => alert("复制失败，请手动选择脚本。"));
-});
-
 // ── Playback diagnostics tab ──────────────────────────────────────────────
 
 function initDiagnoseTab() {

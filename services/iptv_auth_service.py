@@ -237,66 +237,6 @@ class IptvAuthService:
             "option125": option125,
         }
 
-    def scripts(self, data: dict[str, Any], auth_info: dict[str, Any] | None = None) -> dict[str, Any]:
-        p = self._payload(data, auth_info)
-        iface = p["interface"]
-        requested = f" -r {p['requested_ip']}" if p["requested_ip"] else ""
-        route_hint = {
-            "none": "只写入 DHCP 下发的 IPv4 地址，不添加 IPTV 路由。",
-            "multicast": "写入 IPv4 地址，并添加 224.0.0.0/4 组播路由到选定接口。",
-            "iptv_private": "写入 IPv4 地址，并添加 224.0.0.0/4 与 10.0.0.0/8 到选定接口；可能影响其它 10.x 内网。",
-        }[p["route_mode"]]
-        dhclient_conf = (
-            f'interface "{iface}" {{\n'
-            f'  send host-name "{p["hostname"]}";\n'
-            f'  send vendor-class-identifier {p["vendor_class_colon"]};\n'
-            "  request subnet-mask, routers, domain-name-servers, broadcast-address, static-routes, classless-static-routes;\n"
-            "}\n"
-        )
-        if p["client_id"]:
-            dhclient_conf = dhclient_conf.replace(
-                "  request subnet-mask",
-                f"  send dhcp-client-identifier {p['client_id']};\n  request subnet-mask",
-            )
-        dhclient_script = (
-            "#!/bin/sh\n"
-            "set -eu\n"
-            f"IFACE={iface!r}\n"
-            f"STB_MAC={p['mac']!r}\n"
-            f"HOSTNAME={p['hostname']!r}\n"
-            f"CONF=/tmp/iptv-dhclient-$IFACE.conf\n"
-            f"LEASE=/tmp/iptv-dhclient-$IFACE.leases\n"
-            f"PID=/tmp/iptv-dhclient-$IFACE.pid\n\n"
-            "sudo dhclient -r -pf \"$PID\" -lf \"$LEASE\" \"$IFACE\" 2>/dev/null || true\n"
-            "sudo ip -4 addr flush dev \"$IFACE\" || true\n"
-            "sudo ip link set \"$IFACE\" down\n"
-            "sudo ip link set \"$IFACE\" address \"$STB_MAC\"\n"
-            "sudo ip link set \"$IFACE\" up\n"
-            "sudo tee \"$CONF\" >/dev/null <<'EOF'\n"
-            f"{dhclient_conf}"
-            "EOF\n"
-            "sudo dhclient -4 -v -cf \"$CONF\" -lf \"$LEASE\" -pf \"$PID\" \"$IFACE\"\n"
-            "ip -br addr show \"$IFACE\"\n"
-        )
-        udhcpc_script = self._udhcpc_hook_content(iface, p["route_mode"])
-        client_id_arg = f" -x 0x3d:0x{p['client_id']}" if p["client_id"] else ""
-        opt125_arg = f" -x 0x7d:0x{p['option125']}" if p["option125"] else ""
-        udhcpc_command = (
-            f"udhcpc -f -q -n -t 4 -T 3 -i {iface} -C{requested} "
-            f"-s /app/data/iptv-auth-{iface}.udhcpc.sh "
-            f"-p /app/data/iptv-auth-{iface}.pid "
-            f"-x hostname:{p['hostname']} -x 0x3c:0x{p['vendor_class']}{client_id_arg}{opt125_arg}"
-        )
-        return {
-            "payload": p,
-            "route_hint": route_hint,
-            "dhclient_conf": dhclient_conf,
-            "dhclient_script": dhclient_script,
-            "udhcpc_hook": udhcpc_script,
-            "udhcpc_command": udhcpc_command,
-            "docker_requirements": "network_mode: host；cap_add: NET_ADMIN, NET_RAW；容器需以 root 运行。",
-        }
-
     def _udhcpc_hook_content(self, interface: str, route_mode: str) -> str:
         iface = _valid_iface(interface)
         route_mode = route_mode if route_mode in {"none", "multicast", "iptv_private"} else "multicast"
@@ -347,19 +287,17 @@ exit 0
         tools = {
             "ip": bool(shutil.which("ip")),
             "udhcpc": bool(shutil.which("udhcpc")),
-            "dhclient": bool(shutil.which("dhclient")),
         }
         caps = {
             "root": os.geteuid() == 0 if hasattr(os, "geteuid") else False,
             "net_admin_hint": self._capability_enabled(12),
             "net_raw_hint": self._capability_enabled(13),
         }
-        # Auto-save initial backup on first status check for this interface
+        # Update initial backup snapshot on every status refresh
         bk_data = self._backup_data()
         iface_entry = bk_data["interfaces"].setdefault(iface, {"history": []})
-        if "initial" not in iface_entry:
-            iface_entry["initial"] = snap
-            self._write_backup_data(bk_data)
+        iface_entry["initial"] = snap
+        self._write_backup_data(bk_data)
         auth = auth_info or {}
         has_auth = bool(auth.get("mac") and auth.get("hostname") and auth.get("vendor_class"))
         ipv4 = snap.get("ipv4") or []
@@ -396,12 +334,12 @@ exit 0
         if not self._interface_exists(iface):
             raise ValueError(f"接口不存在：{iface}")
         if not shutil.which("udhcpc"):
-            raise RuntimeError("容器内未找到 udhcpc，无法执行一键认证；请使用页面生成的宿主机 dhclient 脚本")
+            raise RuntimeError("容器内未找到 udhcpc，无法执行一键认证")
 
         self._ensure_backup(iface)
-        scripts = self.scripts(p, auth_info=None)
+        hook_content = self._udhcpc_hook_content(iface, p["route_mode"])
         hook_path = self.data_dir / f"iptv-auth-{iface}.udhcpc.sh"
-        hook_path.write_text(scripts["udhcpc_hook"], encoding="utf-8")
+        hook_path.write_text(hook_content, encoding="utf-8")
         hook_path.chmod(0o700)
 
         steps: list[dict[str, Any]] = []
@@ -436,8 +374,6 @@ exit 0
         ]
         if p["client_id"]:
             cmd.extend(["-x", f"0x3d:0x{p['client_id']}"])
-        if p["option125"]:
-            cmd.extend(["-x", f"0x7d:0x{p['option125']}"])
         if p["requested_ip"]:
             cmd.extend(["-r", p["requested_ip"]])
         run_step(cmd, timeout=35)

@@ -520,6 +520,23 @@ class StbDiscoveryService:
         self._pcap_path: str | None = None
         self._worker_thread: threading.Thread | None = None
 
+    def _live_watcher(self, pcap_path: str, stb_ip: str) -> None:
+        while True:
+            time.sleep(3)
+            with self._lock:
+                if self._state["status"] != self.STATUS_CAPTURING:
+                    break
+            try:
+                channels = analyze_pcap_for_channels(pcap_path, stb_ip)
+                auth_info = _extract_dhcp_from_pcap(pcap_path)
+                has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
+                with self._lock:
+                    if self._state["status"] == self.STATUS_CAPTURING:
+                        self._state["live_channel_count"] = len(channels)
+                        self._state["live_has_auth"] = has_auth
+            except Exception:
+                pass
+
     def runtime_check(self) -> dict[str, Any]:
         ok = shutil.which("tcpdump") is not None
         return {"ok": ok, "errors": [] if ok else ["缺少依赖命令：tcpdump"]}
@@ -545,6 +562,8 @@ class StbDiscoveryService:
                 "error": None,
                 "channels": [],
                 "channel_count": 0,
+                "live_channel_count": 0,
+                "live_has_auth": False,
                 "auth_info": {},
             }
         cmd = [
@@ -566,6 +585,12 @@ class StbDiscoveryService:
                 self._state["status"] = self.STATUS_ERROR
                 self._state["error"] = str(exc)
             raise
+        threading.Thread(
+            target=self._live_watcher,
+            args=(self._pcap_path, stb_ip),
+            daemon=True,
+            name="stb-live-watcher",
+        ).start()
 
     def stop(self) -> dict[str, Any]:
         proc = None

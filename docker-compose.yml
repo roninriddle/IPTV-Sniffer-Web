@@ -1,7 +1,7 @@
 services:
   iptv-sniffer-web:
     build: .
-    image: roninriddle/iptv-sniffer-web:v1.0.0
+    image: roninriddle/iptv-sniffer-web:v1.0.1
     container_name: iptv-sniffer-web
     network_mode: host
     cap_add:

@@ -21,7 +21,6 @@
         <button class="nav-pill" data-tab="channelList" type="button">频道线路</button>
         <button class="nav-pill" data-tab="diagnose" type="button">播放诊断</button>
         <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
-        <button class="nav-pill" data-tab="schedule" type="button">定时 EPG</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
         <button id="logsBtn" class="primary" type="button">实时日志</button>
       </div>
@@ -131,44 +130,9 @@
               </label>
               <label class="checkbox-label">
                 <input id="autoEpg" type="checkbox" checked>
-                自动补全 EPG
-              </label>
-              <div class="mode-toggle-cell">
-                <span>EPG 来源</span>
-                <div class="mode-toggle-btns">
-                  <button type="button" id="epgAutoBtn" class="mode-btn">自动</button><button type="button" id="epgManualBtn" class="mode-btn">手动</button>
-                </div>
-              </div>
-              <div class="mode-toggle-cell">
-                <span>台标来源</span>
-                <div class="mode-toggle-btns">
-                  <button type="button" id="logoAutoBtn" class="mode-btn">自动</button><button type="button" id="logoManualBtn" class="mode-btn">手动</button>
-                </div>
-              </div>
-              <button id="refreshEpgBtn" class="secondary" type="button">刷新 EPG</button>
-              <button id="rematchEpgBtn" class="secondary" type="button">重新匹配节目单</button>
-            </div>
-            <div id="epgManualRow" class="manual-source-row" hidden>
-              <div class="source-select-group">
-                <select id="epgPreset"></select>
-                <button type="button" id="manageEpgSourcesBtn" class="secondary xs-btn">管理</button>
-              </div>
-              <label id="epgUrlLabel">
-                XMLTV EPG 地址
-                <input id="epgUrl" type="url" placeholder="https://example.com/epg.xml.gz">
+                自动补全 EPG（使用频道线路中配置的来源）
               </label>
             </div>
-            <div id="logoManualRow" class="manual-source-row" hidden>
-              <div class="source-select-group">
-                <select id="logoPreset"></select>
-                <button type="button" id="manageLogoSourcesBtn" class="secondary xs-btn">管理</button>
-              </div>
-              <label id="logoUrlLabel">
-                台标 M3U 地址
-                <input id="logoUrl" type="url" placeholder="https://example.com/TVlist.m3u">
-              </label>
-            </div>
-            <span id="epgDetectStatus" class="muted small" hidden></span>
             <div class="button-row">
               <button id="startBtn" class="primary" type="button">自动抓流并整理</button>
               <button id="stopBtn" class="danger" type="button" disabled>停止抓包</button>
@@ -237,77 +201,6 @@
             </div>
           </section>
 
-        </div>
-
-        <div id="scheduleTab" class="tab-panel" hidden>
-          <section class="card">
-            <div class="section-title">
-              <h2>EPG 来源</h2>
-              <span class="muted">所有活跃来源均可手动刷新；定时任务启用后会自动全量刷新。</span>
-            </div>
-            <div class="button-row">
-              <button id="refreshAllEpgBtn" class="primary" type="button">立即刷新全部（含台标）</button>
-            </div>
-            <div id="scheduleEpgSourceList" style="margin-top:12px"></div>
-            <div class="sources-add-row" style="margin-top:8px">
-              <input id="scheduleEpgAddName" type="text" placeholder="来源名称" style="flex:0 0 120px">
-              <input id="scheduleEpgAddUrl" type="url" placeholder="EPG 地址（.xml 或 .xml.gz）" style="flex:1 1 200px;min-width:0">
-              <button id="scheduleEpgAddBtn" class="secondary" type="button">添加</button>
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="section-title">
-              <h2>台标来源</h2>
-              <span class="muted">M3U 格式台标文件；全量刷新时一并更新。</span>
-            </div>
-            <div id="scheduleLogoSourceList" style="margin-top:12px"></div>
-            <div class="sources-add-row" style="margin-top:8px">
-              <input id="scheduleLogoAddName" type="text" placeholder="来源名称" style="flex:0 0 120px">
-              <input id="scheduleLogoAddUrl" type="url" placeholder="台标 M3U 地址" style="flex:1 1 200px;min-width:0">
-              <button id="scheduleLogoAddBtn" class="secondary" type="button">添加</button>
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="section-title">
-              <h2>定时刷新计划</h2>
-              <span id="scheduleBadge" class="chip neutral">未启用</span>
-            </div>
-            <p class="task-description">启用后将按周期自动刷新所有活跃 EPG 来源的频道数据，用于嗅探结果与频道列表的 EPG 自动匹配。</p>
-            <div class="form-grid schedule-grid">
-              <label class="checkbox-label">
-                <input id="scheduleEnabled" type="checkbox">
-                启用定时刷新
-              </label>
-              <label>
-                执行周期
-                <select id="scheduleUnit">
-                  <option value="hours">按小时</option>
-                  <option value="days">按天</option>
-                </select>
-              </label>
-              <label>
-                间隔
-                <input id="scheduleEvery" type="number" min="1" value="1">
-                <small id="scheduleEveryHint">每 1 天</small>
-              </label>
-              <label>
-                执行小时
-                <input id="scheduleHour" type="number" min="0" max="23" value="3">
-              </label>
-              <label>
-                执行分钟
-                <input id="scheduleMinute" type="number" min="0" max="59" value="0">
-              </label>
-            </div>
-            <div class="button-row">
-              <button id="saveScheduleBtn" class="primary" type="button">保存定时任务</button>
-              <button id="runScheduleNowBtn" class="secondary" type="button">立即执行一次</button>
-              <button id="disableScheduleBtn" class="secondary" type="button">停用任务</button>
-            </div>
-            <div id="schedulePanel" class="status-panel muted">定时 EPG 未启用。</div>
-          </section>
         </div>
 
         <div id="stbDiscoveryTab" class="tab-panel">
@@ -428,33 +321,11 @@
             </div>
             <div class="button-row">
               <button id="iptvAuthRefreshBtn" class="secondary" type="button">刷新状态</button>
-              <button id="iptvAuthGenerateBtn" class="primary" type="button">生成认证脚本</button>
               <button id="iptvAuthExportBtn" class="secondary" type="button">导出备份</button>
               <button id="iptvAuthImportBtn" class="secondary" type="button">导入备份</button>
               <input id="iptvAuthImportFile" type="file" accept=".json" style="display:none">
             </div>
             <div id="iptvAuthStatus" class="result-box muted" style="margin-top:12px">请选择接口并刷新状态。</div>
-          </section>
-
-          <section class="card">
-            <div class="section-title">
-              <h2>安全助手：复制脚本手动执行</h2>
-              <span class="muted small">推荐先用这一层验证认证参数</span>
-            </div>
-            <div class="script-grid">
-              <div>
-                <div class="section-subtitle"><h3>宿主机 dhclient 脚本</h3></div>
-                <pre id="iptvAuthDhclientScript" class="logs-output small-pre">点击「生成认证脚本」。</pre>
-              </div>
-              <div>
-                <div class="section-subtitle"><h3>容器内 udhcpc 命令</h3></div>
-                <pre id="iptvAuthUdhcpcScript" class="logs-output small-pre">点击「生成认证脚本」。</pre>
-              </div>
-            </div>
-            <div class="button-row">
-              <button id="iptvAuthCopyDhclientBtn" class="secondary" type="button">复制 dhclient 脚本</button>
-              <button id="iptvAuthCopyUdhcpcBtn" class="secondary" type="button">复制 udhcpc 命令</button>
-            </div>
           </section>
 
           <section class="card">
@@ -482,6 +353,50 @@
         </div>
 
         <div id="channelListTab" class="tab-panel" hidden>
+          <section class="card">
+            <div class="section-title">
+              <h2>EPG 与台标</h2>
+              <span id="epgBadge2" class="chip neutral">未加载</span>
+            </div>
+            <div class="form-grid">
+              <label class="checkbox-label" style="align-self:center">
+                <input id="useEpg" type="checkbox" checked>
+                使用 EPG 节目单
+              </label>
+              <div id="epgSourceRow" class="form-grid" style="grid-column:1/-1;grid-template-columns:auto 1fr auto;gap:8px;align-items:end">
+                <label style="margin:0">
+                  来源名称
+                  <input id="epgSourceName" type="text" placeholder="来源名称" style="width:130px">
+                </label>
+                <label style="margin:0">
+                  XMLTV EPG 地址
+                  <input id="epgSourceUrl" type="url" placeholder="https://example.com/epg.xml.gz" style="width:100%">
+                </label>
+                <button id="refreshEpgBtn" class="secondary" type="button" style="align-self:end">刷新</button>
+              </div>
+              <label class="checkbox-label" style="align-self:center">
+                <input id="useLogo" type="checkbox" checked>
+                使用台标
+              </label>
+              <div id="logoSourceRow" class="form-grid" style="grid-column:1/-1;grid-template-columns:auto 1fr auto;gap:8px;align-items:end">
+                <label style="margin:0">
+                  来源名称
+                  <input id="logoSourceName" type="text" placeholder="来源名称" style="width:130px">
+                </label>
+                <label style="margin:0">
+                  台标 M3U 地址
+                  <input id="logoSourceUrl" type="url" placeholder="https://example.com/TVlist.m3u" style="width:100%">
+                </label>
+                <button id="refreshLogoBtn" class="secondary" type="button" style="align-self:end">刷新</button>
+              </div>
+            </div>
+            <div class="button-row" style="margin-top:8px">
+              <button id="saveEpgSettingsBtn" class="primary" type="button">保存</button>
+              <button id="rematchEpgBtn" class="secondary" type="button">重新匹配节目单</button>
+            </div>
+            <div id="epgStatusBox" class="result-box muted" style="margin-top:8px"></div>
+          </section>
+
           <section class="card">
             <div class="section-title">
               <h2>导出结果</h2>
@@ -533,7 +448,6 @@
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
             <div class="button-row">
               <button id="clDownloadBestM3u" class="primary" type="button">最佳线路 M3U（直连）</button>
-              <button id="clDownloadFnosM3u" class="primary" type="button">飞牛影视 M3U（rtp直连）</button>
               <button id="clDownloadFnosHlsM3u" class="primary" type="button">飞牛影视 HLS M3U</button>
               <button id="clDownloadRtpBestM3u" class="primary" type="button">最佳线路 M3U（rtp2httpd 源）</button>
             </div>
@@ -558,7 +472,7 @@
               <button id="clClearSelBtn" class="secondary" type="button">取消全选</button>
               <button id="clDeleteSelectedBtn" class="danger" type="button">删除选中</button>
               <button id="clRefreshBtn" class="secondary" type="button">刷新</button>
-              <button id="clProbeBtn" class="secondary" type="button">一键探测分辨率</button>
+              <button id="clProbeBtn" class="secondary" type="button">探测选中频道分辨率</button>
               <button id="clGroupViewBtn" class="secondary" type="button">分组视图</button>
             </div>
             <div class="cl-filter">
@@ -668,21 +582,6 @@
 
       </section>
     </main>
-  </div>
-
-  <div id="sourcesModal" class="preview-modal" hidden>
-    <div class="preview-dialog sources-dialog" role="dialog" aria-modal="true">
-      <div class="preview-header">
-        <div><h2 id="sourcesModalTitle">管理来源</h2></div>
-        <button id="closeSourcesBtn" class="secondary" type="button">关闭</button>
-      </div>
-      <div id="sourcesList" class="sources-list"></div>
-      <div class="sources-add-row">
-        <input id="sourcesAddName" type="text" placeholder="来源名称" style="flex:0 0 140px">
-        <input id="sourcesAddUrl" type="url" placeholder="https://..." style="flex:1 1 200px;min-width:0">
-        <button id="sourcesAddBtn" class="primary" type="button">添加</button>
-      </div>
-    </div>
   </div>
 
   <datalist id="categoryDatalist">
