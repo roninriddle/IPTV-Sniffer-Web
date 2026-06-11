@@ -177,6 +177,8 @@ class ExportService:
         # Legacy aliases (same content as best)
         direct_m3u_path = self.output_dir / "channels-direct.m3u"
         source_m3u_path = self.output_dir / "channels-rtp2httpd-source.m3u"
+        # 飞牛影视 alias (same content as best — HTTP URLs, one entry per channel group)
+        fnos_m3u_path  = self.output_dir / "channels-fnos.m3u"
         json_path = self.output_dir / "channels.json"
         txt_path  = self.output_dir / "channels.txt"
         csv_path  = self.output_dir / "channels.csv"
@@ -184,10 +186,11 @@ class ExportService:
         self._write_m3u(channels,      all_m3u_path,   url_mode="direct", **m3u_kwargs)
         self._write_m3u(best_channels, rtp_best_path,  url_mode="source", **m3u_kwargs)
         self._write_m3u(channels,      rtp_all_path,   url_mode="source", **m3u_kwargs)
-        # Write legacy aliases (same bytes as new files)
+        # Write aliases (same bytes as new files)
         import shutil as _shutil
         _shutil.copy2(best_m3u_path, direct_m3u_path)
         _shutil.copy2(rtp_best_path, source_m3u_path)
+        _shutil.copy2(best_m3u_path, fnos_m3u_path)
         self._write_playlist_json(channels, json_path, path_mode, fcc_type=fcc_type)
         self._write_txt(channels, txt_path, http_host, http_port, path_mode, fcc_type=fcc_type)
         self._write_csv(channels, csv_path, http_host, http_port, path_mode, fcc_type=fcc_type)
@@ -203,6 +206,7 @@ class ExportService:
                 "rtp_all_m3u": rtp_all_path.name,
                 "direct_m3u": direct_m3u_path.name,
                 "source_m3u": source_m3u_path.name,
+                "fnos_m3u": fnos_m3u_path.name,
                 "json": json_path.name,
                 "txt": txt_path.name,
                 "csv": csv_path.name,

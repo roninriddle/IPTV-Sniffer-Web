@@ -1126,6 +1126,7 @@ $("streamsTableBody").addEventListener("focusout", () => {
   }, 80);
 });
 $("clDownloadBestM3u").addEventListener("click", function() { doExportDownload("channels-best.m3u", this); });
+$("clDownloadFnosM3u").addEventListener("click", function() { doExportDownload("channels-fnos.m3u", this); });
 $("clDownloadAllM3u").addEventListener("click", function() { doExportDownload("channels-all.m3u", this); });
 $("clDownloadRtpBestM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-best.m3u", this); });
 $("clDownloadRtpAllM3u").addEventListener("click", function() { doExportDownload("channels-rtp2httpd-all.m3u", this); });
