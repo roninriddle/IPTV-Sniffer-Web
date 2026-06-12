@@ -370,10 +370,10 @@ exit 0
             "-s", str(hook_path),
             "-p", str(pid_path),
             "-x", f"hostname:{p['hostname']}",
-            "-x", f"0x3c:0x{p['vendor_class']}",
+            "-x", f"0x3c:{p['vendor_class_colon']}",
         ]
         if p["client_id"]:
-            cmd.extend(["-x", f"0x3d:0x{p['client_id']}"])
+            cmd.extend(["-x", f"0x3d:{_colon_hex(p['client_id'])}"])
         if p["requested_ip"]:
             cmd.extend(["-r", p["requested_ip"]])
         run_step(cmd, timeout=35)

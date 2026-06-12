@@ -571,6 +571,8 @@ def api_settings_save():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return api_error("请求体格式不正确")
+    if "fcc_type" in data and str(data.get("fcc_type") or "").strip() not in {"", "telecom", "huawei"}:
+        data["fcc_type"] = ""
     saved = settings_store.save(data)
     epg_url = str(saved.get("epg_url", "")).strip()
     logo_url = str(saved.get("logo_url", "")).strip()
@@ -765,16 +767,21 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "quality_group": stored.get("quality_group", ""),
         })
     enriched = enrich_channel_rows(rows, settings)
-    # Only save rows that don't already have a user-modified name
+    # Save rows: preserve user-modified names but always update tech params (FCC/FEC/probe).
     to_save = []
     for row in enriched:
         key = str(row.get("key", ""))
         stored = existing.get(key)
-        # Skip if user has manually set a name different from the operator name
         if stored and str(stored.get("name", "")).strip():
             op_name = str(row.get("auto_name", "")).strip()
             stored_name = str(stored.get("name", "")).strip()
             if stored_name and stored_name != op_name:
+                # User renamed this channel — keep their name but refresh tech fields.
+                merged = dict(stored)
+                for tech_field in ("fcc_ip", "fcc_port", "fec_port", "is_hd", "time_shift"):
+                    if row.get(tech_field) is not None and row.get(tech_field) != "":
+                        merged[tech_field] = row[tech_field]
+                to_save.append(merged)
                 continue
         to_save.append(row)
     ch_result = channel_store.save_rows(to_save) if to_save else {"saved": 0, "deleted": 0, "total": 0}

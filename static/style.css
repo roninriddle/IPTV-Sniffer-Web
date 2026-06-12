@@ -297,6 +297,7 @@ button:disabled, .download.disabled { opacity: .45; cursor: not-allowed; pointer
 .chip.ok { color: var(--ok); background: #e6f5ee; }
 .chip.warning { color: var(--warning); background: #fff2d7; }
 .chip.danger { color: var(--danger); background: #fde8ea; }
+.chip.error { color: var(--danger); background: #fde8ea; }
 .update-badge { text-decoration: none; cursor: pointer; animation: pulse-badge 2s infinite; }
 @keyframes pulse-badge { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
 
@@ -390,7 +391,7 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
   border-radius: 6px;
 }
 .snapshot-thumb { width: 100%; height: 100%; display: block; object-fit: cover; }
-.result-box { margin-top: 12px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px; line-height: 1.5; }
+.result-box { margin-top: 12px; border: 1px dashed var(--line); border-radius: 8px; padding: 10px; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word; }
 .result-box.ok { border-color: #b7dfca; background: #f0fbf6; color: #145c3a; }
 .result-box.warning { border-color: #f6d28f; background: #fff8e8; color: #7a4600; }
 .result-box.error { border-color: #f0b4bc; background: #fff1f2; color: #881337; }
