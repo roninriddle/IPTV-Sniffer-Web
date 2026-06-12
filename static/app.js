@@ -198,7 +198,10 @@ async function loadInterfaces() {
 
 async function loadEpgSettings() {
   try {
-    const data = await requestJson("/api/settings");
+    const [data, epg] = await Promise.all([
+      requestJson("/api/settings"),
+      requestJson("/api/epg/status"),
+    ]);
     const useEpg = data.use_epg !== false;
     const useLogo = data.use_logo !== false;
     $("useEpg").checked = useEpg;
@@ -209,17 +212,31 @@ async function loadEpgSettings() {
     $("logoSourceUrl").value = data.logo_url || "";
     $("epgSourceRow").hidden = !useEpg;
     $("logoSourceRow").hidden = !useLogo;
-    renderEpgBadge(data);
+    renderEpgBadge(useEpg, epg);
   } catch (err) { console.warn("loadEpgSettings:", err.message); }
 }
 
-function renderEpgBadge(settings) {
+function renderEpgBadge(useEpg, epg) {
   const badge2 = $("epgBadge2");
   if (!badge2) return;
-  const epg = settings?.epg_status;
-  if (!settings?.use_epg) { badge2.className = "chip neutral"; badge2.textContent = "未启用"; return; }
-  if (epg?.channels > 0) { badge2.className = "chip ok"; badge2.textContent = `${epg.channels} 个频道`; }
+  if (!useEpg) { badge2.className = "chip neutral"; badge2.textContent = "未启用"; }
+  else if (epg?.refreshing) { badge2.className = "chip warning"; badge2.textContent = "刷新中"; }
+  else if ((epg?.channels ?? 0) > 0) { badge2.className = "chip ok"; badge2.textContent = `${epg.channels} 个频道`; }
   else { badge2.className = "chip neutral"; badge2.textContent = "未加载"; }
+  const box = $("epgStatusBox");
+  if (!box) return;
+  if (!useEpg) { box.textContent = "EPG 与台标已禁用，导出文件中不含 tvg-id / logo。"; box.className = "result-box muted"; return; }
+  if (epg?.refreshing) { box.textContent = "正在刷新 EPG…"; box.className = "result-box warning"; return; }
+  if ((epg?.channels ?? 0) > 0) {
+    box.textContent = `已缓存 ${epg.channels} 个频道节目单，台标 ${epg.logos ?? 0} 个。${epg.last_error ? " 警告：" + epg.last_error : ""}`;
+    box.className = "result-box " + (epg.last_error ? "warning" : "ok");
+  } else if (epg?.last_error) {
+    box.textContent = `EPG 加载失败：${epg.last_error}`;
+    box.className = "result-box error";
+  } else {
+    box.textContent = "EPG 尚未加载，点击「刷新」获取节目单。";
+    box.className = "result-box muted";
+  }
 }
 
 async function loadSettings() {
@@ -781,6 +798,7 @@ $("refreshEpgBtn").addEventListener("click", async () => {
     })});
     const epg = await requestJson("/api/epg/refresh", {method: "POST", body: "{}"});
     renderEpgStatus(epg);
+    renderEpgBadge($("useEpg").checked, epg);
     alert("EPG 刷新已启动");
   } catch (err) { alert(err.message); }
   finally { btn.disabled = false; }
@@ -796,6 +814,7 @@ $("refreshLogoBtn").addEventListener("click", async () => {
       logo_name: $("logoSourceName").value.trim(),
       logo_url: logoUrl,
     })});
+    await requestJson("/api/logo/refresh", {method: "POST", body: JSON.stringify({logo_url: logoUrl})});
     alert("台标刷新已启动");
   } catch (err) { alert(err.message); }
   finally { btn.disabled = false; }
