@@ -38,7 +38,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/iptv-sniffer-web
             docker.io/${{ secrets.DOCKERHUB_USERNAME }}/iptv-sniffer-web
           tags: |
-            type=ref,event=tag
+            type=semver,pattern={{version}}
             type=raw,value=latest
       - name: Build and push
         uses: docker/build-push-action@v6
