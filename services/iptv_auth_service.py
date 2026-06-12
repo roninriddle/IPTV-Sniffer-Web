@@ -363,10 +363,11 @@ exit 0
         run_step(["ip", "link", "set", "dev", iface, "address", p["mac"]])
         run_step(["ip", "link", "set", "dev", iface, "up"])
 
+        suppress_default_clientid = bool(p["client_id"])
         cmd = [
             "udhcpc", "-f", "-q", "-n", "-t", "4", "-T", "3",
             "-i", iface,
-            "-C",
+            *(["-C"] if suppress_default_clientid else []),
             "-s", str(hook_path),
             "-p", str(pid_path),
             "-x", f"hostname:{p['hostname']}",
