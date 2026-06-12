@@ -16,6 +16,7 @@ const state = {
   streams: [],
   channelList: [],
   channelListSection: "list",
+  iptvAuthSection: "summary",
   ignoredKeys: _loadIgnoredKeys(),
 };
 
@@ -69,7 +70,9 @@ function showHome() {
   $("homePage").hidden = false;
   $("workbenchPage").hidden = true;
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.add("active"));
-  document.querySelectorAll("[data-tab]").forEach((item) => item.classList.remove("active"));
+  document.querySelectorAll("[data-nav-tab]").forEach((item) => item.classList.remove("active"));
+  hideChannelListSections();
+  hideIptvAuthSections();
 }
 
 function showChannelListSection(sectionName = "list") {
@@ -82,6 +85,28 @@ function showChannelListSection(sectionName = "list") {
   document.querySelectorAll("[data-cl-section]").forEach((button) => {
     button.classList.toggle("active", button.dataset.clSection === target);
   });
+}
+
+function hideChannelListSections() {
+  document.querySelectorAll("[data-cl-panel]").forEach((panel) => { panel.hidden = true; });
+  document.querySelectorAll("[data-cl-section]").forEach((button) => button.classList.remove("active"));
+}
+
+function showIptvAuthSection(sectionName = "summary") {
+  const allowed = new Set(["summary", "advanced"]);
+  const target = allowed.has(sectionName) ? sectionName : "summary";
+  state.iptvAuthSection = target;
+  document.querySelectorAll("[data-auth-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.authPanel !== target;
+  });
+  document.querySelectorAll("[data-auth-section]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.authSection === target);
+  });
+}
+
+function hideIptvAuthSections() {
+  document.querySelectorAll("[data-auth-panel]").forEach((panel) => { panel.hidden = true; });
+  document.querySelectorAll("[data-auth-section]").forEach((button) => button.classList.remove("active"));
 }
 
 function showTab(tabName) {
@@ -97,13 +122,20 @@ function showTab(tabName) {
     loadChannelList();
     loadSnapshots();
     loadEpgSettings();
+  } else {
+    hideChannelListSections();
   }
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
-  if (tabName === "iptvAuth") initIptvAuthTab();
+  if (tabName === "iptvAuth") {
+    showIptvAuthSection(state.iptvAuthSection || "summary");
+    initIptvAuthTab();
+  } else {
+    hideIptvAuthSections();
+  }
   if (tabName === "diagnose") initDiagnoseTab();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
-  document.querySelectorAll("[data-tab]").forEach((item) => {
-    item.classList.toggle("active", item.dataset.tab === tabName);
+  document.querySelectorAll("[data-nav-tab]").forEach((item) => {
+    item.classList.toggle("active", item.dataset.navTab === tabName);
   });
 }
 
@@ -528,8 +560,8 @@ function buildProbeDetailHtml(stream) {
     const rows = [
       stream.tvg_id ? `<span class="pd-k">tvg-id</span><span>${escapeHtml(stream.tvg_id)}</span>` : "",
       stream.tvg_name ? `<span class="pd-k">tvg-name</span><span>${escapeHtml(stream.tvg_name)}</span>` : "",
-      stream.tvg_logo ? `<span class="pd-k">台标</span><span style="overflow-wrap:anywhere">${escapeHtml(stream.tvg_logo)}</span>` : "",
-      stream.epg_source ? `<span class="pd-k">EPG来源</span><span style="overflow-wrap:anywhere">${escapeHtml(stream.epg_source)}</span>` : "",
+      stream.tvg_logo ? `<span class="pd-k">台标</span><span class="wrap-anywhere">${escapeHtml(stream.tvg_logo)}</span>` : "",
+      stream.epg_source ? `<span class="pd-k">EPG来源</span><span class="wrap-anywhere">${escapeHtml(stream.epg_source)}</span>` : "",
     ].filter(Boolean).join("");
     parts.push(`<div class="pd-section"><div class="pd-title">EPG / 台标</div><div class="pd-grid">${rows}</div></div>`);
   }
@@ -596,12 +628,34 @@ async function appendLogs() {
   if ((data.entries || []).length) output.scrollTop = output.scrollHeight;
 }
 
+function setLogsDrawerOpen(isOpen) {
+  const drawer = $("logsDrawer");
+  drawer.classList.toggle("open", isOpen);
+  drawer.setAttribute("aria-hidden", isOpen ? "false" : "true");
+  if (isOpen) drawer.removeAttribute("inert");
+  else drawer.setAttribute("inert", "");
+  drawer.querySelectorAll("button,a,input,select,textarea,[tabindex]").forEach((el) => {
+    if (isOpen) {
+      if (Object.prototype.hasOwnProperty.call(el.dataset, "prevTabindex")) {
+        const previous = el.dataset.prevTabindex;
+        if (previous) el.setAttribute("tabindex", previous);
+        else el.removeAttribute("tabindex");
+        delete el.dataset.prevTabindex;
+      }
+    } else {
+      if (!Object.prototype.hasOwnProperty.call(el.dataset, "prevTabindex")) {
+        el.dataset.prevTabindex = el.getAttribute("tabindex") || "";
+      }
+      el.setAttribute("tabindex", "-1");
+    }
+  });
+}
+
 function openLogs() {
   state.logsOpen = true;
   document.body.classList.add("logs-open");
   localStorage.setItem("logsOpen", "1");
-  $("logsDrawer").classList.add("open");
-  $("logsDrawer").setAttribute("aria-hidden", "false");
+  setLogsDrawerOpen(true);
   appendLogs().catch(() => {});
   if (state.logPoller) clearInterval(state.logPoller);
   state.logPoller = setInterval(() => appendLogs().catch(() => {}), 1000);
@@ -611,8 +665,7 @@ function closeLogs() {
   state.logsOpen = false;
   document.body.classList.remove("logs-open");
   localStorage.setItem("logsOpen", "0");
-  $("logsDrawer").classList.remove("open");
-  $("logsDrawer").setAttribute("aria-hidden", "true");
+  setLogsDrawerOpen(false);
   if (state.logPoller) clearInterval(state.logPoller);
 }
 
@@ -717,7 +770,7 @@ async function loadSnapshots() {
 function renderSnapshots(snapshots) {
   const list = $("snapshotList");
   if (!snapshots.length) {
-    list.innerHTML = '<div class="muted" style="padding:8px 0">暂无快照。</div>';
+    list.innerHTML = '<div class="sources-empty-inline">暂无快照。</div>';
     return;
   }
   list.innerHTML = snapshots.map((s) => `
@@ -750,15 +803,20 @@ async function bootstrap() {
   await loadSettings();
   await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
+  else setLogsDrawerOpen(false);
   const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
   startPolling(initialState === "running");
   loadIptvAuthSummary().catch(() => {});
 }
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
-document.querySelectorAll("[data-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.tab)));
+document.querySelectorAll("[data-nav-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.navTab)));
+document.querySelectorAll("[data-home-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.homeTab)));
 document.querySelectorAll("[data-cl-section]").forEach((item) => {
   item.addEventListener("click", () => showChannelListSection(item.dataset.clSection));
+});
+document.querySelectorAll("[data-auth-section]").forEach((item) => {
+  item.addEventListener("click", () => showIptvAuthSection(item.dataset.authSection));
 });
 $("filterBestPerIp").addEventListener("change", () => renderStreams(state.streams));
 $("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
@@ -1623,8 +1681,8 @@ let _groupViewInit = false;
 $("clGroupViewBtn").addEventListener("click", () => {
   _groupViewActive = !_groupViewActive;
   $("clGroupViewBtn").textContent = _groupViewActive ? "平铺视图" : "分组视图";
-  $("clFlatView").style.display  = _groupViewActive ? "none" : "";
-  $("clGroupView").style.display = _groupViewActive ? "" : "none";
+  $("clFlatView").hidden = _groupViewActive;
+  $("clGroupView").hidden = !_groupViewActive;
   if (_groupViewActive) loadChannelGroups();
   else {
     // restore flat count
