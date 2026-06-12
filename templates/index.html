@@ -15,14 +15,14 @@
         <p class="top-subtitle">{{ app_description }}</p>
       </div>
       <div class="top-actions">
-        <button class="nav-pill active" data-page="home" type="button">首页 / 使用向导</button>
-        <button class="nav-pill" data-tab="stbDiscovery" type="button">运营商频道</button>
-        <button class="nav-pill" data-tab="iptvAuth" type="button">IPTV 认证</button>
-        <button class="nav-pill" data-tab="channelList" type="button">频道线路</button>
-        <button class="nav-pill" data-tab="diagnose" type="button">播放诊断</button>
-        <button class="nav-pill" data-tab="sniffer" type="button">嗅探整理</button>
+        <button class="nav-pill active" data-page="home" type="button" title="首页 / 使用向导">首页</button>
+        <button class="nav-pill" data-tab="stbDiscovery" type="button" title="运营商频道发现">发现</button>
+        <button class="nav-pill" data-tab="channelList" type="button" title="频道线路">线路</button>
+        <button class="nav-pill" data-tab="diagnose" type="button" title="播放链路诊断">诊断</button>
+        <button class="nav-pill" data-tab="iptvAuth" type="button" title="IPTV 认证助手">认证</button>
+        <button class="nav-pill" data-tab="sniffer" type="button" title="嗅探整理">嗅探</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
-        <button id="logsBtn" class="primary" type="button">实时日志</button>
+        <button id="logsBtn" class="primary logs-toggle" type="button" title="打开实时日志">日志</button>
       </div>
     </div>
   </header>
@@ -53,9 +53,9 @@
           </div>
           <div class="home-actions">
             <button class="primary" data-tab="stbDiscovery" type="button">运营商频道发现</button>
+            <button class="secondary" data-tab="channelList" type="button">频道线路与导出</button>
+            <button class="secondary" data-tab="diagnose" type="button">播放链路诊断</button>
             <button class="secondary" data-tab="iptvAuth" type="button">IPTV 认证助手</button>
-            <button class="secondary" data-tab="channelList" type="button">查看频道列表</button>
-            <button class="secondary" data-tab="channelList" type="button">配置 EPG 与台标</button>
           </div>
         </div>
 
@@ -83,16 +83,16 @@
             <span>填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统自动从 STB 开机流量中解析频道表与 DHCP 认证信息（MAC / IPTV IP / Option60 等），一键「导入到频道线路」。</span>
           </article>
           <article>
-            <strong>2. IPTV 认证助手（需要主动播放时）</strong>
-            <span>使用已捕获的 MAC / Hostname / Option60 生成认证脚本；实验模式可只对选定接口执行认证，并在执行前备份初始网络状态，支持恢复。FNOS 中请到容器「高级设置 → 功能」勾选 NET_ADMIN 和 NET_RAW。</span>
+            <strong>2. 频道线路与导出</strong>
+            <span>确认频道名称、分组、主源和备线，按播放器或 rtp2httpd 需要导出最佳线路、全部线路或 HLS 播放列表。</span>
           </article>
           <article>
-            <strong>3. 频道线路管理</strong>
-            <span>同名频道自动归组，按清晰度（4K → 1080p → 720p → SD）与探测状态自动选主源；也可手动设为主源。导出「最佳线路 M3U」（每组只取主源）或「全部线路 M3U」。</span>
+            <strong>3. 播放诊断</strong>
+            <span>先检测 rtp2httpd、M3U、FCC、IGMP 和组播回流，判断问题在播放列表、配置、上游链路还是镜像口限制。</span>
           </article>
           <article>
-            <strong>4. 播放诊断</strong>
-            <span>检测 rtp2httpd 可达性、FCC 响应与认证状态，给出「M3U 问题 / rtp2httpd 配置问题 / 上游组播问题」结论，帮助定位播放失败原因。</span>
+            <strong>4. IPTV 认证助手（高级）</strong>
+            <span>只有需要让本机主动播放时再使用；实验模式只操作选定接口，执行前备份，支持恢复。FNOS 需勾选 NET_ADMIN 和 NET_RAW。</span>
           </article>
           <article>
             <strong>5. EPG 与台标维护</strong>
@@ -353,7 +353,14 @@
         </div>
 
         <div id="channelListTab" class="tab-panel" hidden>
-          <section class="card">
+          <div class="channel-section-tabs" role="tablist" aria-label="频道线路分区">
+            <button class="tab-button active" data-cl-section="list" type="button">频道列表</button>
+            <button class="tab-button" data-cl-section="export" type="button">导出</button>
+            <button class="tab-button" data-cl-section="epg" type="button">EPG / 台标</button>
+            <button class="tab-button" data-cl-section="snapshots" type="button">快照</button>
+          </div>
+
+          <section class="card cl-section" data-cl-panel="epg" hidden>
             <div class="section-title">
               <h2>EPG 与台标</h2>
               <span id="epgBadge2" class="chip neutral">未加载</span>
@@ -363,31 +370,31 @@
                 <input id="useEpg" type="checkbox" checked>
                 使用 EPG 节目单
               </label>
-              <div id="epgSourceRow" class="form-grid" style="grid-column:1/-1;grid-template-columns:auto 1fr auto;gap:8px;align-items:end">
-                <label style="margin:0">
+              <div id="epgSourceRow" class="source-row-grid">
+                <label>
                   来源名称
-                  <input id="epgSourceName" type="text" placeholder="来源名称" style="width:130px">
+                  <input id="epgSourceName" class="source-name-input" type="text" placeholder="来源名称">
                 </label>
-                <label style="margin:0">
+                <label>
                   XMLTV EPG 地址
-                  <input id="epgSourceUrl" type="url" placeholder="https://example.com/epg.xml.gz" style="width:100%">
+                  <input id="epgSourceUrl" type="url" placeholder="https://example.com/epg.xml.gz">
                 </label>
-                <button id="refreshEpgBtn" class="secondary" type="button" style="align-self:end">刷新</button>
+                <button id="refreshEpgBtn" class="secondary" type="button">刷新</button>
               </div>
               <label class="checkbox-label" style="align-self:center">
                 <input id="useLogo" type="checkbox" checked>
                 使用台标
               </label>
-              <div id="logoSourceRow" class="form-grid" style="grid-column:1/-1;grid-template-columns:auto 1fr auto;gap:8px;align-items:end">
-                <label style="margin:0">
+              <div id="logoSourceRow" class="source-row-grid">
+                <label>
                   来源名称
-                  <input id="logoSourceName" type="text" placeholder="来源名称" style="width:130px">
+                  <input id="logoSourceName" class="source-name-input" type="text" placeholder="来源名称">
                 </label>
-                <label style="margin:0">
+                <label>
                   台标 M3U 地址
-                  <input id="logoSourceUrl" type="url" placeholder="https://example.com/TVlist.m3u" style="width:100%">
+                  <input id="logoSourceUrl" type="url" placeholder="https://example.com/TVlist.m3u">
                 </label>
-                <button id="refreshLogoBtn" class="secondary" type="button" style="align-self:end">刷新</button>
+                <button id="refreshLogoBtn" class="secondary" type="button">刷新</button>
               </div>
             </div>
             <div class="button-row" style="margin-top:8px">
@@ -397,7 +404,7 @@
             <div id="epgStatusBox" class="result-box muted" style="margin-top:8px"></div>
           </section>
 
-          <section class="card">
+          <section class="card cl-section" data-cl-panel="export" hidden>
             <div class="section-title">
               <h2>导出结果</h2>
               <span class="muted">最佳线路每组只取主源；全部线路保留所有备线且每条源只写一次。不勾选则导出全部频道。</span>
@@ -447,14 +454,14 @@
             </div>
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
             <div class="button-row">
-              <button id="clDownloadBestM3u" class="primary" type="button">最佳线路 M3U（直连）</button>
+              <button id="clDownloadBestM3u" class="primary" type="button">播放器 M3U：最佳线路</button>
               <button id="clDownloadFnosHlsM3u" class="primary" type="button">飞牛影视 HLS M3U</button>
-              <button id="clDownloadRtpBestM3u" class="primary" type="button">最佳线路 M3U（rtp2httpd 源）</button>
+              <button id="clDownloadRtpBestM3u" class="primary" type="button">rtp2httpd 源文件：最佳线路</button>
             </div>
             <div class="section-subtitle" style="margin-top:10px"><h3>全部线路</h3></div>
             <div class="button-row">
-              <button id="clDownloadAllM3u" class="secondary" type="button">全部线路 M3U（直连）</button>
-              <button id="clDownloadRtpAllM3u" class="secondary" type="button">全部线路 M3U（rtp2httpd 源）</button>
+              <button id="clDownloadAllM3u" class="secondary" type="button">播放器 M3U：全部线路</button>
+              <button id="clDownloadRtpAllM3u" class="secondary" type="button">rtp2httpd 源文件：全部线路</button>
               <button id="clDownloadJson" class="secondary" type="button">JSON</button>
               <button id="clDownloadTxt" class="secondary" type="button">TXT</button>
               <button id="clDownloadCsv" class="secondary" type="button">CSV</button>
@@ -462,7 +469,7 @@
             <div id="clExportResult" class="result-box muted">「最佳线路」每个频道组只导出得分最高的主源；「全部线路」导出所有。</div>
           </section>
 
-          <section class="card">
+          <section class="card cl-section" data-cl-panel="list">
             <div class="section-title">
               <h2>频道线路</h2>
               <span id="clChannelCount" class="chip neutral">0 个</span>
@@ -530,7 +537,7 @@
             </div>
           </section>
 
-          <section class="card">
+          <section class="card cl-section" data-cl-panel="snapshots" hidden>
             <div class="section-title">
               <h2>频道列表快照</h2>
               <span class="muted small">将当前频道列表保存为命名快照，随时可恢复。</span>

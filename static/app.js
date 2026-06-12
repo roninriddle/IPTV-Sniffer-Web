@@ -15,6 +15,7 @@ const state = {
   logPoller: null,
   streams: [],
   channelList: [],
+  channelListSection: "list",
   ignoredKeys: _loadIgnoredKeys(),
 };
 
@@ -71,6 +72,18 @@ function showHome() {
   document.querySelectorAll("[data-tab]").forEach((item) => item.classList.remove("active"));
 }
 
+function showChannelListSection(sectionName = "list") {
+  const allowed = new Set(["list", "export", "epg", "snapshots"]);
+  const target = allowed.has(sectionName) ? sectionName : "list";
+  state.channelListSection = target;
+  document.querySelectorAll("[data-cl-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.clPanel !== target;
+  });
+  document.querySelectorAll("[data-cl-section]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.clSection === target);
+  });
+}
+
 function showTab(tabName) {
   $("homePage").hidden = true;
   $("workbenchPage").hidden = false;
@@ -79,7 +92,12 @@ function showTab(tabName) {
   $("iptvAuthTab").hidden = tabName !== "iptvAuth";
   $("channelListTab").hidden = tabName !== "channelList";
   $("diagnoseTab").hidden = tabName !== "diagnose";
-  if (tabName === "channelList") { loadChannelList(); loadSnapshots(); loadEpgSettings(); }
+  if (tabName === "channelList") {
+    showChannelListSection(state.channelListSection || "list");
+    loadChannelList();
+    loadSnapshots();
+    loadEpgSettings();
+  }
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
   if (tabName === "iptvAuth") initIptvAuthTab();
   if (tabName === "diagnose") initDiagnoseTab();
@@ -722,6 +740,9 @@ async function bootstrap() {
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
 document.querySelectorAll("[data-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.tab)));
+document.querySelectorAll("[data-cl-section]").forEach((item) => {
+  item.addEventListener("click", () => showChannelListSection(item.dataset.clSection));
+});
 $("filterBestPerIp").addEventListener("change", () => renderStreams(state.streams));
 $("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
 $("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("useLogo").checked; });
@@ -820,6 +841,7 @@ $("importToChannelListBtn").addEventListener("click", async () => {
   try {
     const data = await requestJson("/api/channels/save", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
     alert(`已导入 ${data.saved} 个频道到频道列表。`);
+    state.channelListSection = "list";
     showTab("channelList");
   } catch (err) { alert(err.message); }
 });
@@ -971,6 +993,7 @@ $("reimportOperatorBtn").addEventListener("click", async () => {
     status.hidden = false;
     status.className = "result-box";
     status.textContent = `重新导入完成：${result.imported} 个频道，频道列表更新 ${result.channels_saved} 条。`;
+    state.channelListSection = "list";
     showTab("channelList");
   } catch (err) { alert(err.message); }
   finally { btn.disabled = false; btn.textContent = "重新导入到频道列表"; }
@@ -1166,6 +1189,7 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
   try {
     const data = await requestJson("/api/stb_discovery/import", {method: "POST", body: "{}"});
     alert(`已导入 ${data.imported} 个频道到频道列表。`);
+    state.channelListSection = "list";
     showTab("channelList");
   } catch (err) { alert(err.message); }
 });
