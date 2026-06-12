@@ -364,8 +364,7 @@ exit 0
         run_step(["ip", "link", "set", "dev", iface, "up"])
 
         suppress_default_clientid = bool(p["client_id"])
-        cmd = [
-            "udhcpc", "-f", "-q", "-n", "-t", "4", "-T", "3",
+        dhcp_opts = [
             "-i", iface,
             *(["-C"] if suppress_default_clientid else []),
             "-s", str(hook_path),
@@ -374,10 +373,16 @@ exit 0
             "-x", f"0x3c:{p['vendor_class_colon']}",
         ]
         if p["client_id"]:
-            cmd.extend(["-x", f"0x3d:{_colon_hex(p['client_id'])}"])
+            dhcp_opts.extend(["-x", f"0x3d:{_colon_hex(p['client_id'])}"])
         if p["requested_ip"]:
-            cmd.extend(["-r", p["requested_ip"]])
-        run_step(cmd, timeout=35)
+            dhcp_opts.extend(["-r", p["requested_ip"]])
+
+        # Phase 1: synchronous one-shot — confirms authentication succeeded.
+        run_step(["udhcpc", "-f", "-q", "-n", "-t", "4", "-T", "3"] + dhcp_opts, timeout=35)
+
+        # Phase 2: background renewal daemon — keeps the lease alive indefinitely.
+        # Without -f the process daemonizes; without -q it stays running and renews.
+        run_step(["udhcpc", "-n", "-t", "4", "-T", "3"] + dhcp_opts, timeout=5, check=False)
 
         # Belt-and-suspenders: explicitly set multicast route after udhcpc.
         # The udhcpc hook does this too, but runs in a subprocess and may race
