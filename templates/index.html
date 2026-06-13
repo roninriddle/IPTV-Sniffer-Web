@@ -331,6 +331,46 @@
               <input id="iptvAuthImportFile" class="hidden-control" type="file" accept=".json">
             </div>
             <div id="iptvAuthStatus" class="result-box muted">请选择接口并刷新状态。</div>
+            <div class="section-subtitle mt-12">
+              <h3>组播拦截检测</h3>
+              <span id="iptvTcBadge" class="chip neutral">未检测</span>
+            </div>
+            <p class="task-description">当 rtp2httpd 日志显示 FCC 成功但切换组播后无数据时，可检测选定 IPTV 网口是否存在 egress BPF/TC 过滤器拦截 IGMP。临时解除只操作当前接口，执行前会保存检测快照。</p>
+            <div class="form-grid compact-grid">
+              <label>
+                解除确认文本
+                <input id="iptvTcConfirm" type="text" placeholder="确认解除BPF">
+              </label>
+              <div class="button-row align-self-end">
+                <button id="iptvTcRefreshBtn" class="secondary" type="button">检测组播拦截</button>
+                <button id="iptvTcFixBtn" class="danger-btn" type="button">临时解除 egress BPF</button>
+              </div>
+            </div>
+            <div id="iptvTcStatus" class="result-box muted">刷新状态后显示选定接口的 TC/XDP 检测结果。</div>
+            <div class="section-subtitle mt-12">
+              <h3>自动修复守护</h3>
+              <span id="iptvTcWatchBadge" class="chip neutral">已关闭</span>
+            </div>
+            <p class="task-description">开启后，系统会按间隔检测当前 IPTV 网口。只有发现疑似 egress BPF 拦截 IGMP/组播切换时，才会自动执行临时解除。默认关闭，且只操作当前选择的接口。</p>
+            <div class="form-grid watch-grid">
+              <label class="checkbox-label align-self-center">
+                <input id="iptvTcAutoFix" type="checkbox">
+                自动解除疑似 egress BPF 拦截
+              </label>
+              <label>
+                检测间隔（秒）
+                <input id="iptvTcWatchInterval" type="number" min="10" max="3600" step="5" value="30">
+              </label>
+              <label>
+                开启确认文本
+                <input id="iptvTcWatchConfirm" type="text" placeholder="确认自动修复BPF">
+              </label>
+              <div class="button-row align-self-end">
+                <button id="iptvTcWatchSaveBtn" class="secondary" type="button">保存自动修复</button>
+                <button id="iptvTcWatchRefreshBtn" class="secondary" type="button">刷新守护状态</button>
+              </div>
+            </div>
+            <div id="iptvTcWatchStatus" class="result-box muted">自动修复默认关闭。</div>
             </div>
           </section>
 

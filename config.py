@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -47,6 +47,10 @@ PROBE_TIMEOUT_SECONDS = int(os.environ.get("PROBE_TIMEOUT_SECONDS", "10"))
 PROBE_ANALYZE_DURATION_US = int(os.environ.get("PROBE_ANALYZE_DURATION_US", "8000000"))
 PROBE_SIZE_BYTES = int(os.environ.get("PROBE_SIZE_BYTES", "8000000"))
 PROBE_BUFFER_SIZE = int(os.environ.get("PROBE_BUFFER_SIZE", "131072"))
+EXPORT_HEALTH_TIMEOUT_SECONDS = float(os.environ.get("EXPORT_HEALTH_TIMEOUT_SECONDS", "2.5"))
+EXPORT_HEALTH_SAMPLE_BYTES = int(os.environ.get("EXPORT_HEALTH_SAMPLE_BYTES", "4096"))
+EXPORT_HEALTH_MAX_GROUPS = int(os.environ.get("EXPORT_HEALTH_MAX_GROUPS", "40"))
+EXPORT_HEALTH_MAX_CANDIDATES_PER_GROUP = int(os.environ.get("EXPORT_HEALTH_MAX_CANDIDATES_PER_GROUP", "4"))
 
 CAPTURE_FILTER = os.environ.get("CAPTURE_FILTER", "(udp and dst net 224.0.0.0/4) or tcp")
 ALLOWED_DOWNLOADS = {
@@ -82,6 +86,7 @@ DEFAULT_SETTINGS = {
     "catchup_days": 7,
     "catchup_source_template": "",
     "fcc_type": "",
+    "pre_export_health_check": True,
 }
 
 for directory in (DATA_DIR, OUTPUT_DIR):

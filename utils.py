@@ -166,12 +166,27 @@ def channel_primary_score(ch: dict) -> tuple:
     """Higher tuple = better candidate for primary source within a group.
 
     Tier ordering (higher = better):
+      export health      ok=4 / unchecked=2 / timeout=1 / failed=0
+      manual primary     user-selected primary wins when health is equal
       quality_group tier  4K高清=4 / 高清频道=3 / 普通频道=2 / other=1
       pixel count         w*h (distinguishes 1080p from 720p within 高清频道)
       probe status        ok=3 / partial=2 / not_probed=1 / failed=0
       fcc/fec availability
+      measured speed
       packet count
     """
+    health_status = str(ch.get("export_health_status") or "").strip().lower()
+    health = {
+        "ok": 4,
+        "partial": 3,
+        "skipped": 2,
+        "not_checked": 2,
+        "": 2,
+        "timeout": 1,
+        "failed": 0,
+        "error": 0,
+    }.get(health_status, 2)
+    manual = 1 if ch.get("is_primary") else 0
     qg = {"4K高清": 4, "高清频道": 3, "普通频道": 2}.get(str(ch.get("quality_group", "")), 1)
     try:
         px = int(ch.get("width") or 0) * int(ch.get("height") or 0)
@@ -181,5 +196,6 @@ def channel_primary_score(ch: dict) -> tuple:
         str(ch.get("probe_status", "not_probed")), 1
     )
     fcc = (2 if ch.get("fcc_ip") and ch.get("fcc_port") else 0) + (1 if ch.get("fec_port") else 0)
+    speed = int(ch.get("export_health_speed", 0) or 0)
     pkts = int(ch.get("packets", 0) or 0)
-    return (qg, px, ps, fcc, pkts)
+    return (health, manual, qg, px, ps, fcc, speed, pkts)

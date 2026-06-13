@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v1.0.2
+# IPTV Sniffer Web v1.0.6
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口嗅探** 的 IPTV 组播嗅探、运营商频道发现、频道线路整理与 `rtp2httpd` 播放列表工作台。
 
@@ -21,7 +21,7 @@ v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一
 | 功能 | 说明 |
 |---|---|
 | 运营商频道发现 | 通过交换机镜像口捕获机顶盒开机流量，解析频道表、组播地址、FCC/FEC、DHCP 认证信息 |
-| IPTV 认证助手 | 集中展示 MAC / Hostname / IPTV IP / 网关 / Option60 / UserToken / FCC 摘要；提供实验性一键认证与恢复；支持导出/导入接口初始状态备份 |
+| IPTV 认证助手 | 集中展示 MAC / Hostname / IPTV IP / 网关 / Option60 / UserToken / FCC 摘要；提供实验性一键认证与恢复；支持导出/导入接口初始状态备份；可检测并临时解除选定网口 egress BPF 组播拦截，并支持定时自动修复开关 |
 | 频道线路组 | 同名频道自动归组，按 4K > 1080p > 720p > SD > 未识别自动选主源，保留备选线路 |
 | 播放链路诊断 | 检测 rtp2httpd 可达性、配置、FCC、IGMP、组播回流和镜像口误判；探测分辨率使用正确网口 IGMP 加入 |
 | 五档导出 | `channels-best.m3u` / `channels-all.m3u` / `channels-fnos-hls.m3u`（浏览器 HLS）/ `channels-rtp2httpd-best.m3u` / `channels-rtp2httpd-all.m3u` |
@@ -136,6 +136,8 @@ external-m3u = file:///vol1/@appshare/rtp2httpd/channels-rtp2httpd-best.m3u
 external-m3u-update-interval = 0
 ```
 
+导出最佳线路前会对同一频道组内的多条候选源做短拉流健康检查：通过 rtp2httpd 读取少量媒体字节，HTTP 200 且有数据的源优先；HTTP 503、超时或无数据的源会自动降级。单源频道不会额外检查。
+
 常见播放地址形态：
 
 ```text
@@ -162,6 +164,10 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 | POST | `/api/iptv-auth/restore` | 恢复选定接口初始设置 |
 | GET | `/api/iptv-auth/backup-export` | 导出接口初始状态备份 JSON |
 | POST | `/api/iptv-auth/backup-import` | 导入接口初始状态备份 JSON |
+| GET | `/api/iptv-auth/egress-bpf/status` | 检测选定接口 TC/XDP/egress BPF 状态 |
+| POST | `/api/iptv-auth/egress-bpf/clear` | 强确认后临时解除选定接口 egress BPF |
+| GET | `/api/iptv-auth/egress-bpf/watch` | 查看 egress BPF 自动修复守护状态 |
+| POST | `/api/iptv-auth/egress-bpf/watch` | 配置 egress BPF 自动修复开关与检测间隔 |
 | POST | `/api/epg/refresh` | 刷新 EPG 与台标缓存 |
 | POST | `/api/epg/rematch` | 强制重新匹配所有频道节目单 |
 | POST | `/api/diagnose` | 播放链路诊断 |
@@ -173,6 +179,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 ## 版本记录
 
+- `v1.0.6`：IPTV 认证页新增组播拦截检测；可识别选定接口 XDP/clsact/egress BPF 与 drop 计数；强确认后仅临时解除该接口 egress BPF，并保存检测快照；新增默认关闭的自动修复守护开关，可按间隔检测并自动解除疑似拦截，用于修复 FCC 成功但组播切换无回流的问题；导出前新增多线路源健康检查，自动避开 HTTP 503、超时或无数据的坏源；
 - `v1.0.2`：修复刷新台标按钮实际未调用 /api/logo/refresh；修复频道线路 EPG 徽章永远显示"未加载"（settings 端点不含 epg_status）；补全 epgStatusBox 状态文本；
 - `v1.0.1`：EPG 与台标移至频道线路标签，可勾选启用/禁用，各保留一个来源；移除安全助手脚本生成模块；移除飞牛影视 rtp 直连 M3U 按钮；修复 udhcpc option125 malformed hex 报错；探测分辨率改为仅探测勾选频道；捕获流量时实时显示已发现频道数与认证状态；刷新状态自动覆盖备份；
 - `v1.0.0`：飞牛影视 HLS 转封装支持（按需 FFmpeg，空闲自动停止）；飞牛影视 rtp 直连 M3U；EPG 数字边界误匹配修复；探测分辨率使用正确 IPTV 接口 IGMP 加入；IPTV 认证备份导出/导入；重新匹配节目单按钮；iptv_private 路由模式设为默认推荐；

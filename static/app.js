@@ -686,7 +686,11 @@ async function doExportDownload(filename, btn, requireHost = false) {
       : (state.channelList || []);
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({...formSettings(), channels})});
     $("clExportResult").className = "result-box";
-    $("clExportResult").textContent = `共 ${data.count} 条线路，分组后主源 ${data.best_count ?? data.count} 个；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条。`;
+    const health = data.health_check;
+    const healthText = health?.checked
+      ? `导出前检查 ${health.groups_checked} 个多线路组、${health.checked} 条源：可用 ${health.ok}，失败 ${health.failed}，超时 ${health.timeout}${health.limit_reached ? "，已达检查上限" : ""}。`
+      : (health?.message || "");
+    $("clExportResult").textContent = `共 ${data.count} 条线路，分组后主源 ${data.best_count ?? data.count} 个；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条。${healthText ? `\n${healthText}` : ""}`;
     const a = document.createElement("a");
     a.href = `/api/download/${filename}`;
     a.download = filename;
@@ -1332,6 +1336,112 @@ function _renderIptvAuthStatus(d) {
   status.className = "result-box " + (d.has_iptv_ip ? "ok" : ok ? "warning" : "muted");
 }
 
+function _renderIptvTcStatus(d) {
+  const badge = $("iptvTcBadge");
+  const status = $("iptvTcStatus");
+  if (!badge || !status) return;
+  const tools = d.tools || {};
+  const hasBpf = Boolean(d.egress_bpf_present);
+  const suspected = Boolean(d.suspected_igmp_block);
+  badge.className = `chip ${suspected ? "warning" : hasBpf ? "warning" : "ok"}`;
+  badge.textContent = suspected ? "疑似拦截" : hasBpf ? "发现 egress BPF" : "未发现拦截";
+  const lines = [
+    `<strong>接口：${escapeHtml(d.interface || "-")}</strong>`,
+    `工具：tc=${tools.tc ? "可用" : "缺失"}，ip=${tools.ip ? "可用" : "缺失"}`,
+    `XDP：${d.xdp_present ? "存在" : "未发现"}，clsact：${d.clsact_present ? "存在" : "未发现"}，egress BPF：${hasBpf ? "存在" : "未发现"}`,
+    `clsact 丢包计数：<span class="mono">${escapeHtml(d.clsact_dropped ?? 0)}</span>`,
+    `解除命令预览：<span class="mono">${escapeHtml(d.command_preview || "-")}</span>`,
+    suspected
+      ? "判断：疑似选定网口的 egress BPF 正在影响 IGMP/组播切换，可在确认后临时解除。"
+      : hasBpf
+        ? "判断：发现 egress BPF。若播放诊断显示 FCC 成功但组播无回流，可尝试临时解除。"
+        : "判断：未发现典型 egress BPF 拦截。若仍无组播回流，请继续检查上游链路或 rtp2httpd 配置。",
+  ];
+  status.innerHTML = lines.map(line => `<div>${line}</div>`).join("");
+  status.className = "result-box " + (suspected || hasBpf ? "warning" : "ok");
+  if (!$("iptvTcConfirm").placeholder && d.confirmation_text) $("iptvTcConfirm").placeholder = d.confirmation_text;
+}
+
+async function refreshIptvTcStatus() {
+  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  if (!iface) return;
+  try {
+    const d = await requestJson(`/api/iptv-auth/egress-bpf/status?interface=${encodeURIComponent(iface)}`);
+    _renderIptvTcStatus(d);
+  } catch (err) {
+    $("iptvTcBadge").className = "chip warning";
+    $("iptvTcBadge").textContent = "检测失败";
+    $("iptvTcStatus").textContent = `组播拦截检测失败：${err.message}`;
+    $("iptvTcStatus").className = "result-box error";
+  }
+}
+
+function _renderIptvTcWatch(data) {
+  const badge = $("iptvTcWatchBadge");
+  const status = $("iptvTcWatchStatus");
+  if (!badge || !status) return;
+  const cfg = data.config || {};
+  const runtime = data.runtime || {};
+  $("iptvTcAutoFix").checked = Boolean(cfg.enabled);
+  $("iptvTcWatchInterval").value = cfg.interval_seconds || 30;
+  const enabled = Boolean(cfg.enabled);
+  const lastStatus = runtime.last_status || {};
+  const lastResult = runtime.last_result || {};
+  badge.className = `chip ${enabled ? "ok" : "neutral"}`;
+  badge.textContent = enabled ? "自动修复开启" : "已关闭";
+  const lines = [
+    `<strong>状态：${enabled ? "开启" : "关闭"}</strong>`,
+    `接口：<span class="mono">${escapeHtml(cfg.interface || "-")}</span>，间隔：<span class="mono">${escapeHtml(cfg.interval_seconds || 30)} 秒</span>`,
+    `检查次数：<span class="mono">${escapeHtml(runtime.check_count || 0)}</span>，自动修复次数：<span class="mono">${escapeHtml(runtime.fix_count || 0)}</span>`,
+    `上次检测：${formatDateTime(runtime.last_checked_at)}，上次修复：${formatDateTime(runtime.last_action_at)}`,
+    runtime.last_error ? `最近错误：${escapeHtml(runtime.last_error)}` : "最近错误：无",
+    lastStatus.interface ? `最近判断：${lastStatus.suspected_igmp_block ? "疑似拦截" : "未触发"}，egress BPF：${lastStatus.egress_bpf_present ? "存在" : "未发现"}，drop=${escapeHtml(lastStatus.clsact_dropped ?? 0)}` : "最近判断：暂无",
+    lastResult.backup_path ? `最近修复备份：<span class="mono">${escapeHtml(lastResult.backup_path)}</span>` : "",
+  ].filter(Boolean);
+  status.innerHTML = lines.map(line => `<div>${line}</div>`).join("");
+  status.className = "result-box " + (runtime.last_error ? "error" : enabled ? "ok" : "muted");
+  if (!$("iptvTcWatchConfirm").placeholder && data.confirmation_text) $("iptvTcWatchConfirm").placeholder = data.confirmation_text;
+}
+
+async function refreshIptvTcWatchStatus() {
+  try {
+    const d = await requestJson("/api/iptv-auth/egress-bpf/watch");
+    _renderIptvTcWatch(d);
+  } catch (err) {
+    $("iptvTcWatchBadge").className = "chip warning";
+    $("iptvTcWatchBadge").textContent = "状态异常";
+    $("iptvTcWatchStatus").textContent = `自动修复状态读取失败：${err.message}`;
+    $("iptvTcWatchStatus").className = "result-box error";
+  }
+}
+
+async function saveIptvTcWatch() {
+  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  const enabled = $("iptvTcAutoFix").checked;
+  if (enabled && !iface) { alert("请先选择 IPTV 上游接口。"); return; }
+  const btn = $("iptvTcWatchSaveBtn");
+  btn.disabled = true; btn.textContent = "保存中…";
+  try {
+    const payload = {
+      enabled,
+      interface: iface,
+      interval_seconds: Number($("iptvTcWatchInterval").value || 30),
+      confirm: $("iptvTcWatchConfirm").value.trim(),
+    };
+    const d = await requestJson("/api/iptv-auth/egress-bpf/watch", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    _renderIptvTcWatch(d);
+    $("iptvTcWatchStatus").className = "result-box ok";
+  } catch (err) {
+    $("iptvTcWatchStatus").textContent = `自动修复保存失败：${err.message}`;
+    $("iptvTcWatchStatus").className = "result-box error";
+  } finally {
+    btn.disabled = false; btn.textContent = "保存自动修复";
+  }
+}
+
 async function refreshIptvAuthStatus() {
   await loadIptvAuthSummary();
   const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
@@ -1340,11 +1450,42 @@ async function refreshIptvAuthStatus() {
   try {
     const d = await requestJson(`/api/iptv-auth/status?interface=${encodeURIComponent(iface)}`);
     _renderIptvAuthStatus(d);
+    await refreshIptvTcStatus();
+    await refreshIptvTcWatchStatus();
   } catch (err) {
     $("iptvAuthBadge").className = "chip warning";
     $("iptvAuthBadge").textContent = "检测失败";
     $("iptvAuthStatus").textContent = `检测失败：${err.message}`;
     $("iptvAuthStatus").className = "result-box error";
+  }
+}
+
+async function clearIptvEgressBpf() {
+  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  if (!iface) { alert("请先选择 IPTV 上游接口。"); return; }
+  const confirmText = $("iptvTcConfirm").value.trim();
+  const btn = $("iptvTcFixBtn");
+  btn.disabled = true; btn.textContent = "解除中…";
+  $("iptvTcStatus").textContent = "正在临时解除选定接口的 egress BPF，并保存检测快照…";
+  $("iptvTcStatus").className = "result-box warning";
+  try {
+    const d = await requestJson("/api/iptv-auth/egress-bpf/clear", {
+      method: "POST",
+      body: JSON.stringify({interface: iface, confirm: confirmText}),
+    });
+    const after = d.after || {};
+    _renderIptvTcStatus(after);
+    const message = d.changed
+      ? `已临时解除 ${d.interface} 的 egress BPF。\n备份：${d.backup_path}\n请重新播放或运行播放诊断确认组播回流。`
+      : `未发现需要解除的 egress BPF。\n备份：${d.backup_path}`;
+    $("iptvTcStatus").textContent = message;
+    $("iptvTcStatus").className = "result-box ok";
+    await refreshIptvTcWatchStatus();
+  } catch (err) {
+    $("iptvTcStatus").textContent = `临时解除失败：${err.message}`;
+    $("iptvTcStatus").className = "result-box error";
+  } finally {
+    btn.disabled = false; btn.textContent = "临时解除 egress BPF";
   }
 }
 
@@ -1397,6 +1538,11 @@ function initIptvAuthTab() {
 $("iptvAuthRefreshBtn").addEventListener("click", refreshIptvAuthStatus);
 $("iptvAuthApplyBtn").addEventListener("click", applyIptvAuth);
 $("iptvAuthRestoreBtn").addEventListener("click", restoreIptvAuth);
+$("iptvTcRefreshBtn").addEventListener("click", refreshIptvTcStatus);
+$("iptvTcFixBtn").addEventListener("click", clearIptvEgressBpf);
+$("iptvTcWatchSaveBtn").addEventListener("click", saveIptvTcWatch);
+$("iptvTcWatchRefreshBtn").addEventListener("click", refreshIptvTcWatchStatus);
+$("iptvAuthIface").addEventListener("change", refreshIptvAuthStatus);
 
 $("iptvAuthExportBtn").addEventListener("click", async function () {
   const iface = $("iptvAuthIface").value;

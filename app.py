@@ -14,7 +14,7 @@ import time
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory
@@ -33,6 +33,10 @@ from config import (
     DATA_DIR,
     DISCOVERY_FILE,
     EPG_CACHE_FILE,
+    EXPORT_HEALTH_MAX_CANDIDATES_PER_GROUP,
+    EXPORT_HEALTH_MAX_GROUPS,
+    EXPORT_HEALTH_SAMPLE_BYTES,
+    EXPORT_HEALTH_TIMEOUT_SECONDS,
     FCC_FILE,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
@@ -291,6 +295,203 @@ def _iptv_local_ip(settings: dict[str, Any]) -> str:
     except Exception:
         pass
     return ""
+
+
+def _row_with_operator_stream_params(row: dict[str, Any], operator_channels: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of row with FCC/FEC filled from the operator table when absent."""
+    item = dict(row)
+    key = str(item.get("key") or f"{item.get('host', '')}:{item.get('port', '')}").strip()
+    op = operator_channels.get(key) or {}
+    for field, op_field in (
+        ("fcc_ip", "fcc_ip"),
+        ("fcc_port", "fcc_port"),
+        ("fec_port", "fec_port"),
+    ):
+        if item.get(field) in (None, "", 0):
+            value = op.get(op_field)
+            if value not in (None, "", 0):
+                item[field] = value
+    return item
+
+
+def _export_health_check_one(
+    row: dict[str, Any],
+    settings: dict[str, Any],
+    operator_channels: dict[str, Any],
+) -> dict[str, Any]:
+    checked_at = int(time.time())
+    key = str(row.get("key") or f"{row.get('host', '')}:{row.get('port', '')}").strip()
+    host = str(row.get("host", "")).strip()
+    port = _safe_int(row.get("port"))
+    if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
+        return {
+            "export_health_status": "skipped",
+            "export_health_http_code": None,
+            "export_health_bytes": 0,
+            "export_health_speed": 0,
+            "export_health_elapsed_ms": 0,
+            "export_health_checked_at": checked_at,
+            "export_health_message": "非有效 IPv4 组播源，跳过",
+        }
+    http_host = str(settings.get("http_host", "")).strip()
+    if not http_host:
+        return {
+            "export_health_status": "skipped",
+            "export_health_http_code": None,
+            "export_health_bytes": 0,
+            "export_health_speed": 0,
+            "export_health_elapsed_ms": 0,
+            "export_health_checked_at": checked_at,
+            "export_health_message": "未配置 rtp2httpd 地址，跳过",
+        }
+    try:
+        http_port = int(settings.get("http_port", 5140) or 5140)
+    except (TypeError, ValueError):
+        http_port = 5140
+    path_mode = str(settings.get("path_mode", "rtp")).strip().lower()
+    if path_mode not in {"rtp", "udp"}:
+        path_mode = "rtp"
+    item = _row_with_operator_stream_params(row, operator_channels)
+    url = ExportService.make_http_url(
+        http_host,
+        http_port,
+        path_mode,
+        host,
+        port,
+        str(item.get("fcc_ip") or "").strip(),
+        _safe_int(item.get("fcc_port")),
+        _safe_int(item.get("fec_port")),
+        str(settings.get("fcc_type", "") or "").strip(),
+    )
+    timeout = max(0.5, float(settings.get("export_health_timeout_seconds", EXPORT_HEALTH_TIMEOUT_SECONDS) or EXPORT_HEALTH_TIMEOUT_SECONDS))
+    sample_bytes = max(188, int(settings.get("export_health_sample_bytes", EXPORT_HEALTH_SAMPLE_BYTES) or EXPORT_HEALTH_SAMPLE_BYTES))
+    started = time.time()
+    try:
+        req = Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION} export-health"})
+        with urlopen(req, timeout=timeout) as resp:
+            code = int(resp.getcode() or 0)
+            chunk = resp.read(sample_bytes)
+        elapsed_ms = int((time.time() - started) * 1000)
+        size = len(chunk or b"")
+        speed = int(size / max(0.001, elapsed_ms / 1000))
+        ok = 200 <= code < 400 and size > 0
+        return {
+            "export_health_status": "ok" if ok else "failed",
+            "export_health_http_code": code,
+            "export_health_bytes": size,
+            "export_health_speed": speed,
+            "export_health_elapsed_ms": elapsed_ms,
+            "export_health_checked_at": checked_at,
+            "export_health_message": f"HTTP {code}，读取 {size} 字节" if ok else f"HTTP {code}，未读取到媒体数据",
+        }
+    except HTTPError as exc:
+        elapsed_ms = int((time.time() - started) * 1000)
+        return {
+            "export_health_status": "failed",
+            "export_health_http_code": int(exc.code or 0),
+            "export_health_bytes": 0,
+            "export_health_speed": 0,
+            "export_health_elapsed_ms": elapsed_ms,
+            "export_health_checked_at": checked_at,
+            "export_health_message": f"HTTP {exc.code}",
+        }
+    except TimeoutError:
+        elapsed_ms = int((time.time() - started) * 1000)
+        return {
+            "export_health_status": "timeout",
+            "export_health_http_code": None,
+            "export_health_bytes": 0,
+            "export_health_speed": 0,
+            "export_health_elapsed_ms": elapsed_ms,
+            "export_health_checked_at": checked_at,
+            "export_health_message": f"{timeout:.1f} 秒内未读到媒体数据",
+        }
+    except URLError as exc:
+        elapsed_ms = int((time.time() - started) * 1000)
+        reason = str(getattr(exc, "reason", exc))
+        status = "timeout" if "timed out" in reason.lower() else "error"
+        return {
+            "export_health_status": status,
+            "export_health_http_code": None,
+            "export_health_bytes": 0,
+            "export_health_speed": 0,
+            "export_health_elapsed_ms": elapsed_ms,
+            "export_health_checked_at": checked_at,
+            "export_health_message": reason,
+        }
+    except Exception as exc:
+        elapsed_ms = int((time.time() - started) * 1000)
+        return {
+            "export_health_status": "error",
+            "export_health_http_code": None,
+            "export_health_bytes": 0,
+            "export_health_speed": 0,
+            "export_health_elapsed_ms": elapsed_ms,
+            "export_health_checked_at": checked_at,
+            "export_health_message": str(exc),
+        }
+
+
+def apply_pre_export_health_check(
+    rows: list[dict[str, Any]],
+    settings: dict[str, Any],
+    operator_channels: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    summary = {
+        "enabled": bool(settings.get("pre_export_health_check", True)),
+        "groups_checked": 0,
+        "checked": 0,
+        "ok": 0,
+        "failed": 0,
+        "timeout": 0,
+        "error": 0,
+        "skipped": 0,
+        "limit_reached": False,
+        "message": "",
+    }
+    if not summary["enabled"]:
+        summary["message"] = "已关闭导出前线路健康检查"
+        return rows, summary
+    if not str(settings.get("http_host", "")).strip():
+        summary["message"] = "未配置 rtp2httpd 地址，跳过导出前线路健康检查"
+        return rows, summary
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not str(row.get("name", "")).strip():
+            continue
+        groups.setdefault(channel_group_key(row), []).append(row)
+
+    multi_groups = [members for members in groups.values() if len(members) > 1]
+    max_groups = max(0, int(settings.get("export_health_max_groups", EXPORT_HEALTH_MAX_GROUPS) or EXPORT_HEALTH_MAX_GROUPS))
+    max_candidates = max(1, int(settings.get("export_health_max_candidates_per_group", EXPORT_HEALTH_MAX_CANDIDATES_PER_GROUP) or EXPORT_HEALTH_MAX_CANDIDATES_PER_GROUP))
+    if max_groups and len(multi_groups) > max_groups:
+        summary["limit_reached"] = True
+        multi_groups = multi_groups[:max_groups]
+
+    for members in multi_groups:
+        summary["groups_checked"] += 1
+        ordered = sorted(members, key=channel_primary_score, reverse=True)[:max_candidates]
+        for row in ordered:
+            health = _export_health_check_one(row, settings, operator_channels)
+            row.update(health)
+            status = str(health.get("export_health_status") or "error")
+            if status not in {"ok", "failed", "timeout", "error", "skipped"}:
+                status = "error"
+            summary[status] += 1
+            summary["checked"] += 1
+            logger.info(
+                "导出前线路检查："
+                f"{row.get('name', '')} {row.get('key', '')} → {status}，{health.get('export_health_message', '')}"
+            )
+    if summary["checked"]:
+        summary["message"] = (
+            f"已检查 {summary['groups_checked']} 个多线路频道组、{summary['checked']} 条源，"
+            f"可用 {summary['ok']} 条，失败 {summary['failed']} 条，超时 {summary['timeout']} 条"
+        )
+    else:
+        summary["message"] = "没有需要比较的多线路频道组"
+    return rows, summary
 
 
 def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
@@ -1050,13 +1251,17 @@ def api_export():
     try:
         rows = enrich_channel_rows(rows, settings)
         operator_channels = operator_channel_store.load()
+        rows, health_summary = apply_pre_export_health_check(rows, settings, operator_channels)
         result = export_service.export(rows, settings, operator_channels=operator_channels)
+        result["health_check"] = health_summary
         channel_store.save_rows(rows)
         logger.info(
             "导出完成：共生成 "
             f"{result['count']} 个频道，文件为 channels-direct.m3u / "
             "channels-rtp2httpd-source.m3u / channels.json / channels.txt / channels.csv"
         )
+        if health_summary.get("checked"):
+            logger.info(f"导出前线路健康检查完成：{health_summary.get('message')}")
         return api_success(result)
     except ValueError as exc:
         return api_error(str(exc), 400)
@@ -1338,6 +1543,45 @@ def api_iptv_auth_restore():
         return api_success(iptv_auth_service.restore(data))
     except Exception as exc:
         logger.error(f"IPTV 认证恢复失败：{exc}")
+        return api_error(str(exc))
+
+
+@app.get("/api/iptv-auth/egress-bpf/status")
+def api_iptv_auth_egress_bpf_status():
+    iface = str(request.args.get("interface") or settings_store.load().get("interface") or "").strip()
+    if not iface:
+        return api_error("请先选择 IPTV 上游接口")
+    try:
+        return api_success(iptv_auth_service.egress_bpf_status(iface))
+    except Exception as exc:
+        return api_error(str(exc))
+
+
+@app.post("/api/iptv-auth/egress-bpf/clear")
+def api_iptv_auth_egress_bpf_clear():
+    data = request.get_json(silent=True) or {}
+    try:
+        return api_success(iptv_auth_service.clear_egress_bpf(data))
+    except Exception as exc:
+        logger.error(f"解除 egress BPF 失败：{exc}")
+        return api_error(str(exc))
+
+
+@app.get("/api/iptv-auth/egress-bpf/watch")
+def api_iptv_auth_egress_bpf_watch_status():
+    try:
+        return api_success(iptv_auth_service.egress_bpf_watch_status())
+    except Exception as exc:
+        return api_error(str(exc))
+
+
+@app.post("/api/iptv-auth/egress-bpf/watch")
+def api_iptv_auth_egress_bpf_watch_configure():
+    data = request.get_json(silent=True) or {}
+    try:
+        return api_success(iptv_auth_service.configure_egress_bpf_watch(data))
+    except Exception as exc:
+        logger.error(f"配置 egress BPF 自动修复失败：{exc}")
         return api_error(str(exc))
 
 
@@ -1650,6 +1894,7 @@ def boot() -> None:
     capture_service.validate_runtime()
     probe_service.validate_runtime()
     epg_service.start_auto_refresh(settings_store)
+    iptv_auth_service.start_egress_bpf_watchdog()
     start_auto_enrichment_loop()
     threading.Thread(target=_startup_epg_refresh, daemon=True).start()
     _start_version_check_loop()

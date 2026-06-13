@@ -119,6 +119,14 @@ class ExportService:
                 tvg_name=str(row.get("tvg_name", "") or "").strip(),
                 tvg_logo=str(row.get("tvg_logo", "") or "").strip(),
                 epg_source=str(row.get("epg_source", "") or "").strip(),
+                is_primary=bool(row.get("is_primary", False)),
+                export_health_status=str(row.get("export_health_status", "") or "").strip(),
+                export_health_http_code=self._safe_int(row.get("export_health_http_code")),
+                export_health_bytes=self._safe_int(row.get("export_health_bytes")) or 0,
+                export_health_speed=self._safe_int(row.get("export_health_speed")) or 0,
+                export_health_elapsed_ms=self._safe_int(row.get("export_health_elapsed_ms")) or 0,
+                export_health_checked_at=self._safe_int(row.get("export_health_checked_at")),
+                export_health_message=str(row.get("export_health_message", "") or "").strip(),
             ))
             seen_keys.add(key)
         channels.sort(key=self._channel_sort_key)
@@ -222,6 +230,9 @@ class ExportService:
                 "width": c.width, "height": c.height,
                 "fcc_ip": c.fcc_ip, "fcc_port": c.fcc_port,
                 "fec_port": c.fec_port, "packets": c.packets,
+                "is_primary": c.is_primary,
+                "export_health_status": c.export_health_status,
+                "export_health_speed": c.export_health_speed,
             }))
             best.append(primary)
         best.sort(key=self._channel_sort_key)
@@ -423,6 +434,15 @@ class ExportService:
                     "height": channel.height,
                     "fcc": f"{channel.fcc_ip}:{channel.fcc_port}" if channel.fcc_ip and channel.fcc_port else "",
                     "fec": channel.fec_port or "",
+                    "export_health": {
+                        "status": channel.export_health_status,
+                        "http_code": channel.export_health_http_code,
+                        "bytes": channel.export_health_bytes,
+                        "speed": channel.export_health_speed,
+                        "elapsed_ms": channel.export_health_elapsed_ms,
+                        "checked_at": channel.export_health_checked_at,
+                        "message": channel.export_health_message,
+                    },
                 },
             }
         with target.open("w", encoding="utf-8", newline="\n") as handle:

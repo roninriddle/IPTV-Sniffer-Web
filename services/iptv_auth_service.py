@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -18,6 +19,8 @@ from services.log_service import AppLogger
 
 CONFIRM_TEXT = "确认执行"
 RESTORE_CONFIRM_TEXT = "确认恢复"
+BPF_CLEAR_CONFIRM_TEXT = "确认解除BPF"
+BPF_AUTO_FIX_CONFIRM_TEXT = "确认自动修复BPF"
 
 
 def _safe_load_json(path: Path, default: Any) -> Any:
@@ -118,6 +121,20 @@ class IptvAuthService:
         self.backup_path = backup_path
         self.data_dir = data_dir
         self.logger = logger
+        self.bpf_watch_path = data_dir / "egress_bpf_watch.json"
+        self._watch_lock = threading.RLock()
+        self._watch_stop = threading.Event()
+        self._watch_thread: threading.Thread | None = None
+        self._watch_runtime: dict[str, Any] = {
+            "running": False,
+            "check_count": 0,
+            "fix_count": 0,
+            "last_checked_at": 0,
+            "last_action_at": 0,
+            "last_error": "",
+            "last_status": None,
+            "last_result": None,
+        }
 
     def _backup_data(self) -> dict[str, Any]:
         data = _safe_load_json(self.backup_path, {"interfaces": {}})
@@ -128,6 +145,26 @@ class IptvAuthService:
 
     def _write_backup_data(self, data: dict[str, Any]) -> None:
         _atomic_dump_json(self.backup_path, data)
+
+    def _bpf_watch_config(self) -> dict[str, Any]:
+        data = _safe_load_json(self.bpf_watch_path, {})
+        if not isinstance(data, dict):
+            data = {}
+        interval = int(data.get("interval_seconds") or 30)
+        interval = max(10, min(3600, interval))
+        return {
+            "enabled": bool(data.get("enabled")),
+            "interface": str(data.get("interface") or "").strip(),
+            "interval_seconds": interval,
+            "updated_at": float(data.get("updated_at") or 0),
+        }
+
+    def _write_bpf_watch_config(self, data: dict[str, Any]) -> None:
+        payload = self._bpf_watch_config()
+        payload.update(data)
+        payload["interval_seconds"] = max(10, min(3600, int(payload.get("interval_seconds") or 30)))
+        payload["updated_at"] = time.time()
+        _atomic_dump_json(self.bpf_watch_path, payload)
 
     def _json_cmd(self, cmd: Sequence[str]) -> Any:
         result = _run(cmd, timeout=8, check=False)
@@ -489,3 +526,205 @@ exit 0
         self._write_backup_data(raw)
         self.logger.info(f"IPTV 认证备份已导入：接口={iface}")
         return {"interface": iface, "saved": True}
+
+    def egress_bpf_status(self, interface: str) -> dict[str, Any]:
+        """Inspect TC/XDP state that may block IGMP on the selected IPTV port."""
+        iface = _valid_iface(interface)
+        if not self._interface_exists(iface):
+            raise ValueError(f"接口不存在：{iface}")
+
+        tools = {
+            "ip": bool(shutil.which("ip")),
+            "tc": bool(shutil.which("tc")),
+        }
+        link = _run(["ip", "-details", "link", "show", "dev", iface], timeout=5, check=False) if tools["ip"] else {
+            "returncode": 127, "stdout": "", "stderr": "缺少 ip 命令", "cmd": "ip -details link show",
+        }
+        qdisc = _run(["tc", "-s", "qdisc", "show", "dev", iface], timeout=5, check=False) if tools["tc"] else {
+            "returncode": 127, "stdout": "", "stderr": "缺少 tc 命令", "cmd": "tc -s qdisc show",
+        }
+        egress = _run(["tc", "-s", "filter", "show", "dev", iface, "egress"], timeout=5, check=False) if tools["tc"] else {
+            "returncode": 127, "stdout": "", "stderr": "缺少 tc 命令", "cmd": "tc -s filter show",
+        }
+
+        link_text = link.get("stdout", "")
+        qdisc_text = qdisc.get("stdout", "")
+        egress_text = egress.get("stdout", "")
+        drop_match = re.search(r"qdisc\s+clsact\b.*?\n\s*Sent\b.*?\(dropped\s+(\d+),", qdisc_text, re.DOTALL)
+        clsact_dropped = int(drop_match.group(1)) if drop_match else 0
+        pref_match = re.search(r"\bpref\s+(\d+)\b.*?\bbpf\b", egress_text, re.IGNORECASE | re.DOTALL)
+        pref = pref_match.group(1) if pref_match else ""
+        egress_bpf_present = bool(re.search(r"\bbpf\b", egress_text, re.IGNORECASE))
+        handle_egress_present = "handle_egress" in egress_text
+        suspected = bool(egress_bpf_present and (clsact_dropped > 0 or handle_egress_present))
+        return {
+            "interface": iface,
+            "tools": tools,
+            "xdp_present": "prog/xdp" in link_text,
+            "clsact_present": "qdisc clsact" in qdisc_text,
+            "clsact_dropped": clsact_dropped,
+            "egress_bpf_present": egress_bpf_present,
+            "handle_egress_present": handle_egress_present,
+            "egress_pref": pref or "49152",
+            "suspected_igmp_block": suspected,
+            "confirmation_text": BPF_CLEAR_CONFIRM_TEXT,
+            "command_preview": f"tc filter del dev {iface} egress protocol all pref {pref or '49152'}",
+            "link": link,
+            "qdisc": qdisc,
+            "egress": egress,
+        }
+
+    def clear_egress_bpf(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Temporarily remove the selected interface's egress BPF filter."""
+        confirm = str(data.get("confirm") or "").strip()
+        if confirm != BPF_CLEAR_CONFIRM_TEXT:
+            raise ValueError(f"请输入确认文本：{BPF_CLEAR_CONFIRM_TEXT}")
+        iface = _valid_iface(data.get("interface") or "")
+        before = self.egress_bpf_status(iface)
+        if not before["tools"]["tc"]:
+            raise RuntimeError("缺少 tc 命令，无法检查或解除 egress BPF")
+
+        fix_dir = self.data_dir / "network-fixes"
+        fix_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        backup_path = fix_dir / f"{iface}-egress-bpf-{stamp}.json"
+        _atomic_dump_json(backup_path, {
+            "created_at": time.time(),
+            "interface": iface,
+            "kind": "pre_clear_egress_bpf",
+            "before": before,
+        })
+
+        pref = str(before.get("egress_pref") or "49152")
+        steps: list[dict[str, Any]] = []
+        delete_cmd = ["tc", "filter", "del", "dev", iface, "egress", "protocol", "all", "pref", pref]
+        result = _run(delete_cmd, timeout=8, check=False)
+        steps.append(result)
+        if result["returncode"] != 0:
+            fallback_cmd = ["tc", "filter", "del", "dev", iface, "egress", "pref", pref]
+            result = _run(fallback_cmd, timeout=8, check=False)
+            steps.append(result)
+
+        after = self.egress_bpf_status(iface)
+        changed = bool(before.get("egress_bpf_present") and not after.get("egress_bpf_present"))
+        if before.get("egress_bpf_present") and after.get("egress_bpf_present"):
+            last = steps[-1]
+            raise RuntimeError(last.get("stderr") or last.get("stdout") or "解除 egress BPF 失败")
+
+        _atomic_dump_json(backup_path, {
+            "created_at": time.time(),
+            "interface": iface,
+            "kind": "clear_egress_bpf",
+            "before": before,
+            "after": after,
+            "steps": steps,
+            "changed": changed,
+        })
+        self.logger.warning(f"已临时解除选定接口 egress BPF：接口={iface}，备份={backup_path}")
+        return {
+            "interface": iface,
+            "changed": changed,
+            "backup_path": str(backup_path),
+            "before": before,
+            "after": after,
+            "steps": steps,
+        }
+
+    def egress_bpf_watch_status(self) -> dict[str, Any]:
+        with self._watch_lock:
+            runtime = dict(self._watch_runtime)
+        return {
+            "config": self._bpf_watch_config(),
+            "runtime": runtime,
+            "confirmation_text": BPF_AUTO_FIX_CONFIRM_TEXT,
+        }
+
+    def configure_egress_bpf_watch(self, data: dict[str, Any]) -> dict[str, Any]:
+        enabled = bool(data.get("enabled"))
+        raw_iface = str(data.get("interface") or "").strip()
+        if raw_iface:
+            iface = _valid_iface(raw_iface)
+        elif enabled:
+            raise ValueError("请先选择 IPTV 上游接口")
+        else:
+            iface = str(self._bpf_watch_config().get("interface") or "")
+        try:
+            interval = int(data.get("interval_seconds") or 30)
+        except (TypeError, ValueError):
+            raise ValueError("检测间隔必须是数字")
+        interval = max(10, min(3600, interval))
+        if enabled:
+            confirm = str(data.get("confirm") or "").strip()
+            if confirm != BPF_AUTO_FIX_CONFIRM_TEXT:
+                raise ValueError(f"请输入确认文本：{BPF_AUTO_FIX_CONFIRM_TEXT}")
+            if not self._interface_exists(iface):
+                raise ValueError(f"接口不存在：{iface}")
+        self._write_bpf_watch_config({
+            "enabled": enabled,
+            "interface": iface,
+            "interval_seconds": interval,
+        })
+        with self._watch_lock:
+            self._watch_runtime["last_error"] = ""
+        self.logger.warning(
+            f"egress BPF 自动修复已{'开启' if enabled else '关闭'}：接口={iface}，间隔={interval}秒"
+        )
+        return self.egress_bpf_watch_status()
+
+    def _egress_bpf_watch_tick(self, iface: str) -> dict[str, Any]:
+        status = self.egress_bpf_status(iface)
+        result: dict[str, Any] | None = None
+        if status.get("suspected_igmp_block"):
+            result = self.clear_egress_bpf({
+                "interface": iface,
+                "confirm": BPF_CLEAR_CONFIRM_TEXT,
+            })
+        with self._watch_lock:
+            self._watch_runtime["check_count"] += 1
+            self._watch_runtime["last_checked_at"] = time.time()
+            self._watch_runtime["last_status"] = status
+            self._watch_runtime["last_error"] = ""
+            if result:
+                self._watch_runtime["last_result"] = result
+                if result.get("changed"):
+                    self._watch_runtime["fix_count"] += 1
+                    self._watch_runtime["last_action_at"] = time.time()
+        return {"status": status, "result": result}
+
+    def start_egress_bpf_watchdog(self) -> None:
+        with self._watch_lock:
+            if self._watch_thread and self._watch_thread.is_alive():
+                return
+            self._watch_stop.clear()
+            self._watch_runtime["running"] = True
+            self._watch_thread = threading.Thread(
+                target=self._egress_bpf_watch_loop,
+                daemon=True,
+                name="egress-bpf-watchdog",
+            )
+            self._watch_thread.start()
+
+    def _egress_bpf_watch_loop(self) -> None:
+        last_run = 0.0
+        while not self._watch_stop.is_set():
+            try:
+                cfg = self._bpf_watch_config()
+                if cfg.get("enabled") and cfg.get("interface"):
+                    now = time.time()
+                    interval = int(cfg.get("interval_seconds") or 30)
+                    if now - last_run >= interval:
+                        last_run = now
+                        self._egress_bpf_watch_tick(str(cfg["interface"]))
+                else:
+                    last_run = 0.0
+            except Exception as exc:
+                with self._watch_lock:
+                    self._watch_runtime["last_checked_at"] = time.time()
+                    self._watch_runtime["last_error"] = str(exc)
+                self.logger.warning(f"egress BPF 自动修复检测失败：{exc}")
+            self._watch_stop.wait(2)
+
+    def stop_egress_bpf_watchdog(self) -> None:
+        self._watch_stop.set()
+        with self._watch_lock:
+            self._watch_runtime["running"] = False

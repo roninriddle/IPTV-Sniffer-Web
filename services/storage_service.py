@@ -129,6 +129,13 @@ class ChannelStore:
                     "epg_matched_at": row.get("epg_matched_at", data.get(key, {}).get("epg_matched_at")),
                     "updated_at": row.get("updated_at"),
                     "is_primary": bool(row.get("is_primary", data.get(key, {}).get("is_primary", False))),
+                    "export_health_status": str(row.get("export_health_status", data.get(key, {}).get("export_health_status", ""))),
+                    "export_health_http_code": self._safe_nonnegative_int(row.get("export_health_http_code", data.get(key, {}).get("export_health_http_code", 0))) or None,
+                    "export_health_bytes": self._safe_nonnegative_int(row.get("export_health_bytes", data.get(key, {}).get("export_health_bytes", 0))),
+                    "export_health_speed": self._safe_nonnegative_int(row.get("export_health_speed", data.get(key, {}).get("export_health_speed", 0))),
+                    "export_health_elapsed_ms": self._safe_nonnegative_int(row.get("export_health_elapsed_ms", data.get(key, {}).get("export_health_elapsed_ms", 0))),
+                    "export_health_checked_at": row.get("export_health_checked_at", data.get(key, {}).get("export_health_checked_at")),
+                    "export_health_message": str(row.get("export_health_message", data.get(key, {}).get("export_health_message", ""))),
                 }
                 saved += 1
             _atomic_dump_json(self.path, data)
@@ -176,6 +183,14 @@ class ChannelStore:
         except (TypeError, ValueError):
             return None
         return port if 1 <= port <= 65535 else None
+
+    @staticmethod
+    def _safe_nonnegative_int(value: Any) -> int:
+        try:
+            number = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, number)
 
 
 class FccStore:
@@ -439,4 +454,3 @@ class OperatorChannelStore:
         with self._lock:
             self._cache = {}
             _atomic_dump_json(self.path, {})
-

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.stb_discovery_service import _parse_chanlist_html, _reassemble_tcp_streams
 from services.export_service import ExportService
 from services.iptv_auth_service import IptvAuthService
+import services.iptv_auth_service as iptv_auth_module
 from services.log_service import AppLogger
 from app import _parse_rtp2httpd_config_text, enrich_channel_rows
 
@@ -293,6 +294,64 @@ class TestExportFiles:
         svc, result = self._export(tmp_path, rows)
         assert result["quality_group_counts"]["4K高清"] == 1
 
+    def test_manual_primary_is_used_for_best_exports(self, tmp_path):
+        rows = [
+            self._row(
+                "CCTV4K", "239.1.1.9", 8009,
+                tvg_id="106", quality_group="4K高清",
+                probe_status="ok", fcc_ip="10.0.0.1", fcc_port=9000,
+                fec_port=8008,
+            ),
+            self._row(
+                "CCTV4K", "239.1.1.10", 8010,
+                tvg_id="106", quality_group="高清频道",
+                probe_status="not_probed", is_primary=True,
+            ),
+        ]
+        self._export(tmp_path, rows)
+        text = (tmp_path / "channels-rtp2httpd-best.m3u").read_text(encoding="utf-8")
+        assert "rtp://239.1.1.10:8010" in text
+        assert "rtp://239.1.1.9:8009" not in text
+
+    def test_export_health_ok_beats_failed_high_spec_source(self, tmp_path):
+        rows = [
+            self._row(
+                "CCTV4K", "239.1.1.9", 8009,
+                tvg_id="106", quality_group="4K高清",
+                probe_status="ok", fcc_ip="10.0.0.1", fcc_port=9000,
+                fec_port=8008, export_health_status="failed",
+                export_health_http_code=503,
+            ),
+            self._row(
+                "CCTV4K", "239.1.1.10", 8010,
+                tvg_id="106", quality_group="高清频道",
+                probe_status="not_probed", export_health_status="ok",
+                export_health_speed=1200000,
+            ),
+        ]
+        self._export(tmp_path, rows)
+        text = (tmp_path / "channels-rtp2httpd-best.m3u").read_text(encoding="utf-8")
+        assert "rtp://239.1.1.10:8010" in text
+        assert "rtp://239.1.1.9:8009" not in text
+
+    def test_export_health_speed_breaks_equal_playable_sources(self, tmp_path):
+        rows = [
+            self._row(
+                "CCTV4K", "239.1.1.9", 8009,
+                tvg_id="106", export_health_status="ok",
+                export_health_speed=1000000,
+            ),
+            self._row(
+                "CCTV4K", "239.1.1.10", 8010,
+                tvg_id="106", export_health_status="ok",
+                export_health_speed=3000000,
+            ),
+        ]
+        self._export(tmp_path, rows)
+        text = (tmp_path / "channels-rtp2httpd-best.m3u").read_text(encoding="utf-8")
+        assert "rtp://239.1.1.10:8010" in text
+        assert "rtp://239.1.1.9:8009" not in text
+
 
 # ── Multicast link diagnostic ─────────────────────────────────────────────
 
@@ -368,6 +427,129 @@ def test_iptv_auth_payload_and_hook_include_option60_and_interface(tmp_path):
     assert payload["vendor_class_colon"] == "00:00:1f:39:01:c4:69:3f"
     assert 'LOG="/app/data/iptv-auth-enp3s0.log"' in hook
     assert 'ip -4 route replace 224.0.0.0/4 dev "$interface"' in hook
+
+
+def test_iptv_auth_detects_egress_bpf_and_clsact_drops(tmp_path, monkeypatch):
+    svc = IptvAuthService(tmp_path / "auth-backup.json", tmp_path, AppLogger(tmp_path / "app.log"))
+
+    def fake_which(name):
+        return f"/sbin/{name}" if name in {"ip", "tc"} else None
+
+    def fake_run(cmd, timeout=12, check=False):
+        if cmd == ["ip", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0", "stderr": ""}
+        if cmd == ["ip", "-details", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0: <UP> prog/xdp id 50", "stderr": ""}
+        if cmd == ["tc", "-s", "qdisc", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "qdisc clsact ffff:\n Sent 100 bytes 10 pkt (dropped 3, overlimits 0 requeues 0)", "stderr": ""}
+        if cmd == ["tc", "-s", "filter", "show", "dev", "enp3s0", "egress"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "filter protocol all pref 49152 bpf chain 0 handle 0x1 handle_egress:[53]", "stderr": ""}
+        return {"cmd": " ".join(cmd), "returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+    monkeypatch.setattr(iptv_auth_module.shutil, "which", fake_which)
+    monkeypatch.setattr(iptv_auth_module, "_run", fake_run)
+    status = svc.egress_bpf_status("enp3s0")
+    assert status["xdp_present"] is True
+    assert status["egress_bpf_present"] is True
+    assert status["handle_egress_present"] is True
+    assert status["clsact_dropped"] == 3
+    assert status["suspected_igmp_block"] is True
+    assert status["command_preview"] == "tc filter del dev enp3s0 egress protocol all pref 49152"
+
+
+def test_iptv_auth_clear_egress_bpf_only_targets_selected_interface(tmp_path, monkeypatch):
+    svc = IptvAuthService(tmp_path / "auth-backup.json", tmp_path, AppLogger(tmp_path / "app.log"))
+    deleted = {"done": False}
+    calls = []
+
+    def fake_which(name):
+        return f"/sbin/{name}" if name in {"ip", "tc"} else None
+
+    def fake_run(cmd, timeout=12, check=False):
+        calls.append(cmd)
+        if cmd == ["ip", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0", "stderr": ""}
+        if cmd == ["ip", "-details", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0: <UP>", "stderr": ""}
+        if cmd == ["tc", "-s", "qdisc", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "qdisc clsact ffff:\n Sent 100 bytes 10 pkt (dropped 3, overlimits 0 requeues 0)", "stderr": ""}
+        if cmd == ["tc", "-s", "filter", "show", "dev", "enp3s0", "egress"]:
+            stdout = "" if deleted["done"] else "filter protocol all pref 49152 bpf chain 0 handle 0x1 handle_egress:[53]"
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": stdout, "stderr": ""}
+        if cmd == ["tc", "filter", "del", "dev", "enp3s0", "egress", "protocol", "all", "pref", "49152"]:
+            deleted["done"] = True
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "", "stderr": ""}
+        return {"cmd": " ".join(cmd), "returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+    monkeypatch.setattr(iptv_auth_module.shutil, "which", fake_which)
+    monkeypatch.setattr(iptv_auth_module, "_run", fake_run)
+    result = svc.clear_egress_bpf({"interface": "enp3s0", "confirm": "确认解除BPF"})
+    assert result["changed"] is True
+    assert result["interface"] == "enp3s0"
+    assert ["tc", "filter", "del", "dev", "enp3s0", "egress", "protocol", "all", "pref", "49152"] in calls
+    assert all("enp2s0" not in cmd for cmd in calls)
+
+
+def test_iptv_auth_watch_requires_confirmation_when_enabling(tmp_path, monkeypatch):
+    svc = IptvAuthService(tmp_path / "auth-backup.json", tmp_path, AppLogger(tmp_path / "app.log"))
+
+    def fake_run(cmd, timeout=12, check=False):
+        if cmd == ["ip", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0", "stderr": ""}
+        return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(iptv_auth_module, "_run", fake_run)
+    with pytest.raises(ValueError):
+        svc.configure_egress_bpf_watch({
+            "enabled": True,
+            "interface": "enp3s0",
+            "interval_seconds": 30,
+            "confirm": "wrong",
+        })
+    data = svc.configure_egress_bpf_watch({
+        "enabled": True,
+        "interface": "enp3s0",
+        "interval_seconds": 5,
+        "confirm": "确认自动修复BPF",
+    })
+    assert data["config"]["enabled"] is True
+    assert data["config"]["interface"] == "enp3s0"
+    assert data["config"]["interval_seconds"] == 10
+
+
+def test_iptv_auth_watch_tick_auto_clears_selected_egress_bpf(tmp_path, monkeypatch):
+    svc = IptvAuthService(tmp_path / "auth-backup.json", tmp_path, AppLogger(tmp_path / "app.log"))
+    deleted = {"done": False}
+    calls = []
+
+    def fake_which(name):
+        return f"/sbin/{name}" if name in {"ip", "tc"} else None
+
+    def fake_run(cmd, timeout=12, check=False):
+        calls.append(cmd)
+        if cmd == ["ip", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0", "stderr": ""}
+        if cmd == ["ip", "-details", "link", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "3: enp3s0: <UP> prog/xdp id 50", "stderr": ""}
+        if cmd == ["tc", "-s", "qdisc", "show", "dev", "enp3s0"]:
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "qdisc clsact ffff:\n Sent 100 bytes 10 pkt (dropped 9, overlimits 0 requeues 0)", "stderr": ""}
+        if cmd == ["tc", "-s", "filter", "show", "dev", "enp3s0", "egress"]:
+            stdout = "" if deleted["done"] else "filter protocol all pref 49152 bpf chain 0 handle 0x1 handle_egress:[53]"
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": stdout, "stderr": ""}
+        if cmd == ["tc", "filter", "del", "dev", "enp3s0", "egress", "protocol", "all", "pref", "49152"]:
+            deleted["done"] = True
+            return {"cmd": " ".join(cmd), "returncode": 0, "stdout": "", "stderr": ""}
+        return {"cmd": " ".join(cmd), "returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+    monkeypatch.setattr(iptv_auth_module.shutil, "which", fake_which)
+    monkeypatch.setattr(iptv_auth_module, "_run", fake_run)
+    result = svc._egress_bpf_watch_tick("enp3s0")
+    runtime = svc.egress_bpf_watch_status()["runtime"]
+    assert result["result"]["changed"] is True
+    assert runtime["check_count"] == 1
+    assert runtime["fix_count"] == 1
+    assert ["tc", "filter", "del", "dev", "enp3s0", "egress", "protocol", "all", "pref", "49152"] in calls
+    assert all("enp2s0" not in cmd for cmd in calls)
 
 
 # ── quality_group derivation from is_hd ──────────────────────────────────
