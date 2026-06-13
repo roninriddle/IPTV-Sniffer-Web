@@ -648,6 +648,52 @@ $("clDeleteSelectedBtn").addEventListener("click", async () => {
 $("clRefreshBtn").addEventListener("click", () => loadChannelList());
 $("clFilterName").addEventListener("input", filterAndRenderChannelList);
 $("clFilterCategory").addEventListener("change", filterAndRenderChannelList);
+$("backupExportBtn").addEventListener("click", async () => {
+  const btn = $("backupExportBtn");
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/backup/export");
+    if (!resp.ok) throw new Error(`导出失败：${resp.status}`);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().slice(0, 10);
+    a.href = url; a.download = `iptv-sniffer-backup-${ts}.json`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+    const box = $("backupStatus");
+    box.hidden = false; box.className = "result-box ok";
+    box.textContent = "配置已导出到本地文件。";
+  } catch (err) {
+    const box = $("backupStatus");
+    box.hidden = false; box.className = "result-box error";
+    box.textContent = `导出失败：${err.message}`;
+  } finally { btn.disabled = false; }
+});
+$("backupImportBtn").addEventListener("click", () => {
+  $("backupImportFile").value = "";
+  $("backupImportFile").click();
+});
+$("backupImportFile").addEventListener("change", async function () {
+  const file = this.files[0];
+  if (!file) return;
+  const btn = $("backupImportBtn");
+  btn.disabled = true; btn.textContent = "导入中…";
+  const box = $("backupStatus");
+  box.hidden = false; box.className = "result-box warning";
+  box.textContent = "正在导入，请稍候…";
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const result = await requestJson("/api/backup/import", {method: "POST", body: JSON.stringify(data)});
+    box.className = "result-box ok";
+    box.textContent = `导入完成：已恢复 ${result.restored.join("、") || "无"}；跳过 ${result.skipped.join("、") || "无"}。页面将在 2 秒后刷新。`;
+    setTimeout(() => location.reload(), 2000);
+  } catch (err) {
+    box.className = "result-box error";
+    box.textContent = `导入失败：${err.message}`;
+  } finally { btn.disabled = false; btn.textContent = "导入本地配置"; }
+});
 $("reimportOperatorBtn").addEventListener("click", async () => {
   const btn = $("reimportOperatorBtn");
   btn.disabled = true; btn.textContent = "导入中…";

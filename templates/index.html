@@ -145,6 +145,19 @@
             <div id="reimportOperatorStatus" class="result-box muted" hidden></div>
           </section>
 
+          <section class="card">
+            <div class="section-title">
+              <h2>本地配置备份</h2>
+              <span class="muted small">包含频道列表、认证信息、FCC 记录、设置等全部数据</span>
+            </div>
+            <div class="button-row">
+              <button id="backupExportBtn" class="secondary" type="button">导出到本地</button>
+              <button id="backupImportBtn" class="secondary" type="button">导入本地配置</button>
+              <input id="backupImportFile" type="file" accept=".json" class="hidden-control">
+            </div>
+            <div id="backupStatus" class="result-box muted" hidden></div>
+          </section>
+
           <section class="card" id="stbDiscoveryResultSection" hidden>
             <div class="section-title">
               <h2>发现的频道</h2>
@@ -257,7 +270,7 @@
             </div>
             <p class="task-description">开启后，系统会按间隔检测当前 IPTV 网口。只有发现疑似 egress BPF 拦截 IGMP/组播切换时，才会自动执行临时解除。默认关闭，且只操作当前选择的接口。</p>
             <div class="form-grid watch-grid">
-              <label class="checkbox-label align-self-center">
+              <label class="checkbox-label align-self-end" style="padding-bottom:9px">
                 <input id="iptvTcAutoFix" type="checkbox">
                 自动解除疑似 egress BPF 拦截
               </label>

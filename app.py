@@ -868,6 +868,57 @@ def api_operator_channels_clear():
     return api_success({"cleared": True})
 
 
+_BACKUP_VERSION = 1
+_BACKUP_FILES: list[tuple[str, Path]] = [
+    ("settings", SETTINGS_FILE),
+    ("channels", CHANNELS_FILE),
+    ("operator_channels", OPERATOR_CHANNELS_FILE),
+    ("discovered_channels", DISCOVERY_FILE),
+    ("fcc", FCC_FILE),
+    ("stb_token", STB_TOKEN_FILE),
+    ("iptv_auth_backups", IPTV_AUTH_BACKUP_FILE),
+    ("channel_snapshots", SNAPSHOTS_FILE),
+]
+
+
+@app.get("/api/backup/export")
+def api_backup_export():
+    payload: dict[str, Any] = {"_version": _BACKUP_VERSION, "_exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    for key, path in _BACKUP_FILES:
+        try:
+            payload[key] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        except Exception:
+            payload[key] = None
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={"Content-Disposition": 'attachment; filename="iptv-sniffer-backup.json"'},
+    )
+
+
+@app.post("/api/backup/import")
+def api_backup_import():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_error("格式错误：需要 JSON 对象")
+    restored: list[str] = []
+    skipped: list[str] = []
+    for key, path in _BACKUP_FILES:
+        value = data.get(key)
+        if value is None:
+            skipped.append(key)
+            continue
+        try:
+            path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+            restored.append(key)
+        except Exception as exc:
+            logger.warning(f"backup import: failed to write {key}: {exc}")
+            skipped.append(key)
+    logger.info(f"备份导入完成：已恢复 {len(restored)} 项，跳过 {len(skipped)} 项")
+    return api_success({"restored": restored, "skipped": skipped})
+
+
 @app.get("/api/channels/snapshots")
 def api_snapshots_list():
     return api_success({"snapshots": snapshot_store.list_meta()})
