@@ -10,10 +10,7 @@ from typing import Any
 
 from config import CATEGORY_OPTIONS, CATEGORY_ORDER
 from models import ChannelRecord
-from utils import channel_group_key, channel_primary_score, ip_sort_key, natural_key, stream_quality_group
-
-QUALITY_GROUP_OPTIONS = ["4K高清", "高清频道", "普通频道"]
-
+from utils import channel_group_key, channel_primary_score, ip_sort_key, natural_key
 
 class ExportService:
     def __init__(self, output_dir: Path) -> None:
@@ -88,15 +85,7 @@ class ExportService:
                 category = "其它频道"
             width = self._safe_int(row.get("width"))
             height = self._safe_int(row.get("height"))
-            # When actual dimensions are known, always recompute quality_group from
-            # them — a stale value (e.g. "高清频道" carried on a 3840x2160 stream)
-            # must not survive into export grouping or the quality statistics.
-            if width and height:
-                quality_group = stream_quality_group(width, height)
-            else:
-                quality_group = str(row.get("quality_group") or stream_quality_group(width, height)).strip()
-                if quality_group not in {"4K高清", "高清频道", "普通频道", "未识别"}:
-                    quality_group = stream_quality_group(width, height)
+            quality_group = str(row.get("quality_group") or "未识别").strip() or "未识别"
             channels.append(ChannelRecord(
                 key=key,
                 host=host,
@@ -173,7 +162,6 @@ class ExportService:
         fcc_type = str(settings.get("fcc_type", "") or "").strip()
         op_ch = operator_channels or {}
         best_channels = self._select_best_channels(channels)
-        quality_group_counts = self._quality_group_counts(channels)
         m3u_kwargs = dict(http_host=http_host, http_port=http_port, path_mode=path_mode,
                           epg_url=epg_url, catchup_days=catchup_days,
                           catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
@@ -202,8 +190,6 @@ class ExportService:
         return {
             "count": len(channels),
             "best_count": len(best_channels),
-            "quality_group_counts": quality_group_counts,
-            "unclassified_resolution_count": sum(1 for channel in channels if channel.quality_group not in QUALITY_GROUP_OPTIONS),
             "files": {
                 "best_m3u": best_m3u_path.name,
                 "all_m3u": all_m3u_path.name,
@@ -226,8 +212,7 @@ class ExportService:
         best: list[ChannelRecord] = []
         for members in groups.values():
             primary = max(members, key=lambda c: channel_primary_score({
-                "quality_group": c.quality_group, "probe_status": c.probe_status,
-                "width": c.width, "height": c.height,
+                "probe_status": c.probe_status,
                 "fcc_ip": c.fcc_ip, "fcc_port": c.fcc_port,
                 "fec_port": c.fec_port, "packets": c.packets,
                 "is_primary": c.is_primary,
@@ -237,13 +222,6 @@ class ExportService:
             best.append(primary)
         best.sort(key=self._channel_sort_key)
         return best
-
-    def _quality_group_counts(self, channels: list[ChannelRecord]) -> dict[str, int]:
-        counts = {name: 0 for name in QUALITY_GROUP_OPTIONS}
-        for channel in channels:
-            if channel.quality_group in counts:
-                counts[channel.quality_group] += 1
-        return counts
 
     def _write_m3u(
         self,
@@ -350,16 +328,13 @@ class ExportService:
         path_mode: str,
         fcc_type: str = "",
     ) -> None:
-        # Each source is written exactly once; the row carries both its
-        # original category and its quality group as columns.
+        # Each source is written exactly once.
         with target.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow([
                 "展示分组",
                 "原始分类",
                 "频道名称",
-                "清晰度分组",
-                "分辨率",
                 "编码",
                 "帧率",
                 "EPG ID",
@@ -383,13 +358,10 @@ class ExportService:
             url = self.make_http_url(http_host, http_port, path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
         else:
             url = source
-        resolution = f"{channel.width}x{channel.height}" if channel.width and channel.height else channel.resolution_label
         writer.writerow([
             display_group,
             channel.category,
             channel.name,
-            channel.quality_group,
-            resolution,
             channel.codec_name,
             channel.frame_rate,
             channel.tvg_id,
@@ -409,7 +381,6 @@ class ExportService:
         payload: dict[str, Any] = {}
         for index, channel in enumerate(channels, start=1):
             source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
-            definition = channel.resolution_label if channel.resolution_label != "未识别" else ""
             payload[channel.name] = {
                 "chno": index,
                 "tvg_id": channel.tvg_id or channel.name,
@@ -417,7 +388,6 @@ class ExportService:
                 "tvg_logo": channel.tvg_logo,
                 "epg_source": channel.epg_source,
                 "group_title": channel.category,
-                "definition": definition,
                 "flag": [] if channel.probe_status != "failed" else ["probe_failed"],
                 "live": {
                     "local-multicast": {

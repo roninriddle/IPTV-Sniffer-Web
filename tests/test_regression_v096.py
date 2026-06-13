@@ -5,7 +5,6 @@ Covers:
 - CUSetConfig channel parsing: single-quote outer, double-quote outer
 - Export URL: FCC / fcc-type / FEC parameter generation
 - IPTV auth guarded executor payload / hook generation
-- quality_group derived from is_hd on operator channel import
 """
 import os
 import struct
@@ -21,7 +20,11 @@ from services.export_service import ExportService
 from services.iptv_auth_service import IptvAuthService
 import services.iptv_auth_service as iptv_auth_module
 from services.log_service import AppLogger
-from app import _parse_rtp2httpd_config_text, enrich_channel_rows
+import app as app_module
+from app import _parse_rtp2httpd_config_text, fill_channel_name_from_metadata
+from services.epg_service import normalize_channel_name
+from services.storage_service import ChannelStore
+from utils import channel_group_key
 
 
 # ── pcap helpers ─────────────────────────────────────────────────────────
@@ -238,7 +241,7 @@ class TestExportUrl:
         assert "fec=8090" in url
 
 
-# ── Export file generation: dedup + quality_group recompute ───────────────
+# ── Export file generation: dedup + source selection ─────────────────────
 
 class TestExportFiles:
     def _export(self, tmp_path, rows, settings=None):
@@ -280,31 +283,46 @@ class TestExportFiles:
         data_rows = [ln for ln in text.splitlines() if ",CCTV1," in ln]
         assert len(data_rows) == 1
 
-    def test_stale_quality_group_recomputed_from_dimensions(self, tmp_path):
-        # 4K stream carrying a stale "高清频道" must be regrouped as 4K高清.
-        rows = [self._row("CCTV4K", "239.1.1.9", 8009,
-                          width=3840, height=2160, quality_group="高清频道")]
-        svc, result = self._export(tmp_path, rows)
-        assert result["quality_group_counts"]["4K高清"] == 1
-        assert result["quality_group_counts"]["高清频道"] == 0
+    def test_export_summary_has_no_resolution_buckets(self, tmp_path):
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080)]
+        _, result = self._export(tmp_path, rows)
+        assert "quality_group_counts" not in result
+        assert "unclassified_resolution_count" not in result
 
-    def test_quality_group_preserved_when_no_dimensions(self, tmp_path):
-        # Without dimensions, an explicit valid quality_group is kept.
-        rows = [self._row("CCTV1", "239.1.1.1", 8001, quality_group="4K高清")]
-        svc, result = self._export(tmp_path, rows)
-        assert result["quality_group_counts"]["4K高清"] == 1
+    def test_csv_header_keeps_only_source_and_epg_columns(self, tmp_path):
+        rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080)]
+        self._export(tmp_path, rows)
+        header = (tmp_path / "channels.csv").read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+        assert header == [
+            "展示分组",
+            "原始分类",
+            "频道名称",
+            "编码",
+            "帧率",
+            "EPG ID",
+            "EPG名称",
+            "台标",
+            "EPG来源",
+            "FCC服务器IP",
+            "FCC服务器端口",
+            "源地址",
+            "播放地址",
+            "组播IP",
+            "端口",
+            "抓到包数",
+        ]
 
     def test_manual_primary_is_used_for_best_exports(self, tmp_path):
         rows = [
             self._row(
                 "CCTV4K", "239.1.1.9", 8009,
-                tvg_id="106", quality_group="4K高清",
+                tvg_id="106",
                 probe_status="ok", fcc_ip="10.0.0.1", fcc_port=9000,
                 fec_port=8008,
             ),
             self._row(
                 "CCTV4K", "239.1.1.10", 8010,
-                tvg_id="106", quality_group="高清频道",
+                tvg_id="106",
                 probe_status="not_probed", is_primary=True,
             ),
         ]
@@ -317,14 +335,14 @@ class TestExportFiles:
         rows = [
             self._row(
                 "CCTV4K", "239.1.1.9", 8009,
-                tvg_id="106", quality_group="4K高清",
+                tvg_id="106",
                 probe_status="ok", fcc_ip="10.0.0.1", fcc_port=9000,
                 fec_port=8008, export_health_status="failed",
                 export_health_http_code=503,
             ),
             self._row(
                 "CCTV4K", "239.1.1.10", 8010,
-                tvg_id="106", quality_group="高清频道",
+                tvg_id="106",
                 probe_status="not_probed", export_health_status="ok",
                 export_health_speed=1200000,
             ),
@@ -552,75 +570,79 @@ def test_iptv_auth_watch_tick_auto_clears_selected_egress_bpf(tmp_path, monkeypa
     assert all("enp2s0" not in cmd for cmd in calls)
 
 
-# ── quality_group derivation from is_hd ──────────────────────────────────
+# ── CCTV4 regional variants ──────────────────────────────────────────────
 
-class TestQualityGroupFromIsHd:
-    def _row(self, is_hd, quality_group=None):
-        r = {"key": "239.1.1.1:8008", "host": "239.1.1.1", "port": 8008,
-             "name": "Test", "is_hd": is_hd}
-        if quality_group is not None:
-            r["quality_group"] = quality_group
-        return r
+def test_cctv4_regional_names_match_distinct_epg_ids():
+    assert normalize_channel_name("CCTV4中文国际欧洲") == "cctv4euo"
+    assert normalize_channel_name("CCTV4EUO") == "cctv4euo"
+    assert normalize_channel_name("CCTV4中文国际美洲") == "cctv4ame"
+    assert normalize_channel_name("CCTV4AME") == "cctv4ame"
 
-    def test_hd_channel_gets_hd_group(self):
-        enriched = enrich_channel_rows([self._row(True)])
-        assert enriched[0]["quality_group"] == "高清频道"
 
-    def test_sd_channel_gets_normal_group(self):
-        enriched = enrich_channel_rows([self._row(False)])
-        assert enriched[0]["quality_group"] == "普通频道"
+def test_cctv4_regional_variants_are_not_grouped_as_cctv4_backups():
+    generic = channel_group_key({"name": "CCTV4", "tvg_id": "4"})
+    europe = channel_group_key({"name": "CCTV4", "auto_name": "CCTV4中文国际欧洲", "tvg_id": "4"})
+    america = channel_group_key({"name": "CCTV4", "auto_name": "CCTV4中文国际美洲", "tvg_id": "4"})
+    assert generic != europe
+    assert generic != america
+    assert europe != america
 
-    def test_probed_quality_group_not_overwritten(self):
-        """If ffprobe already set quality_group, is_hd must not override it."""
-        enriched = enrich_channel_rows([self._row(False, quality_group="4K高清")])
-        assert enriched[0]["quality_group"] == "4K高清"
 
-    def test_channel_without_is_hd_stays_unset(self):
-        row = {"key": "239.1.1.2:8008", "host": "239.1.1.2", "port": 8008, "name": "Test"}
-        enriched = enrich_channel_rows([row])
-        assert enriched[0].get("quality_group") in (None, "", "未识别")
+def test_cctv4_regional_auto_name_beats_generic_epg_display_name():
+    item = {
+        "name": "CCTV4",
+        "auto_name": "CCTV4中文国际欧洲",
+        "tvg_id": "4",
+        "tvg_name": "CCTV4",
+    }
+    fill_channel_name_from_metadata(item, allow_epg_name=True)
+    assert item["name"] == "CCTV4中文国际欧洲"
 
-    # ── Operator re-import must not clobber probed quality_group ──────────
-    # Root cause: _do_operator_import rows omitted width/height/probe_status,
-    # so enrich_channel_rows fell into the is_hd branch and overwrote "4K高清".
-    # Fix: _do_operator_import now seeds those fields from the stored channel.
 
-    def test_4k_preserved_when_dimensions_present(self):
-        """Row carrying actual probe dimensions must compute 4K高清, not 高清频道."""
-        row = {
-            "key": "239.1.1.1:8008", "host": "239.1.1.1", "port": 8008,
-            "name": "CCTV4K",
-            "is_hd": True,           # from operator channel (is_hd=True)
-            "probe_status": "ok",
-            "width": 3840, "height": 2160,
-            "quality_group": "",     # simulates: no quality_group in incoming row
-        }
-        enriched = enrich_channel_rows([row])
-        assert enriched[0]["quality_group"] == "4K高清", (
-            "4K dimensions must override is_hd-derived '高清频道'"
-        )
+def test_cctv4_regional_auto_name_beats_short_epg_alias():
+    item = {
+        "name": "CCTV4EUO",
+        "auto_name": "CCTV4中文国际欧洲",
+        "tvg_id": "22",
+        "tvg_name": "CCTV4EUO",
+    }
+    fill_channel_name_from_metadata(item, allow_epg_name=True)
+    assert item["name"] == "CCTV4中文国际欧洲"
 
-    def test_1080p_gets_hd_not_4k(self):
-        row = {
-            "key": "239.1.1.2:8008", "host": "239.1.1.2", "port": 8008,
-            "name": "CCTV1HD",
-            "is_hd": True,
-            "probe_status": "ok",
-            "width": 1920, "height": 1080,
-            "quality_group": "",
-        }
-        enriched = enrich_channel_rows([row])
-        assert enriched[0]["quality_group"] == "高清频道"
 
-    def test_4k_not_overwritten_by_reimport_without_dims(self):
-        """If a re-import row has no dimensions but quality_group is already 4K高清,
-        enrich must not downgrade it (the elif guard must hold)."""
-        row = {
-            "key": "239.1.1.3:8008", "host": "239.1.1.3", "port": 8008,
-            "name": "CCTV4K",
-            "is_hd": True,
-            "quality_group": "4K高清",   # preserved from stored channel
-            # no width/height (not yet in this re-import row)
-        }
-        enriched = enrich_channel_rows([row])
-        assert enriched[0]["quality_group"] == "4K高清"
+# ── Removed UDP candidate sniffer flow ───────────────────────────────────
+
+def test_udp_candidate_sniffer_endpoints_are_retired():
+    client = app_module.app.test_client()
+    for path, method in [
+        ("/api/status", "get"),
+        ("/api/streams", "get"),
+        ("/api/capture/start", "post"),
+        ("/api/capture/stop", "post"),
+        ("/api/capture/reset", "post"),
+    ]:
+        resp = getattr(client, method)(path, json={} if method == "post" else None)
+        assert resp.status_code == 410
+        assert "运营商频道发现" in resp.get_json()["error"]
+
+
+def test_export_without_channels_uses_saved_channel_list(tmp_path):
+    original_store = app_module.channel_store
+    original_output = app_module.export_service.output_dir
+    try:
+        app_module.channel_store = ChannelStore(tmp_path / "channels.json")
+        app_module.channel_store.save_rows([{
+            "key": "239.1.1.1:8001",
+            "host": "239.1.1.1",
+            "port": 8001,
+            "name": "CCTV1",
+            "category": "央视频道",
+            "packets": 10,
+        }])
+        app_module.export_service.output_dir = tmp_path
+        resp = app_module.app.test_client().post("/api/export", json={"http_host": "", "http_port": 5140})
+        assert resp.status_code == 200
+        assert resp.get_json()["data"]["count"] == 1
+    finally:
+        app_module.channel_store = original_store
+        app_module.export_service.output_dir = original_output

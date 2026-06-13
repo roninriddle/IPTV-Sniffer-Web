@@ -11,7 +11,7 @@
     <div class="topbar-inner">
       <div>
         <div class="eyebrow">{{ app_name }} <span class="version">v{{ app_version }}</span></div>
-        <h1>统一 IPTV 嗅探工作台</h1>
+        <h1>统一 IPTV 频道工作台</h1>
         <p class="top-subtitle">{{ app_description }}</p>
       </div>
       <div class="top-actions">
@@ -20,9 +20,8 @@
         <button class="nav-pill" data-nav-tab="channelList" type="button" title="频道线路">线路</button>
         <button class="nav-pill" data-nav-tab="diagnose" type="button" title="播放链路诊断">诊断</button>
         <button class="nav-pill" data-nav-tab="iptvAuth" type="button" title="IPTV 认证助手">认证</button>
-        <button class="nav-pill" data-nav-tab="sniffer" type="button" title="嗅探整理">嗅探</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
-        <button id="logsBtn" class="primary logs-toggle" type="button" title="打开实时日志">日志</button>
+        <button id="logsBtn" class="nav-pill logs-toggle" type="button" title="打开实时日志">日志</button>
       </div>
     </div>
   </header>
@@ -48,8 +47,8 @@
         <div class="home-hero">
           <div>
             <div class="eyebrow">使用说明</div>
-            <h2>先确认拓扑，再嗅探整理，最后在频道线路中导出和维护 EPG。</h2>
-            <p>容器只能抓到宿主机实际可见的 IPTV 流量。本向导只保留交换机镜像机顶盒端口这一种嗅探方式，用于发现频道、整理线路与提取认证信息。</p>
+            <h2>先完成运营商频道发现，再在线路页导出和维护 EPG。</h2>
+            <p>容器通过交换机镜像口捕获机顶盒开机流量，从运营商频道表中发现频道、整理线路并提取认证信息。</p>
           </div>
           <div class="home-actions">
             <button class="primary" data-home-tab="stbDiscovery" type="button">运营商频道发现</button>
@@ -63,11 +62,11 @@
           <details open>
             <summary>
               <span>唯一推荐拓扑：交换机镜像口</span>
-              <span class="chip warning">只嗅探，不主动拉流</span>
+              <span class="chip warning">只捕获机顶盒开机流量</span>
             </summary>
             <div class="grid">
               <article class="notice compact">
-                <h3>交换机镜像口（只嗅探）</h3>
+                <h3>交换机镜像口</h3>
                 <pre>光猫 IPTV 口 → 交换机
   ├─ 机顶盒端口（被镜像源）
   └─ 宿主机端口（镜像目标）</pre>
@@ -99,110 +98,15 @@
             <span>在「频道线路」中管理 XMLTV EPG 与台标来源，可手动刷新并重新匹配 tvg-id / tvg-logo。</span>
           </article>
         </section>
+        <div class="home-footer">
+          <a href="https://github.com/roninriddle/IPTV-Sniffer-Web" target="_blank" rel="noreferrer" class="home-github-link">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            roninriddle/IPTV-Sniffer-Web
+          </a>
+        </div>
       </section>
 
       <section id="workbenchPage" class="workbench-page" hidden>
-        <div id="snifferTab" class="tab-panel" hidden>
-          <section class="card">
-            <div class="section-title">
-              <h2>嗅探参数</h2>
-              <span id="runtimeBadge" class="chip neutral">检查中</span>
-            </div>
-            <p class="task-description">自动抓流会按顺序完成候选流发现、技术信息识别、EPG/台标补全、低价值流折叠与频道分组。人工只需要确认缺失频道名、分类和主备线路。</p>
-            <div class="form-grid">
-              <label>
-                抓包网卡
-                <select id="interface"></select>
-              </label>
-              <label>
-                嗅探时长（秒）
-                <input id="duration" type="number" min="0" value="30" placeholder="0 = 手动停止">
-              </label>
-            </div>
-            <div class="section-subtitle">
-              <h3>自动补全</h3>
-              <span id="epgBadge" class="chip neutral">EPG 未加载</span>
-            </div>
-            <div class="auto-grid">
-              <label class="checkbox-label">
-                <input id="autoProbe" type="checkbox" checked>
-                自动识别技术信息
-              </label>
-              <label class="checkbox-label">
-                <input id="autoEpg" type="checkbox" checked>
-                自动补全 EPG（使用频道线路中配置的来源）
-              </label>
-            </div>
-            <div class="button-row">
-              <button id="startBtn" class="primary" type="button">自动抓流并整理</button>
-              <button id="stopBtn" class="danger" type="button" disabled>停止抓包</button>
-              <button id="resetBtn" class="secondary" type="button">重置候选流</button>
-              <button id="saveSettingsBtn" class="secondary" type="button">保存默认设置</button>
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="section-title">
-              <h2>实时状态</h2>
-              <span id="statusChip" class="chip neutral">等待开始</span>
-            </div>
-            <div id="statusPanel" class="status-panel"></div>
-            <div class="metrics-grid">
-              <div class="metric"><span>发现流</span><strong id="streamsFound">0</strong></div>
-              <div class="metric"><span>有效候选</span><strong id="eligibleStreams">0</strong></div>
-              <div class="metric"><span>自动识别名</span><strong id="discoveredChannels">0</strong></div>
-              <div class="metric"><span>FCC 记录</span><strong id="fccRecords">0</strong></div>
-              <div class="metric"><span>令牌记录</span><strong id="stbTokens">0</strong></div>
-              <div class="metric"><span>包计数</span><strong id="packetCount">0</strong></div>
-              <div class="metric"><span>运行秒数</span><strong id="elapsed">0</strong></div>
-            </div>
-            <div id="snifferInsight" class="insight-panel muted">尚未发现 FCC 或 channelAcquire 令牌。</div>
-          </section>
-
-          <section class="card">
-            <div class="section-title">
-              <h2>有效候选与频道整理</h2>
-              <span class="muted">低包数、系统发现端口、503/失败且未命名的流会自动折叠。</span>
-            </div>
-            <div class="toolbar">
-              <button id="importToChannelListBtn" class="primary" type="button">导入到频道列表</button>
-              <button id="autoClassifyBtn" class="secondary" type="button">按名称自动分类</button>
-              <button id="deleteCheckedBtn" class="danger" type="button" title="隐藏勾选的候选流；重置候选流后恢复">隐藏勾选</button>
-              <label class="checkbox-label toolbar-check">
-                <input id="filterBestPerIp" type="checkbox">
-                同 IP 保留最多包
-              </label>
-              <select id="batchCategory">
-                <option value="央视频道">央视频道</option>
-                <option value="卫视频道">卫视频道</option>
-                <option value="其它频道">其它频道</option>
-              </select>
-              <button id="applyBatchCategoryBtn" class="secondary" type="button">应用到勾选项</button>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th><input type="checkbox" id="selectAllStreams"></th>
-                    <th>组播地址</th>
-                    <th>包数</th>
-                    <th>状态</th>
-                    <th>截图</th>
-                    <th>频道名称</th>
-                    <th>分类</th>
-                    <th>流信息 / 清晰度</th>
-                    <th>预览地址</th>
-                  </tr>
-                </thead>
-                <tbody id="streamsTableBody">
-                  <tr><td colspan="9" class="empty">暂无候选流</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-        </div>
-
         <div id="stbDiscoveryTab" class="tab-panel">
           <section class="card">
             <div class="section-title">
@@ -297,30 +201,30 @@
               </label>
               <label>
                 STB MAC
-                <input id="iptvAuthMac" type="text" placeholder="d4:c1:c8:ee:9b:1f">
+                <input id="iptvAuthMac" type="text" placeholder="xx:xx:xx:xx:xx:xx">
               </label>
               <label class="span-2">
                 Hostname
-                <input id="iptvAuthHostname" type="text" placeholder="18000413001338300000D4C1C8EE9B1F">
+                <input id="iptvAuthHostname" type="text" placeholder="自动从抓包摘要填入">
               </label>
               <label class="span-2">
                 Option60 / Vendor Class（十六进制）
-                <input id="iptvAuthOption60" type="text" placeholder="00001f39...">
+                <input id="iptvAuthOption60" type="text" placeholder="自动从抓包摘要填入">
               </label>
               <label>
                 请求 IPTV IP（可选）
-                <input id="iptvAuthRequestedIp" type="text" placeholder="10.193.235.26">
+                <input id="iptvAuthRequestedIp" type="text" placeholder="自动填入">
               </label>
               <label>
                 IPTV 网关（只展示/脚本参考）
-                <input id="iptvAuthGateway" type="text" placeholder="10.193.224.1">
+                <input id="iptvAuthGateway" type="text" placeholder="自动填入">
               </label>
               <label>
                 路由策略
                 <select id="iptvAuthRouteMode">
-                  <option value="iptv_private">IPv4 + 组播 + 10.0.0.0/8（推荐）</option>
-                  <option value="multicast">仅 IPTV IPv4 + 组播路由</option>
-                  <option value="none">只获取 IPv4，不加路由</option>
+                  <option value="iptv_private">IPv4 + 组播 + 10段（推荐）</option>
+                  <option value="multicast">IPv4 + 组播路由</option>
+                  <option value="none">仅获取 IPv4</option>
                 </select>
               </label>
             </div>
@@ -339,7 +243,7 @@
             <div class="form-grid compact-grid">
               <label>
                 解除确认文本
-                <input id="iptvTcConfirm" type="text" placeholder="确认解除BPF">
+                <input id="iptvTcConfirm" type="text" placeholder="确认解除">
               </label>
               <div class="button-row align-self-end">
                 <button id="iptvTcRefreshBtn" class="secondary" type="button">检测组播拦截</button>
@@ -363,7 +267,7 @@
               </label>
               <label>
                 开启确认文本
-                <input id="iptvTcWatchConfirm" type="text" placeholder="确认自动修复BPF">
+                <input id="iptvTcWatchConfirm" type="text" placeholder="确认恢复">
               </label>
               <div class="button-row align-self-end">
                 <button id="iptvTcWatchSaveBtn" class="secondary" type="button">保存自动修复</button>
@@ -525,7 +429,6 @@
               <button id="clClearSelBtn" class="secondary" type="button">取消全选</button>
               <button id="clDeleteSelectedBtn" class="danger" type="button">删除选中</button>
               <button id="clRefreshBtn" class="secondary" type="button">刷新</button>
-              <button id="clProbeBtn" class="secondary" type="button">探测选中频道分辨率</button>
               <button id="clGroupViewBtn" class="secondary" type="button">分组视图</button>
             </div>
             <div class="cl-filter">
@@ -535,12 +438,6 @@
                 <option value="央视频道">央视频道</option>
                 <option value="卫视频道">卫视频道</option>
                 <option value="其它频道">其它频道</option>
-              </select>
-              <select id="clFilterQuality">
-                <option value="">全部清晰度</option>
-                <option value="4K高清">4K高清</option>
-                <option value="高清频道">高清频道</option>
-                <option value="普通频道">普通频道</option>
               </select>
             </div>
             <!-- flat view -->
@@ -552,12 +449,11 @@
                     <th>频道名称</th>
                     <th>组播地址</th>
                     <th>分类</th>
-                    <th>清晰度</th>
                     <th>EPG 标识</th>
                   </tr>
                 </thead>
                 <tbody id="clChannelTableBody">
-                  <tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>
+                  <tr><td colspan="5" class="empty">频道列表为空，请先完成运营商频道发现并导入。</td></tr>
                 </tbody>
               </table>
             </div>
@@ -566,10 +462,10 @@
               <table class="cl-table group-table">
                 <thead>
                   <tr>
+                    <th class="w-28"><input type="checkbox" id="clGroupSelectAll"></th>
                     <th class="w-28"></th>
                     <th>频道 / 线路</th>
                     <th class="w-82">角色</th>
-                    <th class="w-86">清晰度</th>
                     <th>技术 / FCC</th>
                     <th class="w-128">最近状态</th>
                     <th class="w-120">EPG</th>
@@ -602,10 +498,10 @@
               <h2>播放链路诊断</h2>
               <span class="muted small">按 rtp2httpd、认证、FCC、组播、M3U 分层定位播放失败点</span>
             </div>
-            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，并判断是否为镜像口（SPAN，仅能被动嗅探、无法主动播放）。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
+            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，并判断是否为镜像口（SPAN，仅能被动看到流量、无法主动播放）。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
             <div class="notice">
               <strong>镜像口说明：</strong>
-              <span class="muted">交换机镜像口只适合嗅探机顶盒流量，不能代表本机能主动播放。若诊断显示“未加入也能看到流量、主动加入收不到”，请到「IPTV 认证」页按选定网口生成脚本或执行实验性认证，再让 rtp2httpd 使用完成认证的上游网口。</span>
+              <span class="muted">交换机镜像口只适合捕获机顶盒流量，不能代表本机能主动播放。若诊断显示“未加入也能看到流量、主动加入收不到”，请到「IPTV 认证」页按选定网口生成脚本或执行实验性认证，再让 rtp2httpd 使用完成认证的上游网口。</span>
             </div>
             <div class="form-grid">
               <label>
@@ -643,25 +539,10 @@
     <option value="其它频道">
   </datalist>
 
-  <div id="probeDetailModal" class="preview-modal" hidden>
-    <div class="preview-dialog probe-detail-dialog" role="dialog" aria-modal="true">
-      <div class="preview-header">
-        <div><h2 id="probeDetailTitle">流信息详情</h2></div>
-        <button id="closeProbeDetailBtn" class="secondary" type="button">关闭</button>
-      </div>
-      <div id="probeDetailBody" class="probe-detail-body"></div>
-    </div>
-  </div>
-
-  <div id="snapshotModal" class="snapshot-modal" hidden>
-    <button id="closeSnapshotBtn" class="snapshot-close" type="button">关闭</button>
-    <img id="snapshotLarge" alt="频道截图放大预览">
-  </div>
-
   <footer class="footer">
     <span>{{ app_name }} v{{ app_version }}</span>
     <span>作者：Ronin Riddle</span>
-    <span>适用：飞牛 NAS / Linux Docker / 交换机镜像口嗅探</span>
+    <span>适用：飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现</span>
   </footer>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

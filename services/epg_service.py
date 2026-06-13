@@ -59,6 +59,10 @@ def normalize_channel_name(value: str) -> str:
         text = text.replace(token, "")
     text = re.sub(r"[\s\-_·•.。:：/\\|()\[\]【】,，+]+", "", text)
     text = re.sub(r"cctv0+(\d+)", r"cctv\1", text)
+    text = text.replace("cctv4中文国际欧洲", "cctv4euo")
+    text = text.replace("cctv4欧洲", "cctv4euo")
+    text = text.replace("cctv4中文国际美洲", "cctv4ame")
+    text = text.replace("cctv4美洲", "cctv4ame")
     return text
 
 

@@ -150,8 +150,38 @@ def normalize_channel_name_for_group(name: str) -> str:
     return n.strip()
 
 
+def channel_name_variant_key(name: str) -> str:
+    """Return a stable key for channels that are variants, not backup lines.
+
+    Some EPG sources use short IDs such as CCTV4EUO/CCTV4AME while operator
+    channel lists use Chinese display names.  These are separate channels from
+    CCTV4, so they must not be grouped only by the generic CCTV4 tvg-id.
+    """
+    n = normalize_channel_name_for_group(name)
+    if not n:
+        return ""
+    compact = n.replace("中文国际", "")
+    if "CCTV4EUO" in compact or ("CCTV4" in compact and "欧洲" in compact):
+        return "CCTV4EUO"
+    if "CCTV4AME" in compact or ("CCTV4" in compact and "美洲" in compact):
+        return "CCTV4AME"
+    return ""
+
+
+def channel_variant_key(ch: dict) -> str:
+    """Return a distinct variant key from any known channel-name field."""
+    for field in ("name", "tvg_name", "auto_name", "detected_name"):
+        variant = channel_name_variant_key(str(ch.get(field) or ""))
+        if variant:
+            return variant
+    return ""
+
+
 def channel_group_key(ch: dict) -> str:
     """Return a stable group key: tvg_id > normalized name > raw key."""
+    variant = channel_variant_key(ch)
+    if variant:
+        return f"name:{variant}"
     tvg_id = str(ch.get("tvg_id") or "").strip()
     if tvg_id:
         return f"id:{tvg_id}"
@@ -168,8 +198,6 @@ def channel_primary_score(ch: dict) -> tuple:
     Tier ordering (higher = better):
       export health      ok=4 / unchecked=2 / timeout=1 / failed=0
       manual primary     user-selected primary wins when health is equal
-      quality_group tier  4K高清=4 / 高清频道=3 / 普通频道=2 / other=1
-      pixel count         w*h (distinguishes 1080p from 720p within 高清频道)
       probe status        ok=3 / partial=2 / not_probed=1 / failed=0
       fcc/fec availability
       measured speed
@@ -187,15 +215,10 @@ def channel_primary_score(ch: dict) -> tuple:
         "error": 0,
     }.get(health_status, 2)
     manual = 1 if ch.get("is_primary") else 0
-    qg = {"4K高清": 4, "高清频道": 3, "普通频道": 2}.get(str(ch.get("quality_group", "")), 1)
-    try:
-        px = int(ch.get("width") or 0) * int(ch.get("height") or 0)
-    except (TypeError, ValueError):
-        px = 0
     ps = {"ok": 3, "partial": 2, "not_probed": 1, "failed": 0}.get(
         str(ch.get("probe_status", "not_probed")), 1
     )
     fcc = (2 if ch.get("fcc_ip") and ch.get("fcc_port") else 0) + (1 if ch.get("fec_port") else 0)
     speed = int(ch.get("export_health_speed", 0) or 0)
     pkts = int(ch.get("packets", 0) or 0)
-    return (health, manual, qg, px, ps, fcc, speed, pkts)
+    return (health, manual, ps, fcc, speed, pkts)

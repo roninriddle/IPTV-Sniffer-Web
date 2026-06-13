@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "1.0.6"
-APP_DESCRIPTION = "IPTV 组播嗅探、频道整理与 rtp2httpd 播放列表统一工作台"
+APP_VERSION = "1.0.7"
+APP_DESCRIPTION = "IPTV 运营商频道发现、线路整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
 
@@ -75,7 +75,7 @@ DEFAULT_SETTINGS = {
     "rtp2httpd_config_path": DEFAULT_RTP2HTTPD_CONFIG_PATH,
     "path_mode": DEFAULT_PATH_MODE if DEFAULT_PATH_MODE in {"rtp", "udp"} else "rtp",
     "duration": DEFAULT_CAPTURE_SECONDS,
-    "auto_probe": True,
+    "auto_probe": False,
     "auto_epg": True,
     "use_epg": True,
     "epg_name": DEFAULT_EPG_NAME,

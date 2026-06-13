@@ -128,6 +128,9 @@ body {
   gap: 8px;
 }
 .home-steps span { color: var(--muted); line-height: 1.55; }
+.home-footer { padding: 4px 0 8px; }
+.home-github-link { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; text-decoration: none; }
+.home-github-link:hover { color: var(--primary); }
 
 .tabs {
   display: flex;
@@ -330,7 +333,7 @@ th:nth-child(9), td:nth-child(9) { width: 248px; }
 tr:last-child td { border-bottom: 0; }
 td.empty { color: var(--muted); text-align: center; padding: 20px; }
 td.mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Channel list table has 6 cols: checkbox / name / address / category / quality / EPG */
+/* Channel list table has 5 cols: checkbox / name / address / category / EPG */
 .cl-table { min-width: 700px; }
 .cl-table th:nth-child(1), .cl-table td:nth-child(1) { width: 42px; }
 .cl-table th:nth-child(2), .cl-table td:nth-child(2) { width: auto; }

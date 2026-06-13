@@ -19,8 +19,8 @@ from services.log_service import AppLogger
 
 CONFIRM_TEXT = "确认执行"
 RESTORE_CONFIRM_TEXT = "确认恢复"
-BPF_CLEAR_CONFIRM_TEXT = "确认解除BPF"
-BPF_AUTO_FIX_CONFIRM_TEXT = "确认自动修复BPF"
+BPF_CLEAR_CONFIRM_TEXT = "确认解除"
+BPF_AUTO_FIX_CONFIRM_TEXT = "确认恢复"
 
 
 def _safe_load_json(path: Path, default: Any) -> Any:

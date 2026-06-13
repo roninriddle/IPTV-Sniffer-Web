@@ -11,10 +11,9 @@ function _saveIgnoredKeys(set) {
 const state = {
   logsOpen: false,
   latestLogId: 0,
-  poller: null,
   logPoller: null,
-  streams: [],
   channelList: [],
+  selectedChannelKeys: new Set(),
   channelListSection: "list",
   iptvAuthSection: "summary",
   ignoredKeys: _loadIgnoredKeys(),
@@ -51,15 +50,16 @@ function formatDateTime(ts) {
 }
 
 function formSettings() {
+  const selectedInterface = $("stbDiscoveryIface")?.value || $("iptvAuthIface")?.value || state.settings?.interface || "";
   return {
-    interface: $("interface").value,
+    interface: selectedInterface,
     http_host: $("httpHost").value.trim(),
     http_port: Number($("httpPort").value || 5140),
     rtp2httpd_config_path: $("diagConfigPath")?.value.trim() || "",
     path_mode: $("pathMode").value,
-    duration: Number($("duration").value || 0),
-    auto_probe: $("autoProbe").checked,
-    auto_epg: $("autoEpg").checked,
+    duration: 0,
+    auto_probe: false,
+    auto_epg: true,
     catchup_days: Number($("catchupDays")?.value ?? 7),
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
@@ -112,7 +112,6 @@ function hideIptvAuthSections() {
 function showTab(tabName) {
   $("homePage").hidden = true;
   $("workbenchPage").hidden = false;
-  $("snifferTab").hidden = tabName !== "sniffer";
   $("stbDiscoveryTab").hidden = tabName !== "stbDiscovery";
   $("iptvAuthTab").hidden = tabName !== "iptvAuth";
   $("channelListTab").hidden = tabName !== "channelList";
@@ -141,14 +140,11 @@ function showTab(tabName) {
 
 function setRuntimeBadge(health) {
   const badge = $("runtimeBadge");
+  if (!badge) return;
   const captureOk = Boolean(health.runtime?.ok);
-  const probeOk = Boolean(health.probe_runtime?.ok);
-  if (captureOk && probeOk) {
+  if (captureOk) {
     badge.className = "chip ok";
-    badge.textContent = "抓包与 4K 自动识别环境正常";
-  } else if (captureOk && !probeOk) {
-    badge.className = "chip warning";
-    badge.textContent = "抓包可用，ffprobe 异常";
+    badge.textContent = "抓包环境正常";
   } else {
     badge.className = "chip danger";
     badge.textContent = "抓包权限或依赖异常";
@@ -162,6 +158,7 @@ async function loadHealth() {
     setRuntimeBadge(payload.data || {});
   } catch (_) {
     const badge = $("runtimeBadge");
+    if (!badge) return;
     badge.className = "chip danger";
     badge.textContent = "健康检查失败";
   }
@@ -175,9 +172,7 @@ function maskToken(value) {
 }
 
 function renderMetrics(metrics, tokenData) {
-  $("discoveredChannels").textContent = metrics.discovered_channels ?? 0;
-  $("fccRecords").textContent = metrics.fcc_records ?? 0;
-  $("stbTokens").textContent = metrics.stb_tokens ?? 0;
+  if (!$("snifferInsight")) return;
   const latest = tokenData?.latest;
   if (latest) {
     const endpoint = latest.dip && latest.dport ? `${latest.dip}:${latest.dport}` : "-";
@@ -191,6 +186,7 @@ function renderMetrics(metrics, tokenData) {
 
 function renderEpgStatus(epg) {
   const badge = $("epgBadge");
+  if (!badge) return;
   if (epg.refreshing) {
     badge.className = "chip warning";
     badge.textContent = "EPG 刷新中";
@@ -211,7 +207,7 @@ function renderEpgStatus(epg) {
 
 async function loadInterfaces() {
   const data = await requestJson("/api/interfaces");
-  for (const id of ["interface", "stbDiscoveryIface", "iptvAuthIface"]) {
+  for (const id of ["stbDiscoveryIface", "iptvAuthIface"]) {
     const select = $(id);
     if (!select) continue;
     const current = select.value;
@@ -274,348 +270,14 @@ function renderEpgBadge(useEpg, epg) {
 async function loadSettings() {
   const data = await requestJson("/api/settings");
   state.settings = data;
-  $("interface").value = data.interface || $("interface").value;
   if ($("iptvAuthIface") && data.interface) $("iptvAuthIface").value = data.interface;
   $("httpHost").value = data.http_host || "";
   $("httpPort").value = data.http_port ?? 5140;
   if ($("diagConfigPath")) $("diagConfigPath").value = data.rtp2httpd_config_path || "";
   $("pathMode").value = data.path_mode || "rtp";
-  $("duration").value = data.duration ?? 30;
-  $("autoProbe").checked = data.auto_probe !== false;
-  $("autoEpg").checked = data.auto_epg !== false;
   $("catchupDays").value = data.catchup_days ?? 7;
   $("catchupSourceTemplate").value = data.catchup_source_template || "";
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
-}
-
-function renderStatus(status) {
-  const chip = $("statusChip");
-  const labelMap = {
-    idle: ["等待开始", "neutral"],
-    running: ["抓包中", "ok"],
-    stopped: ["已停止", "warning"],
-    error: ["异常", "danger"],
-  };
-  const [label, cls] = labelMap[status.state] || [status.state || "未知", "neutral"];
-  chip.className = `chip ${cls}`;
-  chip.textContent = label;
-  const lines = [
-    `<strong>${escapeHtml(status.message || "")}</strong>`,
-    `接口：<span class="mono">${escapeHtml(status.interface || "-")}</span>`,
-    `rtp2httpd 前缀：<span class="mono">${status.http_host ? `http://${escapeHtml(status.http_host)}:${escapeHtml(status.http_port)}/${escapeHtml(status.path_mode)}/` : "-"}</span>`,
-    `运行时间：${formatTime(status.elapsed)}`,
-  ];
-  if (status.remaining !== null && status.remaining !== undefined) lines.push(`剩余时间：${formatTime(status.remaining)}`);
-  if (status.stop_reason) lines.push(`停止原因：${escapeHtml(status.stop_reason)}`);
-  if (status.last_error) lines.push(`错误：${escapeHtml(status.last_error)}`);
-  $("statusPanel").innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
-  $("streamsFound").textContent = status.streams_found ?? 0;
-  $("eligibleStreams").textContent = status.eligible_streams ?? 0;
-  $("packetCount").textContent = status.total_packets ?? 0;
-  $("elapsed").textContent = status.elapsed ?? 0;
-  $("startBtn").disabled = status.state === "running";
-  $("stopBtn").disabled = status.state !== "running";
-  $("resetBtn").disabled = status.state === "running";
-}
-
-function rowProbePayload(row) {
-  return {
-    probe_status: row.dataset.probeStatus || "not_probed",
-    probe_message: row.dataset.probeMessage || "未识别",
-    codec_name: row.dataset.codecName || "",
-    width: row.dataset.width ? Number(row.dataset.width) : null,
-    height: row.dataset.height ? Number(row.dataset.height) : null,
-    frame_rate: row.dataset.frameRate || "",
-    resolution_label: row.dataset.resolutionLabel || "未识别",
-    quality_group: row.dataset.qualityGroup || "未识别",
-    detected_name: row.dataset.detectedName || "",
-    detected_name_source: row.dataset.detectedNameSource || "",
-    probed_at: row.dataset.probedAt ? Number(row.dataset.probedAt) : null,
-    fcc_ip: row.dataset.fccIp || "",
-    fcc_port: row.dataset.fccPort ? Number(row.dataset.fccPort) : null,
-    tvg_id: row.dataset.tvgId || "",
-    tvg_name: row.dataset.tvgName || "",
-    tvg_logo: row.dataset.tvgLogo || "",
-    epg_source: row.dataset.epgSource || "",
-    auto_name: row.dataset.autoName || "",
-    auto_name_source: row.dataset.autoNameSource || "",
-    epg_matched_at: row.dataset.epgMatchedAt ? Number(row.dataset.epgMatchedAt) : null,
-  };
-}
-
-function streamRowsFromDom() {
-  return [...document.querySelectorAll("#streamsTableBody tr[data-key]")].map((row) => ({
-    key: row.dataset.key,
-    host: row.dataset.host,
-    port: Number(row.dataset.port),
-    packets: Number(row.dataset.packets || 0),
-    name: row.querySelector(".channel-name")?.value.trim() || "",
-    category: row.querySelector(".channel-category")?.value || "其它频道",
-    ...rowProbePayload(row),
-  }));
-}
-
-function preserveRowEdits(streams) {
-  const currentEdits = new Map(streamRowsFromDom().map((row) => [row.key, row]));
-  return (streams || []).filter((s) => !state.ignoredKeys.has(s.key)).map((stream) => {
-    const draft = currentEdits.get(stream.key);
-    if (!draft) return stream;
-    return {
-      ...stream,
-      name: draft.name || stream.name || "",
-      category: draft.category || stream.category || "其它频道",
-      probe_status: stream.probe_status || draft.probe_status,
-      probe_message: stream.probe_message || draft.probe_message,
-      codec_name: stream.codec_name || draft.codec_name,
-      width: stream.width ?? draft.width,
-      height: stream.height ?? draft.height,
-      frame_rate: stream.frame_rate || draft.frame_rate,
-      resolution_label: stream.resolution_label || draft.resolution_label,
-      quality_group: stream.quality_group || draft.quality_group,
-      detected_name: stream.detected_name || draft.detected_name,
-      detected_name_source: stream.detected_name_source || draft.detected_name_source,
-      probed_at: stream.probed_at ?? draft.probed_at,
-      fcc_ip: stream.fcc_ip || draft.fcc_ip,
-      fcc_port: stream.fcc_port ?? draft.fcc_port,
-      tvg_id: stream.tvg_id || draft.tvg_id,
-      tvg_name: stream.tvg_name || draft.tvg_name,
-      tvg_logo: stream.tvg_logo || draft.tvg_logo,
-      epg_source: stream.epg_source || draft.epg_source,
-      auto_name: stream.auto_name || draft.auto_name,
-      auto_name_source: stream.auto_name_source || draft.auto_name_source,
-      epg_matched_at: stream.epg_matched_at ?? draft.epg_matched_at,
-    };
-  });
-}
-
-function probeBadge(stream) {
-  const status = stream.probe_status || "not_probed";
-  if (status === "ok") {
-    if (stream.quality_group === "4K高清") return '<span class="badge ultra">4K高清</span>';
-    if (stream.quality_group === "高清频道") return '<span class="badge hd">高清频道</span>';
-    return '<span class="badge info">普通频道</span>';
-  }
-  if (status === "partial") return '<span class="badge wait">信息不完整</span>';
-  if (status === "failed") return '<span class="badge danger">识别失败</span>';
-  return '<span class="badge neutral">等待自动识别</span>';
-}
-
-function streamInfoHtml(stream) {
-  const codec = stream.codec_name ? escapeHtml(stream.codec_name) : "-";
-  const resolution = stream.width && stream.height ? `${escapeHtml(stream.width)}×${escapeHtml(stream.height)}` : escapeHtml(stream.resolution_label || "未识别");
-  const fps = stream.frame_rate ? escapeHtml(stream.frame_rate) : "-";
-  const fcc = stream.fcc_ip && stream.fcc_port ? `<span>FCC：${escapeHtml(stream.fcc_ip)}:${escapeHtml(stream.fcc_port)}</span>` : "";
-  const autoName = stream.auto_name ? `<span>自动名：${escapeHtml(stream.auto_name)}</span>` : "";
-  const detectedName = stream.detected_name && stream.detected_name !== stream.auto_name ? `<span>流内名称：${escapeHtml(stream.detected_name)}</span>` : "";
-  const epgName = stream.tvg_name || stream.tvg_id ? `<span>EPG：${escapeHtml(stream.tvg_name || "-")} / ${escapeHtml(stream.tvg_id || "-")}</span>` : "";
-  const message = stream.probe_message ? `<div class="probe-note">${escapeHtml(stream.probe_message)}</div>` : "";
-  return `<div class="probe-meta probe-meta--clickable" data-probe-key="${escapeHtml(stream.key)}" title="点击查看完整流信息">${probeBadge(stream)}${autoName}${detectedName}${epgName}<span>编码：${codec}</span><span>分辨率：${resolution}</span><span>帧率：${fps}</span>${fcc}${message}</div>`;
-}
-
-function previewHtml(stream) {
-  if (!stream.preview_url) return '<span class="muted">-</span>';
-  return `<a class="preview-link" href="${escapeHtml(stream.preview_url)}" target="_blank" rel="noreferrer">${escapeHtml(stream.preview_url)}</a>`;
-}
-
-function snapshotHtml(stream) {
-  if (!stream.eligible || !stream.snapshot_url) return '<span class="muted">-</span>';
-  const title = stream.name || stream.key;
-  return `<button class="snapshot-thumb-btn"
-      data-snapshot-url="${escapeHtml(stream.snapshot_url)}"
-      data-title="${escapeHtml(title)}">
-    <img class="snapshot-thumb" src="${escapeHtml(stream.snapshot_url)}" alt="${escapeHtml(title)} 截图" loading="lazy">
-  </button>`;
-}
-
-function tableHasEditingFocus() {
-  const active = document.activeElement;
-  const body = $("streamsTableBody");
-  return Boolean(
-    active
-    && body?.contains(active)
-    && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)
-  );
-}
-
-function renderStreams(streams) {
-  const currentChecks = new Map([...document.querySelectorAll("#streamsTableBody tr[data-key]")].map((row) => [row.dataset.key, Boolean(row.querySelector(".stream-check")?.checked)]));
-  let filtered = (streams || []).filter((s) => !state.ignoredKeys.has(s.key));
-  if ($("filterBestPerIp").checked) {
-    const bestPerIp = new Map();
-    for (const s of filtered) {
-      const prev = bestPerIp.get(s.host);
-      if (!prev || (s.packets || 0) > (prev.packets || 0)) bestPerIp.set(s.host, s);
-    }
-    filtered = [...bestPerIp.values()];
-  }
-  const sorted = filtered.sort((a, b) => (b.first_seen || 0) - (a.first_seen || 0));
-  state.streams = preserveRowEdits(sorted);
-  const body = $("streamsTableBody");
-  if (!state.streams.length) {
-    body.innerHTML = '<tr><td colspan="9" class="empty">暂无候选流</td></tr>';
-    return;
-  }
-  body.innerHTML = state.streams.map((stream) => {
-    const candidateBadge = stream.eligible ? '<span class="badge ok">有效候选</span>' : '<span class="badge wait">包数偏少</span>';
-    const checked = currentChecks.get(stream.key) ? "checked" : "";
-    return `<tr data-key="${escapeHtml(stream.key)}"
-        data-host="${escapeHtml(stream.host)}"
-        data-port="${escapeHtml(stream.port)}"
-        data-packets="${escapeHtml(stream.packets)}"
-        data-probe-status="${escapeHtml(stream.probe_status || "not_probed")}"
-        data-probe-message="${escapeHtml(stream.probe_message || "未识别")}"
-        data-codec-name="${escapeHtml(stream.codec_name || "")}"
-        data-width="${escapeHtml(stream.width ?? "")}"
-        data-height="${escapeHtml(stream.height ?? "")}"
-        data-frame-rate="${escapeHtml(stream.frame_rate || "")}"
-        data-resolution-label="${escapeHtml(stream.resolution_label || "未识别")}"
-        data-quality-group="${escapeHtml(stream.quality_group || "未识别")}"
-        data-detected-name="${escapeHtml(stream.detected_name || "")}"
-        data-detected-name-source="${escapeHtml(stream.detected_name_source || "")}"
-        data-probed-at="${escapeHtml(stream.probed_at ?? "")}"
-        data-fcc-ip="${escapeHtml(stream.fcc_ip || "")}"
-        data-fcc-port="${escapeHtml(stream.fcc_port ?? "")}"
-        data-tvg-id="${escapeHtml(stream.tvg_id || "")}"
-        data-tvg-name="${escapeHtml(stream.tvg_name || "")}"
-        data-tvg-logo="${escapeHtml(stream.tvg_logo || "")}"
-        data-epg-source="${escapeHtml(stream.epg_source || "")}"
-        data-auto-name="${escapeHtml(stream.auto_name || "")}"
-        data-auto-name-source="${escapeHtml(stream.auto_name_source || "")}"
-        data-epg-matched-at="${escapeHtml(stream.epg_matched_at ?? "")}">
-      <td><input type="checkbox" class="stream-check" ${checked}></td>
-      <td><code>${escapeHtml(stream.key)}</code></td>
-      <td>${escapeHtml(stream.packets)}</td>
-      <td>${candidateBadge}</td>
-      <td>${snapshotHtml(stream)}</td>
-      <td><input class="channel-name" type="text" value="${escapeHtml(stream.name || stream.auto_name || "")}" placeholder="${stream.auto_name || stream.tvg_name ? "自动识别，可修正" : "人工补全频道名"}"></td>
-      <td><input class="channel-category" type="text" list="categoryDatalist" value="${escapeHtml(stream.category || "其它频道")}"></td>
-      <td>${streamInfoHtml(stream)}</td>
-      <td>${previewHtml(stream)}</td>
-    </tr>`;
-  }).join("");
-}
-
-
-function openSnapshot(url, title) {
-  $("snapshotLarge").src = url;
-  $("snapshotLarge").alt = `${title || "频道"} 截图`;
-  $("snapshotModal").hidden = false;
-}
-
-function closeSnapshot() {
-  $("snapshotModal").hidden = true;
-  $("snapshotLarge").removeAttribute("src");
-}
-
-function buildProbeDetailHtml(stream) {
-  const parts = [];
-  parts.push(`<div class="pd-section"><span class="pd-addr">${escapeHtml(stream.host)}:${escapeHtml(String(stream.port))}</span></div>`);
-  const codec = stream.codec_name || "-";
-  const res = stream.width && stream.height ? `${stream.width}×${stream.height}` : (stream.resolution_label || "未识别");
-  const fps = stream.frame_rate || "-";
-  let bitrate = "-";
-  if (stream.format_bit_rate) bitrate = `${(stream.format_bit_rate / 1_000_000).toFixed(2)} Mbps`;
-  const fieldOrderMap = {"progressive": "逐行", "tt": "隔行（上场优先）", "bb": "隔行（下场优先）", "tb": "隔行", "bt": "隔行"};
-  const scanType = stream.field_order ? (fieldOrderMap[stream.field_order] || stream.field_order) : null;
-  let profileStr = null;
-  if (stream.video_profile) {
-    let lvl = "";
-    if (stream.video_level) {
-      const isHevc = (stream.codec_name || "").toLowerCase() === "hevc";
-      lvl = " " + (isHevc ? (stream.video_level / 30).toFixed(1) : `${Math.floor(stream.video_level / 10)}.${stream.video_level % 10}`);
-    }
-    profileStr = `${stream.video_profile}${lvl}`;
-  }
-  const pixStr = stream.pix_fmt ? (stream.pix_fmt.includes("10") ? "10bit（可能 HDR）" : "8bit") : null;
-  const codecRows = [
-    `<span class="pd-k">判定</span><span>${probeBadge(stream)}</span>`,
-    `<span class="pd-k">编码</span><span>${escapeHtml(codec)}</span>`,
-    profileStr ? `<span class="pd-k">规格</span><span>${escapeHtml(profileStr)}</span>` : "",
-    `<span class="pd-k">分辨率</span><span>${escapeHtml(res)}</span>`,
-    scanType ? `<span class="pd-k">扫描方式</span><span>${escapeHtml(scanType)}</span>` : "",
-    `<span class="pd-k">帧率</span><span>${escapeHtml(fps)}</span>`,
-    pixStr ? `<span class="pd-k">色深</span><span>${escapeHtml(pixStr)}</span>` : "",
-    `<span class="pd-k">码率</span><span>${escapeHtml(bitrate)}</span>`,
-  ].filter(Boolean).join("");
-  parts.push(`<div class="pd-section"><div class="pd-title">清晰度 / 编码</div><div class="pd-grid">${codecRows}</div></div>`);
-  if (stream.audio_streams?.length) {
-    const rows = stream.audio_streams.map((a, i) => {
-      const kbps = a.bit_rate ? `${Math.round(a.bit_rate / 1000)} kbps` : null;
-      const info = [a.codec_name, a.sample_rate ? `${a.sample_rate} Hz` : null, a.channel_layout || (a.channels ? `${a.channels}ch` : null), kbps].filter(Boolean).join(" · ");
-      return `<span class="pd-k">音频流 ${i + 1}</span><span>${escapeHtml(info || "-")}</span>`;
-    }).join("");
-    parts.push(`<div class="pd-section"><div class="pd-title">音频流</div><div class="pd-grid">${rows}</div></div>`);
-  }
-  const svcName = stream.detected_name || stream.auto_name;
-  if (svcName || stream.service_provider || stream.nb_programs || stream.nb_streams) {
-    const rows = [
-      svcName ? `<span class="pd-k">频道名</span><span>${escapeHtml(svcName)}</span>` : "",
-      stream.service_provider ? `<span class="pd-k">运营商</span><span>${escapeHtml(stream.service_provider)}</span>` : "",
-      stream.nb_programs ? `<span class="pd-k">节目数</span><span>${stream.nb_programs}</span>` : "",
-      stream.nb_streams ? `<span class="pd-k">流数量</span><span>${stream.nb_streams}</span>` : "",
-    ].filter(Boolean).join("");
-    parts.push(`<div class="pd-section"><div class="pd-title">节目信息</div><div class="pd-grid">${rows}</div></div>`);
-  }
-  if (stream.tvg_id || stream.tvg_name || stream.tvg_logo || stream.epg_source) {
-    const rows = [
-      stream.tvg_id ? `<span class="pd-k">tvg-id</span><span>${escapeHtml(stream.tvg_id)}</span>` : "",
-      stream.tvg_name ? `<span class="pd-k">tvg-name</span><span>${escapeHtml(stream.tvg_name)}</span>` : "",
-      stream.tvg_logo ? `<span class="pd-k">台标</span><span class="wrap-anywhere">${escapeHtml(stream.tvg_logo)}</span>` : "",
-      stream.epg_source ? `<span class="pd-k">EPG来源</span><span class="wrap-anywhere">${escapeHtml(stream.epg_source)}</span>` : "",
-    ].filter(Boolean).join("");
-    parts.push(`<div class="pd-section"><div class="pd-title">EPG / 台标</div><div class="pd-grid">${rows}</div></div>`);
-  }
-  if (stream.fcc_ip && stream.fcc_port) {
-    parts.push(`<div class="pd-section"><div class="pd-title">FCC</div><div class="pd-grid">
-      <span class="pd-k">FCC服务器</span><span>${escapeHtml(stream.fcc_ip)}:${escapeHtml(String(stream.fcc_port))}</span>
-    </div></div>`);
-  }
-  const probedAt = stream.probed_at ? new Date(stream.probed_at * 1000).toLocaleString("zh-CN") : "-";
-  parts.push(`<div class="pd-section"><div class="pd-title">识别状态</div><div class="pd-grid">
-    <span class="pd-k">状态</span><span>${escapeHtml(stream.probe_message || "未识别")}</span>
-    <span class="pd-k">识别时间</span><span>${escapeHtml(probedAt)}</span>
-  </div></div>`);
-  return parts.join("");
-}
-
-function openProbeDetail(key) {
-  const stream = state.streams.find((s) => s.key === key);
-  if (!stream) return;
-  $("probeDetailTitle").textContent = stream.name || stream.key;
-  $("probeDetailBody").innerHTML = buildProbeDetailHtml(stream);
-  $("probeDetailModal").hidden = false;
-}
-
-function closeProbeDetail() {
-  $("probeDetailModal").hidden = true;
-}
-
-async function refreshStatusAndStreams() {
-  const [status, streams, metrics, tokenData, epg] = await Promise.all([
-    requestJson("/api/status"),
-    requestJson("/api/streams"),
-    requestJson("/api/metrics"),
-    requestJson("/api/stb-token"),
-    requestJson("/api/epg/status"),
-  ]);
-  renderStatus(status);
-  renderMetrics(metrics, tokenData);
-  renderEpgStatus(epg);
-  if (tableHasEditingFocus()) {
-    state.streams = preserveRowEdits(streams.streams || []);
-  } else {
-    renderStreams(streams.streams || []);
-  }
-}
-
-function startPolling(fast = false) {
-  if (state.poller) clearInterval(state.poller);
-  const ms = fast ? 1000 : 2000;
-  state.poller = setInterval(async () => {
-    try {
-      await refreshStatusAndStreams();
-    } catch (_) {}
-  }, ms);
 }
 
 async function appendLogs() {
@@ -655,6 +317,7 @@ function openLogs() {
   state.logsOpen = true;
   document.body.classList.add("logs-open");
   localStorage.setItem("logsOpen", "1");
+  $("logsBtn").classList.add("active");
   setLogsDrawerOpen(true);
   appendLogs().catch(() => {});
   if (state.logPoller) clearInterval(state.logPoller);
@@ -665,6 +328,7 @@ function closeLogs() {
   state.logsOpen = false;
   document.body.classList.remove("logs-open");
   localStorage.setItem("logsOpen", "0");
+  $("logsBtn").classList.remove("active");
   setLogsDrawerOpen(false);
   if (state.logPoller) clearInterval(state.logPoller);
 }
@@ -678,19 +342,14 @@ async function doExportDownload(filename, btn, requireHost = false) {
   btn.disabled = true;
   btn.textContent = "生成中…";
   try {
-    const selectedKeys = new Set([...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
-      .filter((row) => row.querySelector(".cl-check")?.checked)
-      .map((row) => row.dataset.key));
-    const channels = selectedKeys.size > 0
-      ? (state.channelList || []).filter((ch) => selectedKeys.has(ch.key))
-      : (state.channelList || []);
+    const channels = selectedChannelRows();
     const data = await requestJson("/api/export", {method: "POST", body: JSON.stringify({...formSettings(), channels})});
     $("clExportResult").className = "result-box";
     const health = data.health_check;
     const healthText = health?.checked
       ? `导出前检查 ${health.groups_checked} 个多线路组、${health.checked} 条源：可用 ${health.ok}，失败 ${health.failed}，超时 ${health.timeout}${health.limit_reached ? "，已达检查上限" : ""}。`
       : (health?.message || "");
-    $("clExportResult").textContent = `共 ${data.count} 条线路，分组后主源 ${data.best_count ?? data.count} 个；4K高清 ${data.quality_group_counts?.["4K高清"] ?? 0} 条，高清频道 ${data.quality_group_counts?.["高清频道"] ?? 0} 条，普通频道 ${data.quality_group_counts?.["普通频道"] ?? 0} 条。${healthText ? `\n${healthText}` : ""}`;
+    $("clExportResult").textContent = `共 ${data.count} 条线路，分组后主源 ${data.best_count ?? data.count} 个。${healthText ? `\n${healthText}` : ""}`;
     const a = document.createElement("a");
     a.href = `/api/download/${filename}`;
     a.download = filename;
@@ -705,26 +364,62 @@ async function loadChannelList() {
   try {
     const data = await requestJson("/api/channels");
     state.channelList = data.channels || [];
+    syncSelectedChannelKeys();
     filterAndRenderChannelList();
   } catch (err) { console.warn("loadChannelList:", err.message); }
+}
+
+function syncSelectedChannelKeys() {
+  const available = new Set((state.channelList || []).map((ch) => ch.key).filter(Boolean));
+  state.selectedChannelKeys = new Set([...state.selectedChannelKeys].filter((key) => available.has(key)));
+}
+
+function setChannelSelected(key, selected) {
+  if (!key) return;
+  if (selected) state.selectedChannelKeys.add(key);
+  else state.selectedChannelKeys.delete(key);
+}
+
+function visibleFlatKeys() {
+  return [...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
+    .map((row) => row.dataset.key)
+    .filter(Boolean);
+}
+
+function visibleGroupKeys() {
+  return [...document.querySelectorAll("#clGroupTableBody tr[data-key]")]
+    .map((row) => row.dataset.key)
+    .filter(Boolean);
+}
+
+function selectedChannelRows() {
+  const selected = state.selectedChannelKeys || new Set();
+  return selected.size > 0
+    ? (state.channelList || []).filter((ch) => selected.has(ch.key))
+    : (state.channelList || []);
+}
+
+function refreshChannelSelectionControls() {
+  document.querySelectorAll(".cl-check").forEach((cb) => {
+    cb.checked = state.selectedChannelKeys.has(cb.dataset.key || cb.closest("tr")?.dataset.key);
+  });
+  const flatKeys = visibleFlatKeys();
+  const flatAll = flatKeys.length > 0 && flatKeys.every((key) => state.selectedChannelKeys.has(key));
+  const flatSelect = $("clSelectAll");
+  if (flatSelect) flatSelect.checked = flatAll;
+  const groupKeys = visibleGroupKeys();
+  const groupAll = groupKeys.length > 0 && groupKeys.every((key) => state.selectedChannelKeys.has(key));
+  const groupSelect = $("clGroupSelectAll");
+  if (groupSelect) groupSelect.checked = groupAll;
 }
 
 function filterAndRenderChannelList() {
   if (_groupViewActive) { filterAndRenderGroupView(); return; }
   const name = ($("clFilterName").value || "").trim().toLowerCase();
   const category = $("clFilterCategory").value;
-  const quality = $("clFilterQuality").value;
   let filtered = state.channelList || [];
   if (name) filtered = filtered.filter(ch => (ch.name || "").toLowerCase().includes(name));
   if (category) filtered = filtered.filter(ch => ch.category === category);
-  if (quality) {
-    filtered = filtered.filter(ch => {
-      const q = (ch.quality_group && ch.quality_group !== "未识别")
-        ? ch.quality_group
-        : ((ch.resolution_label && ch.resolution_label !== "未识别") ? ch.resolution_label : "-");
-      return q === quality;
-    });
-  }
   renderChannelList(filtered);
 }
 
@@ -735,25 +430,30 @@ function renderChannelList(channels) {
     : `${channels.length} / ${total} 个`;
   const tbody = $("clChannelTableBody");
   if (!channels.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">频道列表为空，请先导入运营商频道或嗅探结果。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">频道列表为空，请先完成运营商频道发现并导入。</td></tr>';
+    refreshChannelSelectionControls();
     return;
   }
   tbody.innerHTML = channels.map((ch) => {
     const addr = ch.key || `${ch.host || ""}:${ch.port ?? ""}`;
-    const quality = (ch.quality_group && ch.quality_group !== "未识别")
-      ? ch.quality_group
-      : ((ch.resolution_label && ch.resolution_label !== "未识别") ? ch.resolution_label : "-");
     const epg = ch.tvg_id || "-";
+    const checked = state.selectedChannelKeys.has(ch.key) ? "checked" : "";
     return `
     <tr data-key="${escapeHtml(ch.key || "")}">
-      <td><input type="checkbox" class="cl-check"></td>
+      <td><input type="checkbox" class="cl-check" data-key="${escapeHtml(ch.key || "")}" ${checked}></td>
       <td>${escapeHtml(ch.name || "")}</td>
       <td class="mono small">${escapeHtml(addr)}</td>
       <td>${escapeHtml(ch.category || "")}</td>
-      <td>${escapeHtml(quality)}</td>
       <td class="mono small">${escapeHtml(epg)}</td>
     </tr>`;
   }).join("");
+  tbody.querySelectorAll(".cl-check").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      setChannelSelected(cb.dataset.key, cb.checked);
+      refreshChannelSelectionControls();
+    });
+  });
+  refreshChannelSelectionControls();
 }
 
 async function loadSavedOperatorCount() {
@@ -805,11 +505,9 @@ async function checkVersion() {
 async function bootstrap() {
   await Promise.all([loadHealth(), loadInterfaces()]);
   await loadSettings();
-  await Promise.all([refreshStatusAndStreams(), appendLogs(), checkVersion()]);
+  await Promise.all([appendLogs(), checkVersion()]);
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   else setLogsDrawerOpen(false);
-  const initialState = (await requestJson("/api/status").catch(() => ({}))).state;
-  startPolling(initialState === "running");
   loadIptvAuthSummary().catch(() => {});
 }
 
@@ -822,17 +520,9 @@ document.querySelectorAll("[data-cl-section]").forEach((item) => {
 document.querySelectorAll("[data-auth-section]").forEach((item) => {
   item.addEventListener("click", () => showIptvAuthSection(item.dataset.authSection));
 });
-$("filterBestPerIp").addEventListener("change", () => renderStreams(state.streams));
 $("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
 $("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("useLogo").checked; });
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
-$("saveSettingsBtn").addEventListener("click", async () => {
-  try {
-    await requestJson("/api/settings", {method: "POST", body: JSON.stringify(formSettings())});
-    await refreshStatusAndStreams();
-    alert("默认设置已保存");
-  } catch (err) { alert(err.message); }
-});
 $("saveEpgSettingsBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
@@ -896,92 +586,6 @@ $("rematchEpgBtn").addEventListener("click", async function () {
     btn.textContent = "重新匹配节目单";
   }
 });
-$("startBtn").addEventListener("click", async () => {
-  try {
-    await requestJson("/api/capture/start", {method: "POST", body: JSON.stringify(formSettings())});
-    await refreshStatusAndStreams();
-    startPolling(true);
-  } catch (err) { alert(err.message); }
-});
-$("stopBtn").addEventListener("click", async () => {
-  try {
-    await requestJson("/api/capture/stop", {method: "POST", body: "{}"});
-    await refreshStatusAndStreams();
-    startPolling(false);
-  } catch (err) { alert(err.message); }
-});
-$("resetBtn").addEventListener("click", async () => {
-  try {
-    state.ignoredKeys.clear();
-    _saveIgnoredKeys(state.ignoredKeys);
-    await requestJson("/api/capture/reset", {method: "POST", body: "{}"});
-    await refreshStatusAndStreams();
-  } catch (err) { alert(err.message); }
-});
-$("importToChannelListBtn").addEventListener("click", async () => {
-  try {
-    const data = await requestJson("/api/channels/save", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
-    alert(`已导入 ${data.saved} 个频道到频道列表。`);
-    state.channelListSection = "list";
-    showTab("channelList");
-  } catch (err) { alert(err.message); }
-});
-$("autoClassifyBtn").addEventListener("click", async () => {
-  for (const row of document.querySelectorAll("#streamsTableBody tr[data-key]")) {
-    const name = row.querySelector(".channel-name")?.value.trim() || "";
-    const category = row.querySelector(".channel-category");
-    if (!category) continue;
-    if (/CCTV/i.test(name) || name.includes("央视") || name.includes("中央")) category.value = "央视频道";
-    else if (name.includes("卫视")) category.value = "卫视频道";
-    else category.value = "其它频道";
-  }
-  try {
-    await requestJson("/api/channels/save", {method: "POST", body: JSON.stringify({channels: streamRowsFromDom()})});
-    await refreshStatusAndStreams();
-  } catch (err) { alert(err.message); }
-});
-$("deleteCheckedBtn").addEventListener("click", async () => {
-  const checkedRows = [...document.querySelectorAll("#streamsTableBody tr[data-key]")]
-    .filter((row) => row.querySelector(".stream-check")?.checked);
-  if (!checkedRows.length) return;
-  checkedRows.forEach((row) => state.ignoredKeys.add(row.dataset.key));
-  _saveIgnoredKeys(state.ignoredKeys);
-  state.streams = state.streams.filter((s) => !state.ignoredKeys.has(s.key));
-  renderStreams(state.streams);
-  try {
-    await requestJson("/api/channels/save", {
-      method: "POST",
-      body: JSON.stringify({
-        channels: checkedRows.map((row) => ({
-          key: row.dataset.key,
-          host: row.dataset.host,
-          port: Number(row.dataset.port),
-          name: "",
-        })),
-      }),
-    });
-  } catch (_) {}
-});
-$("selectAllStreams").addEventListener("change", (event) => {
-  document.querySelectorAll(".stream-check").forEach((checkbox) => { checkbox.checked = event.target.checked; });
-});
-$("applyBatchCategoryBtn").addEventListener("click", () => {
-  const category = $("batchCategory").value;
-  document.querySelectorAll("#streamsTableBody tr[data-key]").forEach((row) => {
-    if (row.querySelector(".stream-check")?.checked) {
-      row.querySelector(".channel-category").value = category;
-    }
-  });
-});
-$("streamsTableBody").addEventListener("click", (event) => {
-  const snapshotButton = event.target.closest(".snapshot-thumb-btn");
-  if (snapshotButton) openSnapshot(snapshotButton.dataset.snapshotUrl, snapshotButton.dataset.title);
-});
-$("streamsTableBody").addEventListener("focusout", () => {
-  setTimeout(() => {
-    if (!tableHasEditingFocus()) renderStreams(state.streams);
-  }, 80);
-});
 $("clDownloadBestM3u").addEventListener("click", function() { doExportDownload("channels-best.m3u", this, true); });
 $("clDownloadFnosHlsM3u").addEventListener("click", async function () {
   const btn = this;
@@ -1014,55 +618,36 @@ $("clDownloadJson").addEventListener("click", function() { doExportDownload("cha
 $("clDownloadTxt").addEventListener("click", function() { doExportDownload("channels.txt", this); });
 $("clDownloadCsv").addEventListener("click", function() { doExportDownload("channels.csv", this); });
 $("clSelectAll").addEventListener("change", function() {
-  document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = this.checked; });
+  visibleFlatKeys().forEach((key) => setChannelSelected(key, this.checked));
+  refreshChannelSelectionControls();
+});
+$("clGroupSelectAll").addEventListener("change", function() {
+  visibleGroupKeys().forEach((key) => setChannelSelected(key, this.checked));
+  refreshChannelSelectionControls();
 });
 $("clSelectAllBtn").addEventListener("click", () => {
-  document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = true; });
-  $("clSelectAll").checked = true;
+  const keys = _groupViewActive ? visibleGroupKeys() : visibleFlatKeys();
+  keys.forEach((key) => setChannelSelected(key, true));
+  refreshChannelSelectionControls();
 });
 $("clClearSelBtn").addEventListener("click", () => {
-  document.querySelectorAll("#clChannelTableBody .cl-check").forEach((cb) => { cb.checked = false; });
-  $("clSelectAll").checked = false;
+  const keys = _groupViewActive ? visibleGroupKeys() : visibleFlatKeys();
+  keys.forEach((key) => setChannelSelected(key, false));
+  refreshChannelSelectionControls();
 });
 $("clDeleteSelectedBtn").addEventListener("click", async () => {
-  const selectedKeys = [...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
-    .filter((row) => row.querySelector(".cl-check")?.checked)
-    .map((row) => row.dataset.key);
+  const selectedKeys = [...state.selectedChannelKeys];
   if (!selectedKeys.length) { alert("请先勾选要删除的频道"); return; }
   if (!confirm(`确定删除选中的 ${selectedKeys.length} 个频道？`)) return;
   try {
     await requestJson("/api/channels/delete", {method: "POST", body: JSON.stringify({keys: selectedKeys})});
+    state.selectedChannelKeys.clear();
     await loadChannelList();
   } catch (err) { alert(err.message); }
 });
 $("clRefreshBtn").addEventListener("click", () => loadChannelList());
 $("clFilterName").addEventListener("input", filterAndRenderChannelList);
 $("clFilterCategory").addEventListener("change", filterAndRenderChannelList);
-$("clFilterQuality").addEventListener("change", filterAndRenderChannelList);
-$("clProbeBtn").addEventListener("click", async function() {
-  const selectedKeys = new Set([...document.querySelectorAll("#clChannelTableBody tr[data-key]")]
-    .filter((row) => row.querySelector(".cl-check")?.checked)
-    .map((row) => row.dataset.key));
-  const toProbe = selectedKeys.size > 0
-    ? (state.channelList || []).filter(ch => selectedKeys.has(ch.key))
-    : (state.channelList || []);
-  if (!toProbe.length) { alert("请先勾选要探测的频道。"); return; }
-  if (!confirm(`将对 ${toProbe.length} 个频道运行 ffprobe 探测，每个约 10 秒，请耐心等待。继续？`)) return;
-  this.disabled = true; this.textContent = `探测中… (0/${toProbe.length})`;
-  const btn = this;
-  const settings = formSettings();
-  let done = 0;
-  for (const ch of toProbe) {
-    try {
-      await requestJson("/api/probe/batch", {method: "POST", body: JSON.stringify({channels: [ch], path_mode: settings.path_mode})});
-    } catch (_) {}
-    done++;
-    btn.textContent = `探测中… (${done}/${toProbe.length})`;
-  }
-  btn.disabled = false; btn.textContent = "探测选中频道分辨率";
-  await loadChannelList();
-  alert(`探测完成，已更新 ${done} 个频道。`);
-});
 $("reimportOperatorBtn").addEventListener("click", async () => {
   const btn = $("reimportOperatorBtn");
   btn.disabled = true; btn.textContent = "导入中…";
@@ -1110,18 +695,6 @@ $("snapshotList").addEventListener("click", async (event) => {
 });
 $("logsBtn").addEventListener("click", openLogs);
 $("closeLogsBtn").addEventListener("click", closeLogs);
-$("closeSnapshotBtn").addEventListener("click", closeSnapshot);
-$("snapshotModal").addEventListener("click", (event) => {
-  if (event.target.id === "snapshotModal") closeSnapshot();
-});
-$("closeProbeDetailBtn").addEventListener("click", closeProbeDetail);
-$("probeDetailModal").addEventListener("click", (event) => {
-  if (event.target.id === "probeDetailModal") closeProbeDetail();
-});
-$("streamsTableBody").addEventListener("click", (event) => {
-  const meta = event.target.closest(".probe-meta--clickable");
-  if (meta?.dataset.probeKey) openProbeDetail(meta.dataset.probeKey);
-});
 $("clearLogMemoryBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/logs/clear-memory", {method: "POST", body: "{}"});
@@ -1363,7 +936,7 @@ function _renderIptvTcStatus(d) {
 }
 
 async function refreshIptvTcStatus() {
-  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  const iface = $("iptvAuthIface").value || $("stbDiscoveryIface").value;
   if (!iface) return;
   try {
     const d = await requestJson(`/api/iptv-auth/egress-bpf/status?interface=${encodeURIComponent(iface)}`);
@@ -1416,7 +989,7 @@ async function refreshIptvTcWatchStatus() {
 }
 
 async function saveIptvTcWatch() {
-  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  const iface = $("iptvAuthIface").value || $("stbDiscoveryIface").value;
   const enabled = $("iptvTcAutoFix").checked;
   if (enabled && !iface) { alert("请先选择 IPTV 上游接口。"); return; }
   const btn = $("iptvTcWatchSaveBtn");
@@ -1444,7 +1017,7 @@ async function saveIptvTcWatch() {
 
 async function refreshIptvAuthStatus() {
   await loadIptvAuthSummary();
-  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  const iface = $("iptvAuthIface").value || $("stbDiscoveryIface").value;
   if (!iface) return;
   if (!$("iptvAuthIface").value) $("iptvAuthIface").value = iface;
   try {
@@ -1461,7 +1034,7 @@ async function refreshIptvAuthStatus() {
 }
 
 async function clearIptvEgressBpf() {
-  const iface = $("iptvAuthIface").value || $("interface").value || $("stbDiscoveryIface").value;
+  const iface = $("iptvAuthIface").value || $("stbDiscoveryIface").value;
   if (!iface) { alert("请先选择 IPTV 上游接口。"); return; }
   const confirmText = $("iptvTcConfirm").value.trim();
   const btn = $("iptvTcFixBtn");
@@ -1531,7 +1104,7 @@ async function restoreIptvAuth() {
 }
 
 function initIptvAuthTab() {
-  if (!$("iptvAuthIface").value && $("interface")?.value) $("iptvAuthIface").value = $("interface").value;
+  if (!$("iptvAuthIface").value && $("stbDiscoveryIface")?.value) $("iptvAuthIface").value = $("stbDiscoveryIface").value;
   refreshIptvAuthStatus();
 }
 
@@ -1654,13 +1227,6 @@ $("diagRunBtn").addEventListener("click", runDiagnose);
 
 let _groupViewActive = false;
 
-function _qualityBadge(qg) {
-  if (qg === "4K高清") return '<span class="badge ultra">4K</span>';
-  if (qg === "高清频道") return '<span class="badge hd">HD</span>';
-  if (qg === "普通频道") return '<span class="badge info">SD</span>';
-  return '<span class="badge neutral">—</span>';
-}
-
 function _roleBadge(role, manual = false) {
   if (role === "primary") {
     return `<span class="source-role ${manual ? "manual" : "primary"}">${manual ? "手动主源" : "自动主源"}</span>`;
@@ -1669,13 +1235,10 @@ function _roleBadge(role, manual = false) {
 }
 
 function _lineTech(ch) {
-  const resolution = ch.width && ch.height
-    ? `${ch.width}x${ch.height}`
-    : (ch.resolution_label && ch.resolution_label !== "未识别" ? ch.resolution_label : "未识别");
   const codec = ch.codec_name || "编码未知";
   const fps = ch.frame_rate ? `${ch.frame_rate}fps` : "";
   const packets = Number(ch.packets || 0) > 0 ? `${ch.packets} 包` : "";
-  return [codec, resolution, fps, packets].filter(Boolean);
+  return [codec, fps, packets].filter(Boolean);
 }
 
 function _lineFcc(ch) {
@@ -1686,13 +1249,14 @@ function _lineFcc(ch) {
 }
 
 function _lineStatus(ch) {
-  const status = ch.probe_status || "not_probed";
-  const label = status === "ok" ? "探测成功"
-    : status === "partial" ? "部分识别"
-    : status === "failed" ? "探测失败"
-    : "未探测";
-  const when = ch.probed_at || ch.updated_at || ch.last_seen || ch.epg_matched_at;
-  const detail = ch.probe_message && ch.probe_message !== "未识别" ? ch.probe_message : "";
+  const status = ch.export_health_status || "";
+  const label = status === "ok" ? "播放可用"
+    : status === "failed" ? "播放失败"
+    : status === "timeout" ? "播放超时"
+    : status === "error" ? "检查异常"
+    : "未检查";
+  const when = ch.export_health_checked_at || ch.updated_at || ch.last_seen || ch.epg_matched_at;
+  const detail = ch.export_health_message || "";
   return {label, detail, when: formatDateTime(when)};
 }
 
@@ -1700,6 +1264,7 @@ function renderChannelGroups(groups) {
   const tbody = $("clGroupTableBody");
   if (!groups.length) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无频道组，请先导入频道。</td></tr>';
+    refreshChannelSelectionControls();
     return;
   }
   const rows = [];
@@ -1707,7 +1272,9 @@ function renderChannelGroups(groups) {
     const p = g.primary;
     const hasAlts = g.alternates.length > 0;
     const pStatus = _lineStatus(p);
-    rows.push(`<tr data-group="${escapeHtml(g.group_key)}">
+    const pChecked = state.selectedChannelKeys.has(p.key) ? "checked" : "";
+    rows.push(`<tr data-group="${escapeHtml(g.group_key)}" data-key="${escapeHtml(p.key || "")}">
+      <td><input type="checkbox" class="cl-check" data-key="${escapeHtml(p.key || "")}" ${pChecked}></td>
       <td><button class="expand-btn" data-group="${escapeHtml(g.group_key)}" aria-expanded="false">${hasAlts ? "▶" : ""}</button></td>
       <td>
         <div class="line-stack">
@@ -1717,7 +1284,6 @@ function renderChannelGroups(groups) {
         </div>
       </td>
       <td>${_roleBadge("primary", Boolean(p.is_primary))}</td>
-      <td>${_qualityBadge(p.quality_group)}</td>
       <td>
         <div class="line-meta">${_lineTech(p).map(x => `<span>${escapeHtml(x)}</span>`).join("")}</div>
         <div class="line-sub">${_lineFcc(p).map(escapeHtml).join(" · ")}</div>
@@ -1732,7 +1298,9 @@ function renderChannelGroups(groups) {
     </tr>`);
     for (const alt of g.alternates) {
       const altStatus = _lineStatus(alt);
-      rows.push(`<tr class="alt-row hidden" data-parent="${escapeHtml(g.group_key)}">
+      const altChecked = state.selectedChannelKeys.has(alt.key) ? "checked" : "";
+      rows.push(`<tr class="alt-row hidden" data-parent="${escapeHtml(g.group_key)}" data-key="${escapeHtml(alt.key || "")}">
+        <td><input type="checkbox" class="cl-check" data-key="${escapeHtml(alt.key || "")}" ${altChecked}></td>
         <td></td>
         <td>
           <div class="line-stack">
@@ -1741,7 +1309,6 @@ function renderChannelGroups(groups) {
           </div>
         </td>
         <td>${_roleBadge("alt")}</td>
-        <td>${_qualityBadge(alt.quality_group)}</td>
         <td>
           <div class="line-meta">${_lineTech(alt).map(x => `<span>${escapeHtml(x)}</span>`).join("")}</div>
           <div class="line-sub">${_lineFcc(alt).map(escapeHtml).join(" · ")}</div>
@@ -1759,6 +1326,13 @@ function renderChannelGroups(groups) {
     }
   }
   tbody.innerHTML = rows.join("");
+  tbody.querySelectorAll(".cl-check").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      setChannelSelected(cb.dataset.key, cb.checked);
+      refreshChannelSelectionControls();
+    });
+  });
+  refreshChannelSelectionControls();
 
   // expand/collapse
   tbody.querySelectorAll(".expand-btn").forEach(btn => {
@@ -1801,6 +1375,7 @@ async function loadChannelGroups() {
     filterAndRenderGroupView();
   } catch (err) {
     $("clGroupTableBody").innerHTML = `<tr><td colspan="8" class="empty">加载失败：${escapeHtml(err.message)}</td></tr>`;
+    refreshChannelSelectionControls();
   }
 }
 
@@ -1808,14 +1383,12 @@ function filterAndRenderGroupView() {
   const groups = state.channelGroups || [];
   const name = ($("clFilterName").value || "").trim().toLowerCase();
   const category = $("clFilterCategory").value;
-  const quality = $("clFilterQuality").value;
   let filtered = groups;
   if (name) filtered = filtered.filter(g =>
     (g.primary.name || "").toLowerCase().includes(name) ||
     g.alternates.some(a => (a.name || "").toLowerCase().includes(name))
   );
   if (category) filtered = filtered.filter(g => g.primary.category === category);
-  if (quality) filtered = filtered.filter(g => g.primary.quality_group === quality);
   renderChannelGroups(filtered);
   const total = (state.channelList || []).length;
   $("clChannelCount").textContent = filtered.length === groups.length
@@ -1831,8 +1404,6 @@ $("clGroupViewBtn").addEventListener("click", () => {
   $("clGroupView").hidden = !_groupViewActive;
   if (_groupViewActive) loadChannelGroups();
   else {
-    // restore flat count
-    const total = (state.channelList || []).length;
-    $("clChannelCount").textContent = `${total} 个`;
+    filterAndRenderChannelList();
   }
 });

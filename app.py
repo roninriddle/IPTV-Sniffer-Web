@@ -40,7 +40,6 @@ from config import (
     FCC_FILE,
     LOG_FILE,
     LOG_MEMORY_LIMIT,
-    MIN_PACKET_COUNT,
     OUTPUT_DIR,
     SETTINGS_FILE,
     STB_TOKEN_FILE,
@@ -57,10 +56,9 @@ from services.export_service import ExportService
 from services.iptv_auth_service import IptvAuthService
 from services.log_service import AppLogger
 from services.hls_service import HlsService
-from services.probe_service import ProbeService
 from services.stb_discovery_service import StbDiscoveryService
 from services.storage_service import ChannelSnapshotStore, ChannelStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
-from utils import channel_group_key, channel_primary_score, classify_channel_name, natural_key, resolution_label_from_size, stream_filter_reason, stream_quality_group, valid_ip_or_host, valid_ipv4_multicast
+from utils import channel_group_key, channel_primary_score, channel_variant_key, classify_channel_name, natural_key, normalize_channel_name_for_group, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
 logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
@@ -74,7 +72,6 @@ token_store = StbTokenStore(STB_TOKEN_FILE)
 discovery_store = DiscoveryStore(DISCOVERY_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
 export_service = ExportService(OUTPUT_DIR)
-probe_service = ProbeService(logger)
 hls_service = HlsService(logger)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
 iptv_auth_service = IptvAuthService(IPTV_AUTH_BACKUP_FILE, DATA_DIR, logger)
@@ -133,10 +130,6 @@ def _start_version_check_loop() -> None:
             _do_version_check()
             time.sleep(VERSION_CHECK_INTERVAL)
     threading.Thread(target=worker, daemon=True).start()
-auto_probe_lock = threading.RLock()
-auto_probe_pending: set[str] = set()
-auto_probe_done: set[str] = set()
-auto_enrichment_started = False
 M3U_ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 
 
@@ -161,6 +154,35 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _has_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", value or ""))
+
+
+def _is_generic_cctv4_name(name: str) -> bool:
+    normalized = normalize_channel_name_for_group(name).replace("频道", "")
+    return normalized in {"CCTV4", "CCTV4中文国际", "CCTV4国际"}
+
+
+def _prefer_auto_display_name(current_name: str, auto_name: str) -> bool:
+    auto_variant = channel_variant_key({"name": auto_name})
+    if not auto_variant:
+        return False
+    current_variant = channel_variant_key({"name": current_name})
+    if current_variant == auto_variant:
+        return _has_cjk(auto_name) and not _has_cjk(current_name)
+    return _is_generic_cctv4_name(current_name)
+
+
+def _should_keep_auto_name_over_epg(auto_name: str, epg_name: str) -> bool:
+    auto_variant = channel_variant_key({"name": auto_name})
+    if not auto_variant:
+        return False
+    epg_variant = channel_variant_key({"name": epg_name})
+    if epg_variant != auto_variant:
+        return True
+    return _has_cjk(auto_name) and not _has_cjk(epg_name)
+
+
 def fill_channel_name_from_metadata(item: dict[str, Any], allow_epg_name: bool = True) -> dict[str, Any]:
     current_name = str(item.get("name", "")).strip()
     detected_name = str(item.get("detected_name", "")).strip()
@@ -173,12 +195,17 @@ def fill_channel_name_from_metadata(item: dict[str, Any], allow_epg_name: bool =
     if detected_name and not current_name:
         item["name"] = detected_name
         current_name = detected_name
+    if current_name and auto_name and _prefer_auto_display_name(current_name, auto_name):
+        item["name"] = auto_name
+        item["category"] = classify_channel_name(auto_name)
+        current_name = auto_name
     current_matches_epg = (
         bool(current_name)
         and bool(epg_name)
         and normalize_channel_name(current_name) == normalize_channel_name(epg_name)
     )
-    if allow_epg_name and epg_name and (not current_name or current_name == auto_name or current_matches_epg):
+    keep_auto_name = auto_name and _should_keep_auto_name_over_epg(auto_name, epg_name)
+    if allow_epg_name and epg_name and not keep_auto_name and (not current_name or current_name == auto_name or current_matches_epg):
         if current_name and not auto_name:
             item["auto_name"] = current_name
             item["auto_name_source"] = str(item.get("auto_name_source") or "auto")
@@ -188,6 +215,16 @@ def fill_channel_name_from_metadata(item: dict[str, Any], allow_epg_name: bool =
     if not current_name and auto_name:
         item["name"] = auto_name
     return item
+
+
+def _prepare_variant_epg_rematch(item: dict[str, Any]) -> None:
+    variant = channel_variant_key(item)
+    if not variant:
+        return
+    tvg_variant = channel_variant_key({"name": item.get("tvg_name", "")})
+    if tvg_variant != variant:
+        item["tvg_id"] = ""
+        item["tvg_name"] = ""
 
 
 def can_replace_with_epg_name(stored: dict[str, Any], item: dict[str, Any] | None = None) -> bool:
@@ -205,18 +242,19 @@ def can_replace_with_epg_name(stored: dict[str, Any], item: dict[str, Any] | Non
         and bool(epg_name)
         and normalize_channel_name(saved_name) == normalize_channel_name(epg_name)
     )
+    auto_variant = channel_variant_key({
+        "name": saved_name,
+        "auto_name": str(item.get("auto_name", "") or stored.get("auto_name", "")),
+        "detected_name": str(item.get("detected_name", "") or stored.get("detected_name", "")),
+    })
+    epg_variant = channel_variant_key({"name": epg_name})
+    if auto_variant and auto_variant != epg_variant:
+        return False
     return not saved_name or saved_name in auto_names or saved_matches_epg
 
 
-def persist_auto_channel_if_changed(item: dict[str, Any], stored: dict[str, Any], settings: dict[str, Any]) -> None:
-    if not str(item.get("name", "")).strip():
-        return
-    if not (item.get("auto_name") or item.get("detected_name") or item.get("tvg_name")):
-        return
-    keys = ("name", "category", "probe_status", "codec_name", "width", "height", "tvg_id", "tvg_name", "tvg_logo")
-    changed = not stored or any(str(item.get(key, "")) != str(stored.get(key, "")) for key in keys)
-    if changed:
-        channel_store.save_rows(enrich_channel_rows([item], settings))
+def display_channel_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [fill_channel_name_from_metadata(dict(row), allow_epg_name=False) for row in rows]
 
 
 def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -255,21 +293,12 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
         fill_channel_name_from_metadata(item, allow_epg_name=False)
         _auto_cat = classify_channel_name(str(item.get("name", "")))
         item["category"] = _auto_cat if _auto_cat != "其它频道" else (str(item.get("category", "")).strip() or "其它频道")
-        # If actual dimensions are known, always recompute quality_group from them
-        # (prevents stale is_hd-derived group from hiding 4K channels)
-        cur_qg = str(item.get("quality_group", "")).strip()
-        w, h = item.get("width"), item.get("height")
-        if w and h:
-            item["quality_group"] = stream_quality_group(w, h)
-            item["resolution_label"] = resolution_label_from_size(w, h)
-        elif (not cur_qg or cur_qg == "未识别") and "is_hd" in item:
-            item["quality_group"] = "高清频道" if item["is_hd"] else "普通频道"
-        # Pull is_hd from operator channel table if missing
+        # Pull is_hd from operator channel table if missing. The old quality_group
+        # field is kept only for compatibility with existing data.
         if op_ch and "is_hd" in op_ch and "is_hd" not in item:
             item["is_hd"] = op_ch["is_hd"]
-            if not (w and h) and (not cur_qg or cur_qg == "未识别"):
-                item["quality_group"] = "高清频道" if op_ch["is_hd"] else "普通频道"
         if settings.get("use_epg", True) and settings.get("auto_epg", True):
+            _prepare_variant_epg_rematch(item)
             epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
             fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(row, item))
         enriched.append(item)
@@ -494,131 +523,6 @@ def apply_pre_export_health_check(
     return rows, summary
 
 
-def maybe_auto_probe(item: dict[str, Any], settings: dict[str, Any]) -> None:
-    if not settings.get("auto_probe", True):
-        return
-    if item.get("filter_reason") or not item.get("eligible"):
-        return
-    if str(item.get("probe_status", "not_probed")) in {"ok", "partial", "failed"}:
-        return
-    key = str(item.get("key", "")).strip()
-    host = str(item.get("host", "")).strip()
-    port = _safe_int(item.get("port"))
-    if not key or not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
-        return
-    with auto_probe_lock:
-        if key in auto_probe_pending or key in auto_probe_done:
-            return
-        if len(auto_probe_pending) >= 2:
-            return
-        auto_probe_pending.add(key)
-    path_mode = str(settings.get("path_mode", "rtp"))
-    localaddr = _iptv_local_ip(settings)
-    snapshot = dict(item)
-
-    def worker() -> None:
-        try:
-            logger.info(f"自动识别流信息：{key}")
-            result = probe_service.probe(key, host, port, path_mode, localaddr)
-            stored = channel_store.get(key) or {}
-            detected_name = str(result.get("detected_name", "")).strip()
-            snapshot_name = str(snapshot.get("name", "")).strip() or detected_name
-            if snapshot_name and not str(stored.get("name", "")).strip():
-                _snap_cat = classify_channel_name(snapshot_name)
-                stored.update({
-                    "key": key,
-                    "host": host,
-                    "port": port,
-                    "name": snapshot_name,
-                    "category": _snap_cat if _snap_cat != "其它频道" else (str(snapshot.get("category", "")) or "其它频道"),
-                    "auto_name": str(snapshot.get("auto_name", "")) or detected_name,
-                    "auto_name_source": str(snapshot.get("auto_name_source", "")) or str(result.get("detected_name_source", "")),
-                    "packets": _safe_int(snapshot.get("packets")),
-                })
-            stored.update(result)
-            stored = fill_channel_name_from_metadata(stored, allow_epg_name=can_replace_with_epg_name(channel_store.get(key) or {}, stored))
-            if str(stored.get("name", "")).strip():
-                channel_store.save_rows(enrich_channel_rows([stored], settings))
-        except Exception as exc:
-            logger.warning(f"自动识别流信息失败：{key}，{exc}")
-        finally:
-            with auto_probe_lock:
-                auto_probe_pending.discard(key)
-                auto_probe_done.add(key)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def merge_streams_with_channels() -> list[dict[str, Any]]:
-    streams = capture_service.streams()
-    named = channel_store.load()
-    fcc_records = fcc_store.load()
-    discovered = discovery_store.load()
-    settings = settings_store.load()
-    payload: list[dict[str, Any]] = []
-    for stream in streams:
-        channel = named.get(stream["key"], {})
-        discovery = discovered.get(stream["key"], {})
-        filter_reason = stream_filter_reason(
-            str(stream.get("host", "")),
-            int(stream.get("port", 0)),
-            int(stream.get("packets", 0)),
-            MIN_PACKET_COUNT,
-        )
-        if filter_reason and not str(channel.get("name") or discovery.get("name") or "").strip():
-            continue
-        item = dict(stream)
-        item["filter_reason"] = filter_reason
-        auto_name = str(channel.get("auto_name") or discovery.get("name") or "").strip()
-        item["auto_name"] = auto_name
-        item["auto_name_source"] = str(channel.get("auto_name_source") or discovery.get("source") or "").strip()
-        item["name"] = str(channel.get("name") or auto_name or "").strip()
-        item.update(probe_service.merge_probe_data(stream["key"], channel))
-        if not item["auto_name"] and item.get("detected_name"):
-            item["auto_name"] = str(item.get("detected_name", "")).strip()
-            item["auto_name_source"] = str(item.get("detected_name_source", "ffprobe_service_name")).strip()
-        fill_channel_name_from_metadata(item, allow_epg_name=False)
-        item["tvg_id"] = str(channel.get("tvg_id", ""))
-        item["tvg_name"] = str(channel.get("tvg_name", ""))
-        item["tvg_logo"] = str(channel.get("tvg_logo", ""))
-        item["epg_source"] = str(channel.get("epg_source", ""))
-        item["epg_matched_at"] = channel.get("epg_matched_at")
-        if settings.get("use_epg", True) and settings.get("auto_epg", True):
-            epg_service.enrich_item(item, str(settings.get("epg_url", "")), only_missing=True)
-            fill_channel_name_from_metadata(item, allow_epg_name=can_replace_with_epg_name(channel, item))
-        _auto_cat = classify_channel_name(str(item.get("name", "")))
-        item["category"] = _auto_cat if _auto_cat != "其它频道" else (channel.get("category") or "其它频道")
-        fcc = dict(fcc_records.get(stream["key"], {}))
-        if channel.get("fcc_ip"):
-            fcc.update({"fcc_ip": channel.get("fcc_ip"), "fcc_port": channel.get("fcc_port")})
-        item["fcc_ip"] = str(fcc.get("fcc_ip", ""))
-        item["fcc_port"] = fcc.get("fcc_port")
-        item["fec_port"] = channel.get("fec_port")
-        if not str(item.get("name", "")).strip() and str(item.get("probe_status", "")) == "failed":
-            continue
-        _fcc_type = str(settings.get("fcc_type", "") or "").strip()
-        item["preview_url"] = export_service.make_http_url(
-            str(settings.get("http_host", "")),
-            int(settings.get("http_port", 5140)),
-            str(settings.get("path_mode", "rtp")),
-            str(item["host"]),
-            int(item["port"]),
-            item["fcc_ip"],
-            item["fcc_port"],
-            item["fec_port"],
-            _fcc_type,
-        ) if settings.get("http_host") else ""
-        item["snapshot_url"] = f"/api/snapshot/{item['host']}/{item['port']}" if item.get("eligible") else ""
-        item["player_url"] = (
-            f"http://{settings.get('http_host')}:{int(settings.get('http_port', 5140))}/player"
-            if settings.get("http_host") else ""
-        )
-        persist_auto_channel_if_changed(item, channel, settings)
-        maybe_auto_probe(item, settings)
-        payload.append(item)
-    return payload
-
-
 def fetch_text_resource(url: str, timeout: int = 30) -> str:
     source = str(url or "").strip()
     if not source:
@@ -681,24 +585,6 @@ def write_m3u_channels(items: list[dict[str, Any]], epg_url: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def start_auto_enrichment_loop() -> None:
-    global auto_enrichment_started
-    if auto_enrichment_started:
-        return
-    auto_enrichment_started = True
-
-    def worker() -> None:
-        while True:
-            try:
-                merge_streams_with_channels()
-            except Exception as exc:
-                logger.warning(f"自动补全后台任务异常：{exc}")
-            capturing = capture_service.status().get("state") == "running"
-            time.sleep(5 if capturing else 15)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
 @app.get("/")
 def index():
     return render_template(
@@ -719,15 +605,13 @@ def api_version():
 @app.get("/api/health")
 def api_health():
     capture_runtime = capture_service.runtime_check()
-    probe_runtime = probe_service.runtime_check()
-    all_ok = capture_runtime.get("ok") and probe_runtime.get("ok")
+    all_ok = bool(capture_runtime.get("ok"))
     status_code = 200 if all_ok else 503
     payload = {
         "status": "ok" if all_ok else "degraded",
         "version": APP_VERSION,
         "uptime_seconds": int(time.time() - STARTED_AT),
         "runtime": capture_runtime,
-        "probe_runtime": probe_runtime,
     }
     response = api_success(payload)
     response.status_code = status_code
@@ -740,7 +624,6 @@ def api_metrics():
         "version": APP_VERSION,
         "uptime_seconds": int(time.time() - STARTED_AT),
         "capture": capture_service.metrics(),
-        "probe_runtime": probe_service.runtime_check(),
         "logs": logger.stats(),
         "saved_channels": len(channel_store.load()),
         "discovered_channels": len(discovery_store.load()),
@@ -794,61 +677,32 @@ def api_settings_save():
 
 @app.get("/api/status")
 def api_status():
-    return api_success(capture_service.status())
+    return api_error("UDP 流发现功能已移除，请使用运营商频道发现导入频道", 410)
 
 
 @app.post("/api/capture/start")
 def api_capture_start():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return api_error("请求体格式不正确")
-    try:
-        settings_store.save(data)
-        with auto_probe_lock:
-            auto_probe_pending.clear()
-            auto_probe_done.clear()
-        status = capture_service.start(data)
-        return api_success(status)
-    except ValueError as exc:
-        return api_error(str(exc), 400)
-    except RuntimeError as exc:
-        return api_error(str(exc), 409)
-    except Exception as exc:
-        logger.error(f"启动抓包失败：{exc}")
-        return api_error(str(exc), 500)
+    return api_error("UDP 流发现功能已移除，请使用运营商频道发现导入频道", 410)
 
 
 @app.post("/api/capture/stop")
 def api_capture_stop():
-    try:
-        return api_success(capture_service.stop())
-    except Exception as exc:
-        logger.error(f"停止抓包失败：{exc}")
-        return api_error(str(exc), 500)
+    return api_error("UDP 流发现功能已移除，请使用运营商频道发现导入频道", 410)
 
 
 @app.post("/api/capture/reset")
 def api_capture_reset():
-    try:
-        with auto_probe_lock:
-            auto_probe_pending.clear()
-            auto_probe_done.clear()
-        return api_success(capture_service.reset())
-    except RuntimeError as exc:
-        return api_error(str(exc), 409)
-    except Exception as exc:
-        logger.error(f"重置抓包状态失败：{exc}")
-        return api_error(str(exc), 500)
+    return api_error("UDP 流发现功能已移除，请使用运营商频道发现导入频道", 410)
 
 
 @app.get("/api/streams")
 def api_streams():
-    return api_success({"streams": merge_streams_with_channels()})
+    return api_error("UDP 流发现功能已移除，请使用运营商频道发现导入频道", 410)
 
 
 @app.get("/api/channels")
 def api_channels():
-    return api_success({"channels": channel_store.list()})
+    return api_success({"channels": display_channel_rows(channel_store.list())})
 
 
 @app.get("/api/fcc")
@@ -939,9 +793,7 @@ def _do_operator_import(channels: list[dict]) -> dict:
 
     # Bulk-save channel records so EPG enrichment runs immediately
     settings = settings_store.load()
-    # Pre-load stored channels so we can carry probe results (width/height/
-    # probe_status/quality_group) into the row dict.  Without this, enrich_channel_rows
-    # sees no dimensions and overwrites a probed "4K高清" back to "高清频道" via is_hd.
+    # Pre-load stored channels so operator imports keep existing runtime metadata.
     existing = channel_store.load()
     rows = []
     for ch in channels:
@@ -960,8 +812,6 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "fcc_port": ch.get("fcc_port"),
             "fec_port": ch.get("fec_port"),
             "is_hd": ch.get("is_hd", False),
-            # Carry probe results so enrich_channel_rows can recompute quality_group
-            # from real dimensions rather than falling back to is_hd inference.
             "probe_status": stored.get("probe_status", "not_probed"),
             "width": stored.get("width"),
             "height": stored.get("height"),
@@ -1155,82 +1005,12 @@ def api_channels_delete():
 
 @app.post("/api/probe")
 def api_probe_one():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return api_error("请求体格式不正确")
-    key = str(data.get("key", "")).strip()
-    host = str(data.get("host", "")).strip()
-    try:
-        port = int(data.get("port"))
-    except (TypeError, ValueError):
-        return api_error("端口格式不正确")
-    settings = settings_store.load()
-    path_mode = str(data.get("path_mode") or settings.get("path_mode", "rtp"))
-    try:
-        result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode, _iptv_local_ip(settings))
-        stored = channel_store.get(result["key"]) or {
-            "key": result["key"],
-            "host": host,
-            "port": port,
-            "name": str(data.get("name", "")).strip(),
-            "category": str(data.get("category", "其它频道")).strip() or "其它频道",
-        }
-        stored.update(result)
-        # 仅当已有频道名称时持久化到草稿；未命名的流保留在内存缓存中。
-        if str(stored.get("name", "")).strip():
-            channel_store.save_rows(enrich_channel_rows([stored], settings))
-        return api_success(result)
-    except ValueError as exc:
-        return api_error(str(exc), 400)
-    except RuntimeError as exc:
-        return api_error(str(exc), 409)
-    except Exception as exc:
-        logger.error(f"流信息自动识别失败：{exc}")
-        return api_error(str(exc), 500)
+    return api_error("流信息探测功能已移除，请使用播放诊断和导出前线路检查判断源可用性", 410)
 
 
 @app.post("/api/probe/batch")
 def api_probe_batch():
-    data = request.get_json(silent=True) or {}
-    rows = data.get("channels", []) if isinstance(data, dict) else []
-    if not isinstance(rows, list):
-        return api_error("channels 必须是数组")
-    settings = settings_store.load()
-    path_mode = str(data.get("path_mode") or settings.get("path_mode", "rtp")) if isinstance(data, dict) else str(settings.get("path_mode", "rtp"))
-    localaddr = _iptv_local_ip(settings)
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        key = str(row.get("key", "")).strip()
-        host = str(row.get("host", "")).strip()
-        try:
-            port = int(row.get("port"))
-        except (TypeError, ValueError):
-            continue
-        try:
-            result = probe_service.probe(key or f"{host}:{port}", host, port, path_mode, localaddr)
-        except Exception as exc:
-            result = {
-                "key": key or f"{host}:{port}",
-                "probe_status": "failed",
-                "probe_message": str(exc),
-                "codec_name": "",
-                "width": None,
-                "height": None,
-                "frame_rate": "",
-                "resolution_label": "未识别",
-                "quality_group": "未识别",
-                "probed_at": int(time.time()),
-            }
-            logger.warning(f"批量自动识别跳过失败项：{result['key']}，{exc}")
-        results.append(result)
-        row.update(result)
-    rows = enrich_channel_rows(rows, settings)
-    named_rows = [row for row in rows if isinstance(row, dict) and str(row.get("name", "")).strip()]
-    if named_rows:
-        channel_store.save_rows(named_rows)
-    return api_success({"results": results, "count": len(results)})
+    return api_error("批量流信息探测功能已移除，请使用播放诊断和导出前线路检查判断源可用性", 410)
 
 
 @app.post("/api/export")
@@ -1240,7 +1020,7 @@ def api_export():
         return api_error("请求体格式不正确")
     rows = data.get("channels")
     if rows is None:
-        rows = merge_streams_with_channels()
+        rows = channel_store.list()
     if not isinstance(rows, list):
         return api_error("channels 必须是数组")
     settings = {**settings_store.load(), **{k: v for k, v in data.items() if k != "channels"}}
@@ -1342,7 +1122,7 @@ def api_hls_m3u():
     base_url = request.url_root.rstrip("/")
     channels = channel_store.load()
     if not channels:
-        return api_error("尚无频道数据，请先完成嗅探和导出。")
+        return api_error("尚无频道数据，请先完成运营商频道发现并导入。")
     try:
         content = export_service.hls_m3u(channels, base_url, epg_url)
         resp = Response(
@@ -1425,7 +1205,7 @@ def api_logs_download():
 @app.get("/api/channels/groups")
 def api_channels_groups():
     """Return channels grouped by tvg_id / normalized name with primary source per group."""
-    channels = list(channel_store.load().values())
+    channels = display_channel_rows(list(channel_store.load().values()))
     groups_dict: dict[str, list[dict]] = {}
     for ch in channels:
         gk = channel_group_key(ch)
@@ -1759,7 +1539,7 @@ def api_diagnose():
     # --- Check 2: Interface configured ---
     add_check("network", "抓包接口已配置", bool(iface), f"interface = {iface or '（未设置）'}")
     if not iface:
-        conclusions.append("未设置抓包接口，嗅探将使用默认接口 any。")
+                conclusions.append("未设置抓包接口，诊断将使用默认接口 any。")
 
     # --- Check 3: Auth info captured ---
     auth = stb_discovery_service.status().get("auth_info") or {}
@@ -1841,7 +1621,7 @@ def api_diagnose():
                 elif verdict_code == "mirror":
                     add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", False, udp_detail + " → 疑似镜像口（SPAN）")
                     conclusions.append("疑似镜像/SPAN 抓包口：未加入组播即可收到流量，但主动 IGMP 加入收不到。"
-                                       "镜像口只能被动嗅探，播放器无法主动播放；请改用真实的 IPTV 接入口。")
+                                       "镜像口只能被动看到流量，播放器无法主动播放；请改用真实的 IPTV 接入口。")
                 else:
                     add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", False, udp_detail)
                     conclusions.append("未收到该组播流：可能不在 IPTV 组播 VLAN、抓包接口选择错误，或该频道已停播。")
@@ -1852,7 +1632,7 @@ def api_diagnose():
     ch_count = len(channel_store.load())
     add_check("playlist", "频道列表已导入", ch_count > 0, f"已保存 {ch_count} 个频道")
     if ch_count == 0:
-        conclusions.append("频道列表为空，请先运行运营商频道发现或嗅探并导入。")
+        conclusions.append("频道列表为空，请先运行运营商频道发现并导入。")
 
     # --- Verdict ---
     failed = [c for c in checks if c["ok"] is False]
@@ -1892,10 +1672,8 @@ def _startup_epg_refresh() -> None:
 def boot() -> None:
     logger.info(f"应用启动：{APP_NAME} v{APP_VERSION}")
     capture_service.validate_runtime()
-    probe_service.validate_runtime()
     epg_service.start_auto_refresh(settings_store)
     iptv_auth_service.start_egress_bpf_watchdog()
-    start_auto_enrichment_loop()
     threading.Thread(target=_startup_epg_refresh, daemon=True).start()
     _start_version_check_loop()
     logger.info(f"数据目录：{DATA_DIR}")
