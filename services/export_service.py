@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -281,9 +282,16 @@ class ExportService:
             ch_info = op_ch.get(channel.key) or {}
             if ch_info.get("time_shift"):
                 catchup_source_attr = ""
-                if catchup_template:
+                effective_template = catchup_template
+                if not effective_template:
+                    # Fall back to per-channel backtv_url stored from pcap
+                    backtv = str(ch_info.get("backtv_url", "") or "").strip()
+                    if backtv and backtv.startswith("http"):
+                        effective_template = re.sub(r"/[^/]+\.[a-z0-9]+$", "", backtv, flags=re.IGNORECASE)
+                        effective_template = effective_template.rstrip("/") + "/{start}/{duration}/index.m3u8"
+                if effective_template:
                     channel_id = ch_info.get("channel_id", "") or tvg_id
-                    safe_cu = catchup_template.replace("{channel_id}", str(channel_id)).replace('"', "%22")
+                    safe_cu = effective_template.replace("{channel_id}", str(channel_id)).replace('"', "%22")
                     catchup_source_attr = f' catchup-source="{safe_cu}"'
                 catchup_attr = f' catchup="default" catchup-days="{catchup_days}"{catchup_source_attr}'
         handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{channel.name}\n')

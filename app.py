@@ -825,6 +825,7 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "fcc_port": ch.get("fcc_port"),
             "fec_port": ch.get("fec_port"),
             "is_hd": ch.get("is_hd", False),
+            "time_shift": ch.get("time_shift", False),
             "probe_status": stored.get("probe_status", "not_probed"),
             "width": stored.get("width"),
             "height": stored.get("height"),
@@ -1039,14 +1040,22 @@ def api_stb_discovery_import():
         return api_error("没有可导入的频道，请先完成 STB 开机捕获")
     try:
         result = _do_operator_import(channels)
-        # Auto-populate timeshift_host setting if detected and not yet configured
+        # Auto-populate timeshift_host and catchup_source_template if detected
         timeshift_host = str(state.get("timeshift_host") or "").strip()
-        if timeshift_host:
+        catchup_template = str(state.get("catchup_template") or "").strip()
+        if timeshift_host or catchup_template:
             current = settings_store.load()
-            if not str(current.get("timeshift_host") or "").strip():
-                settings_store.save({"timeshift_host": timeshift_host})
+            updates: dict = {}
+            if timeshift_host and not str(current.get("timeshift_host") or "").strip():
+                updates["timeshift_host"] = timeshift_host
                 result["timeshift_host_detected"] = timeshift_host
                 logger.info(f"自动检测到回看服务器地址：{timeshift_host}")
+            if catchup_template and not str(current.get("catchup_source_template") or "").strip():
+                updates["catchup_source_template"] = catchup_template
+                result["catchup_template_detected"] = catchup_template
+                logger.info(f"自动检测到回看 URL 模板：{catchup_template}")
+            if updates:
+                settings_store.save(updates)
         logger.info(f"已从 STB 开机捕获导入 {result['imported']} 个频道，FCC {result['fcc_saved']} 条，频道记录 {result['channels_saved']} 条（含 EPG 匹配）")
         return api_success(result)
     except Exception as exc:

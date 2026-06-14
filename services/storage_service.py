@@ -458,6 +458,7 @@ class OperatorChannelStore:
                     "fcc_port": ch.get("fcc_port"),
                     "fec_port": ch.get("fec_port"),
                     "channel_id": str(ch.get("channel_id", "")).strip(),
+                    "backtv_url": str(ch.get("backtv_url", "")).strip(),
                     "source": "operator_channel_list",
                 }
                 saved += 1

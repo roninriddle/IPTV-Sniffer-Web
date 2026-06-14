@@ -891,6 +891,10 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
       msg += `\n已自动检测到回看服务器：${data.timeshift_host_detected}`;
       if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host_detected;
     }
+    if (data.catchup_template_detected) {
+      msg += `\n已自动检测到回看 URL 模板：${data.catchup_template_detected}`;
+      if ($("catchupSourceTemplate")) $("catchupSourceTemplate").value = data.catchup_template_detected;
+    }
     alert(msg);
     state.channelListSection = "list";
     showTab("channelList");
