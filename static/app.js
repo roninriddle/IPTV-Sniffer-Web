@@ -1233,8 +1233,10 @@ $("iptvAuthImportFile").addEventListener("change", async function () {
   try {
     const text = await file.text();
     const data = JSON.parse(text);
-    await requestJson("/api/iptv-auth/backup-import", { method: "POST", body: JSON.stringify(data) });
-    alert(`接口 ${data.interface} 的初始备份已导入，恢复功能现在可用。`);
+    const res = await requestJson("/api/iptv-auth/backup-import", { method: "POST", body: JSON.stringify(data) });
+    let msg = `接口 ${data.interface} 的初始备份已导入，恢复功能现在可用。`;
+    if (res.warn_no_ipv4) msg += "\n\n⚠️ 注意：此备份捕获时网卡尚无 IPv4 地址，执行恢复后将自动尝试普通 DHCP 补救，若失败需手动配置 IP。";
+    alert(msg);
     await refreshIptvAuthStatus();
   } catch (e) {
     alert("导入失败：" + e.message);

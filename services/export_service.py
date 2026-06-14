@@ -286,9 +286,9 @@ class ExportService:
         if catchup_days > 0 and op_ch:
             ch_info = op_ch.get(channel.key) or {}
             if ch_info.get("time_shift"):
-                # TimeShiftLength is in minutes; convert to days (e.g. 14400 min = 10 days)
+                # TimeShiftLength from operator is in minutes; always convert to days
                 raw_shift = ch_info.get("time_shift_days") or 0
-                eff_days = max(1, raw_shift // 1440) if raw_shift > 1440 else (raw_shift or catchup_days)
+                eff_days = max(1, raw_shift // 1440) if raw_shift else catchup_days
                 catchup_source_attr = ""
                 if catchup_template:
                     # User-configured HLS-style template with {channel_id} placeholder

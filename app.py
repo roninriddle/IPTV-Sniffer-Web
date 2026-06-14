@@ -897,7 +897,7 @@ _BACKUP_FILES: list[tuple[str, Path]] = [
 
 @app.get("/api/backup/export")
 def api_backup_export():
-    payload: dict[str, Any] = {"_version": _BACKUP_VERSION, "_exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    payload: dict[str, Any] = {"_version": _BACKUP_VERSION, "_app_version": APP_VERSION, "_exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     for key, path in _BACKUP_FILES:
         if key == "settings":
             payload[key] = settings_store.load()

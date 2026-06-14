@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+from config import APP_VERSION
 from services.log_service import AppLogger
 
 
@@ -504,16 +505,29 @@ exit 0
         if str(initial.get("operstate", "")).upper() == "DOWN":
             run_step(["ip", "link", "set", "dev", iface, "down"], check=False)
 
+        dhcp_triggered = False
+        if not list(initial.get("ipv4") or []) and shutil.which("udhcpc"):
+            # Initial snapshot had no IPv4 (captured before normal DHCP ran).
+            # Run plain DHCP to restore normal LAN connectivity after restore.
+            run_step(["udhcpc", "-q", "-n", "-t", "4", "-T", "3", "-i", iface], timeout=35, check=False)
+            dhcp_triggered = True
+
         snap = self.snapshot(iface)
-        self.logger.warning(f"IPTV 认证恢复已执行：接口={iface}，恢复到初始备份")
-        return {"interface": iface, "snapshot": snap, "steps": steps, "backup": self.backup_summary(iface)}
+        self.logger.warning(f"IPTV 认证恢复已执行：接口={iface}，恢复到初始备份，DHCP补救={'是' if dhcp_triggered else '否'}")
+        return {"interface": iface, "snapshot": snap, "steps": steps, "backup": self.backup_summary(iface),
+                "dhcp_triggered": dhcp_triggered}
 
     def backup_export(self, iface: str) -> dict[str, Any]:
         entry = self._backup_data().get("interfaces", {}).get(iface) or {}
         initial = entry.get("initial")
         if not initial:
             raise ValueError(f"接口 {iface} 尚无初始备份，请先刷新状态以创建备份。")
-        return {"interface": iface, "initial": initial}
+        return {
+            "_app_version": APP_VERSION,
+            "_exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "interface": iface,
+            "initial": initial,
+        }
 
     def backup_import(self, data: dict[str, Any]) -> dict[str, Any]:
         iface = str(data.get("interface") or "").strip()
@@ -525,7 +539,8 @@ exit 0
         entry["initial"] = initial
         self._write_backup_data(raw)
         self.logger.info(f"IPTV 认证备份已导入：接口={iface}")
-        return {"interface": iface, "saved": True}
+        no_ipv4 = not list(initial.get("ipv4") or [])
+        return {"interface": iface, "saved": True, "warn_no_ipv4": no_ipv4}
 
     def egress_bpf_status(self, interface: str) -> dict[str, Any]:
         """Inspect TC/XDP state that may block IGMP on the selected IPTV port."""
