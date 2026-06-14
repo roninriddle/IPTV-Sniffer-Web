@@ -447,7 +447,7 @@
             <div class="notice compact">
               <span>填写以下认证信息后点击「刷新回看地址」，系统将重新登录运营商 EPG 门户并更新各频道的回看 RTSP Token。</span>
             </div>
-            <div class="form-grid">
+            <div class="form-grid" style="grid-template-columns: repeat(2, 1fr)">
               <label>
                 IPTV 密码
                 <input id="iptvPassword" type="password" autocomplete="current-password" placeholder="此密码可向运维小哥获取">
@@ -464,7 +464,7 @@
                 DES3 加密密钥（8位）
                 <input id="epgDes3Key" type="text" autocomplete="off" maxlength="24" placeholder="8位数字或字母，运营商提供">
               </label>
-              <label>
+              <label style="grid-column: 1 / -1">
                 EPG 服务器地址（留空自动检测）
                 <input id="epgAuthHost" type="text" autocomplete="off" placeholder="10.x.x.x:8082（自动从回看地址提取）">
               </label>
