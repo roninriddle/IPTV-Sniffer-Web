@@ -61,6 +61,7 @@ function formSettings() {
     auto_epg: true,
     catchup_days: Number($("catchupDays")?.value ?? 7),
     timeshift_host: $("timeshiftHost")?.value.trim() || "",
+    catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
     pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
@@ -258,7 +259,10 @@ async function loadSettings() {
   $("pathMode").value = data.path_mode || "rtp";
   $("catchupDays").value = data.catchup_days ?? 7;
   if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host || "";
-  $("catchupSourceTemplate").value = data.catchup_source_template || "";
+  const _csmEl = document.querySelector(`input[name="catchupSourceMode"][value="${data.catchup_source_mode || 'aptv'}"]`);
+  if (_csmEl) _csmEl.checked = true;
+  if ($("catchupSourceTemplate")) $("catchupSourceTemplate").value = data.catchup_source_template || "";
+  updateCatchupSourceUI();
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
   if ($("preExportHealthCheck")) $("preExportHealthCheck").checked = !!data.pre_export_health_check;
 }
@@ -513,6 +517,7 @@ $("saveExportSettingsBtn").addEventListener("click", async () => {
       fcc_type: $("fccType")?.value || "",
       catchup_days: Number($("catchupDays")?.value ?? 7),
       timeshift_host: $("timeshiftHost")?.value.trim() || "",
+      catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
       catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
       pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
     })});
@@ -890,12 +895,38 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
     if (data.timeshift_host_detected) {
       msg += `\n已自动检测到回看服务器：${data.timeshift_host_detected}`;
       if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host_detected;
+      updateCatchupSourceUI();
     }
     alert(msg);
     state.channelListSection = "list";
     showTab("channelList");
   } catch (err) { alert(err.message); }
 });
+
+// ── catchup-source mode UI ────────────────────────────────────────────────
+
+function updateCatchupSourceUI() {
+  const mode = document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv";
+  const templateEl = $("catchupSourceTemplate");
+  const previewEl = $("catchupHlsPreview");
+  if (!templateEl || !previewEl) return;
+  if (mode === "custom") {
+    templateEl.style.display = "";
+    previewEl.style.display = "none";
+  } else if (mode === "hls") {
+    templateEl.style.display = "none";
+    const host = $("timeshiftHost")?.value.trim() || "回看服务器";
+    previewEl.textContent = `http://${host}/timeshift/{channel_id}/{start}/{duration}/index.m3u8`;
+    previewEl.style.display = "";
+  } else {
+    templateEl.style.display = "none";
+    previewEl.style.display = "none";
+  }
+}
+
+document.querySelectorAll('input[name="catchupSourceMode"]').forEach(el =>
+  el.addEventListener("change", updateCatchupSourceUI));
+$("timeshiftHost")?.addEventListener("input", updateCatchupSourceUI);
 
 // ── IPTV auth helper ──────────────────────────────────────────────────────
 

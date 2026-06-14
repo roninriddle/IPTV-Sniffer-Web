@@ -471,11 +471,11 @@ _TIMESHIFT_URL_RE = re.compile(
 
 def _detect_timeshift_host(streams: dict[Any, bytes], channels: list[dict[str, Any]]) -> str:
     """Return first timeshift server host:port found in channels or HTTP traffic."""
-    # 1. Check BacktimeURL field captured from channel list
+    # 1. Check backtv_url field captured from channel list (may be rtsp:// or http://)
     for ch in channels:
         url = ch.get("backtv_url", "")
-        if url and url.startswith("http"):
-            m = re.match(r"https?://([\d.]+(?::\d+)?)/", url)
+        if url:
+            m = re.match(r"(?:https?|rtsp)://([\d.]+(?::\d+)?)/", url)
             if m:
                 return m.group(1)
     # 2. Scan all HTTP traffic bodies for timeshift URLs

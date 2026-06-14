@@ -899,6 +899,9 @@ _BACKUP_FILES: list[tuple[str, Path]] = [
 def api_backup_export():
     payload: dict[str, Any] = {"_version": _BACKUP_VERSION, "_exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     for key, path in _BACKUP_FILES:
+        if key == "settings":
+            payload[key] = settings_store.load()
+            continue
         try:
             payload[key] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
         except Exception:
