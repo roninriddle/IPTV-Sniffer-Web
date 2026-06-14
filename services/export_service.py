@@ -314,7 +314,8 @@ class ExportService:
                             sep = "&" if "?" in backtv else "?"
                             safe_cu = (backtv + f"{sep}playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}").replace('"', "%22")
                         catchup_source_attr = f' catchup-source="{safe_cu}"'
-                catchup_attr = f' catchup="default" catchup-days="{eff_days}"{catchup_source_attr}'
+                if catchup_source_attr:
+                    catchup_attr = f' catchup="default" catchup-days="{eff_days}"{catchup_source_attr}'
         handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{channel.name}\n')
         handle.write(f"{url}\n")
 
