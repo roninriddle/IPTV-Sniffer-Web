@@ -60,6 +60,7 @@ function formSettings() {
     auto_probe: false,
     auto_epg: true,
     catchup_days: Number($("catchupDays")?.value ?? 7),
+    timeshift_host: $("timeshiftHost")?.value.trim() || "",
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
     pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
@@ -256,6 +257,7 @@ async function loadSettings() {
   if ($("diagConfigPath")) $("diagConfigPath").value = data.rtp2httpd_config_path || "";
   $("pathMode").value = data.path_mode || "rtp";
   $("catchupDays").value = data.catchup_days ?? 7;
+  if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host || "";
   $("catchupSourceTemplate").value = data.catchup_source_template || "";
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
   if ($("preExportHealthCheck")) $("preExportHealthCheck").checked = !!data.pre_export_health_check;
@@ -502,6 +504,21 @@ document.querySelectorAll("[data-cl-section]").forEach((item) => {
 $("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
 $("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("useLogo").checked; });
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
+$("saveExportSettingsBtn").addEventListener("click", async () => {
+  try {
+    await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
+      http_host: $("httpHost").value.trim(),
+      http_port: Number($("httpPort").value || 5140),
+      path_mode: $("pathMode").value,
+      fcc_type: $("fccType")?.value || "",
+      catchup_days: Number($("catchupDays")?.value ?? 7),
+      timeshift_host: $("timeshiftHost")?.value.trim() || "",
+      catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
+      pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
+    })});
+    alert("导出设置已保存");
+  } catch (err) { alert(err.message); }
+});
 $("saveEpgSettingsBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
@@ -869,7 +886,12 @@ $("stbDiscoveryResetBtn").addEventListener("click", async () => {
 $("stbDiscoveryImportBtn").addEventListener("click", async () => {
   try {
     const data = await requestJson("/api/stb_discovery/import", {method: "POST", body: "{}"});
-    alert(`已导入 ${data.imported} 个频道到频道列表。`);
+    let msg = `已导入 ${data.imported} 个频道到频道列表。`;
+    if (data.timeshift_host_detected) {
+      msg += `\n已自动检测到回看服务器：${data.timeshift_host_detected}`;
+      if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host_detected;
+    }
+    alert(msg);
     state.channelListSection = "list";
     showTab("channelList");
   } catch (err) { alert(err.message); }

@@ -159,6 +159,10 @@ class ExportService:
         epg_url = str(settings.get("epg_url", "") or "").strip()
         catchup_days = int(settings.get("catchup_days", 7) or 0)
         catchup_template = str(settings.get("catchup_source_template", "") or "").strip()
+        if not catchup_template:
+            ts_host = str(settings.get("timeshift_host", "") or "").strip()
+            if ts_host:
+                catchup_template = f"http://{ts_host}/timeshift/{{channel_id}}/{{start}}/{{duration}}/index.m3u8"
         fcc_type = str(settings.get("fcc_type", "") or "").strip()
         op_ch = operator_channels or {}
         best_channels = self._select_best_channels(channels)

@@ -1039,6 +1039,14 @@ def api_stb_discovery_import():
         return api_error("没有可导入的频道，请先完成 STB 开机捕获")
     try:
         result = _do_operator_import(channels)
+        # Auto-populate timeshift_host setting if detected and not yet configured
+        timeshift_host = str(state.get("timeshift_host") or "").strip()
+        if timeshift_host:
+            current = settings_store.load()
+            if not str(current.get("timeshift_host") or "").strip():
+                settings_store.save({"timeshift_host": timeshift_host})
+                result["timeshift_host_detected"] = timeshift_host
+                logger.info(f"自动检测到回看服务器地址：{timeshift_host}")
         logger.info(f"已从 STB 开机捕获导入 {result['imported']} 个频道，FCC {result['fcc_saved']} 条，频道记录 {result['channels_saved']} 条（含 EPG 匹配）")
         return api_success(result)
     except Exception as exc:

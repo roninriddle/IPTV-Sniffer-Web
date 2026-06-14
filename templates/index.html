@@ -17,9 +17,9 @@
       <div class="top-actions">
         <button class="nav-pill active" data-page="home" type="button" title="首页 / 使用向导">首页</button>
         <button class="nav-pill" data-nav-tab="stbDiscovery" type="button" title="运营商频道发现">发现</button>
+        <button class="nav-pill" data-nav-tab="iptvAuth" type="button" title="IPTV 认证助手">认证</button>
         <button class="nav-pill" data-nav-tab="channelList" type="button" title="频道线路">线路</button>
         <button class="nav-pill" data-nav-tab="diagnose" type="button" title="播放链路诊断">诊断</button>
-        <button class="nav-pill" data-nav-tab="iptvAuth" type="button" title="IPTV 认证助手">认证</button>
         <a id="updateBadge" class="chip warning update-badge" href="#" target="_blank" rel="noreferrer" hidden></a>
         <button id="logsBtn" class="nav-pill logs-toggle" type="button" title="打开实时日志">日志</button>
       </div>
@@ -393,17 +393,24 @@
               <span class="muted small">仅对运营商频道表中标记支持回看的频道生效；天数设为 0 可禁用</span>
             </div>
             <div class="notice compact">
-              <span>回看服务器通常在 IPTV 子网（如 10.7.x.x），需先完成 IPTV 认证才可访问。请将模板中的 <strong>timeshift-server</strong> 替换为实际回看服务器 IP。</span>
+              <span>回看服务器在 IPTV 子网，需完成认证后才可访问。抓包导入频道时会自动检测并填入服务器地址。</span>
             </div>
             <div class="form-grid">
               <label>
                 回看天数
                 <input id="catchupDays" type="number" min="0" max="30" value="7">
               </label>
-              <label style="grid-column: 2 / -1">
-                catchup-source 模板（{channel_id} 替换为频道 ID，{start}/{duration} 由播放器填入）
-                <input id="catchupSourceTemplate" type="text" placeholder="http://timeshift-server/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
+              <label>
+                回看服务器地址（抓包后自动填入）
+                <input id="timeshiftHost" type="text" placeholder="10.7.x.x 或 10.7.x.x:port">
               </label>
+              <label style="grid-column: 1 / -1">
+                catchup-source 模板（留空则由回看服务器地址自动生成；{channel_id}/{start}/{duration} 由播放器填入）
+                <input id="catchupSourceTemplate" type="text" placeholder="留空自动：http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
+              </label>
+            </div>
+            <div class="button-row" style="margin-bottom: 8px">
+              <button id="saveExportSettingsBtn" class="secondary" type="button">保存导出设置</button>
             </div>
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
             <div class="form-grid compact-grid" style="margin-bottom: 8px">

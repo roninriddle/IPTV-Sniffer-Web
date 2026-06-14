@@ -392,6 +392,10 @@ def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
         fcc_ip = pairs.get("ChannelFCCIP", "").strip()
         fcc_port_s = pairs.get("ChannelFCCPort", "")
         fec_port_s = pairs.get("ChannelFECPort", "")
+        backtv_url = (
+            pairs.get("BacktimeURL") or pairs.get("BackUrl") or
+            pairs.get("TimeshiftUrl") or pairs.get("startOverUrl") or ""
+        ).strip()
         m = re.match(r"(?:igmp|udp|rtp)://([0-9.]+):(\d+)", channel_url)
         ip, port = (m.group(1), int(m.group(2))) if m else ("", 0)
         if not ip or not port or not chan_name:
@@ -408,6 +412,7 @@ def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
                 "fcc_ip": fcc_ip,
                 "fcc_port": int(fcc_port_s) if fcc_port_s.isdigit() else None,
                 "fec_port": int(fec_port_s) if fec_port_s.isdigit() else None,
+                "backtv_url": backtv_url,
             }
         )
     channels.sort(key=lambda x: x["num"])
@@ -453,6 +458,29 @@ def _parse_vsp_json(body: bytes) -> list[dict[str, Any]]:
                         }
                     )
     return channels
+
+
+_TIMESHIFT_URL_RE = re.compile(
+    rb"https?://([\d.]+(?::\d+)?)/[^\s\"'<>]*(?:timeshift|backtv|backtime|catchup)[^\s\"'<>]*",
+    re.IGNORECASE,
+)
+
+
+def _detect_timeshift_host(streams: dict[Any, bytes], channels: list[dict[str, Any]]) -> str:
+    """Return first timeshift server host:port found in channels or HTTP traffic."""
+    # 1. Check BacktimeURL field captured from channel list
+    for ch in channels:
+        url = ch.get("backtv_url", "")
+        if url and url.startswith("http"):
+            m = re.match(r"https?://([\d.]+(?::\d+)?)/", url)
+            if m:
+                return m.group(1)
+    # 2. Scan all HTTP traffic bodies for timeshift URLs
+    for raw in streams.values():
+        m = _TIMESHIFT_URL_RE.search(raw)
+        if m:
+            return m.group(1).decode("utf-8", errors="replace")
+    return ""
 
 
 def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any]]:
@@ -620,8 +648,11 @@ class StbDiscoveryService:
                 time.sleep(0.5)  # let pcap flush
                 channels: list[dict[str, Any]] = []
                 auth_info: dict[str, Any] = {}
+                timeshift_host: str = ""
                 if pcap_path and os.path.exists(pcap_path):
+                    streams = _reassemble_tcp_streams(pcap_path)
                     channels = analyze_pcap_for_channels(pcap_path, stb_ip or "")
+                    timeshift_host = _detect_timeshift_host(streams, channels)
                     auth_info = _extract_dhcp_from_pcap(pcap_path)
                     try:
                         os.unlink(pcap_path)
@@ -632,6 +663,7 @@ class StbDiscoveryService:
                     self._state["channels"] = channels
                     self._state["channel_count"] = len(channels)
                     self._state["auth_info"] = auth_info
+                    self._state["timeshift_host"] = timeshift_host
                 has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
                 self.logger.info(
                     f"STB 频道发现完成：共发现 {len(channels)} 个频道，"
