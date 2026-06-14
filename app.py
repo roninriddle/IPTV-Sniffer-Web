@@ -1044,14 +1044,24 @@ def api_stb_discovery_import():
         return api_error("没有可导入的频道，请先完成 STB 开机捕获")
     try:
         result = _do_operator_import(channels)
-        # Auto-populate timeshift_host setting if detected and not yet configured
+        current = settings_store.load()
+        # Auto-populate timeshift_host if detected and not yet configured
         timeshift_host = str(state.get("timeshift_host") or "").strip()
-        if timeshift_host:
-            current = settings_store.load()
-            if not str(current.get("timeshift_host") or "").strip():
-                settings_store.save({"timeshift_host": timeshift_host})
-                result["timeshift_host_detected"] = timeshift_host
-                logger.info(f"自动检测到回看服务器地址：{timeshift_host}")
+        if timeshift_host and not str(current.get("timeshift_host") or "").strip():
+            settings_store.save({"timeshift_host": timeshift_host})
+            result["timeshift_host_detected"] = timeshift_host
+            logger.info(f"自动检测到回看服务器地址：{timeshift_host}")
+        # Auto-populate EPG credentials extracted from pcap (never overwrite existing values)
+        epg_creds = state.get("epg_creds") or {}
+        epg_updates: dict[str, str] = {}
+        for key in ("epg_user_id", "epg_stb_id", "epg_auth_host"):
+            val = str(epg_creds.get(key) or "").strip()
+            if val and not str(current.get(key) or "").strip():
+                epg_updates[key] = val
+        if epg_updates:
+            settings_store.save(epg_updates)
+            result["epg_creds_detected"] = epg_updates
+            logger.info(f"从抓包自动提取 EPG 认证信息：{epg_updates}")
         logger.info(f"已从 STB 开机捕获导入 {result['imported']} 个频道，FCC {result['fcc_saved']} 条，频道记录 {result['channels_saved']} 条（含 EPG 匹配）")
         return api_success(result)
     except Exception as exc:
@@ -1247,6 +1257,11 @@ def hls_catchup(hls_key: str):
 def api_catchup_refresh():
     """Re-authenticate to EPG portal and refresh backtv_url tokens in operator_channels.json."""
     settings = settings_store.load()
+    # Allow caller to supply credentials directly (so user needn't save first)
+    override = request.get_json(silent=True) or {}
+    for key in ("iptv_password", "epg_user_id", "epg_stb_id", "epg_des3_key", "epg_auth_host"):
+        if override.get(key):
+            settings[key] = override[key]
     op_channels = operator_channel_store.load()
     if not op_channels:
         return api_error("运营商频道表为空，请先完成 STB 开机捕获并导入频道", 400)

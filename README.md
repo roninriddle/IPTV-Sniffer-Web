@@ -4,8 +4,8 @@
 
 参考与致谢：
 
-- [恩山论坛 · IPTV 相关讨论](https://www.right.com.cn/forum/thread-8314608-1-1.html)
-- [恩山论坛 · IPTV 相关讨论](https://www.right.com.cn/forum/thread-8314231-1-1.html)
+- [江苏电信 IPTV 回看源在 TVBox 上进行播放（技术分析）](https://www.right.com.cn/forum/thread-8314608-1-1.html)
+- [江苏电信 IPTV 回看地址探究（技术分析）](https://www.right.com.cn/forum/thread-8314231-1-1.html)
 - [`supzhang/get_iptv_channels`](https://github.com/supzhang/get_iptv_channels)：CU IPTV EPG 认证与回看地址获取思路；
 - [`zzzz0317/beijing-unicom-iptv-playlist`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist)：多源播放列表、代理地址转换与 M3U 生成；
 - [`zzzz0317/beijing-unicom-iptv-playlist-sniffer`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist-sniffer)：机顶盒 `channelAcquire` 请求与 `UserToken` 嗅探；

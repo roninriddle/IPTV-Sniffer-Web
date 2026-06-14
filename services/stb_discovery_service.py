@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -469,6 +470,39 @@ _TIMESHIFT_URL_RE = re.compile(
 )
 
 
+def _extract_epg_credentials(streams: dict[Any, bytes], stb_ip: str) -> dict[str, str]:
+    """
+    Scan STB→server TCP streams for EPG auth requests and extract:
+    user_id, stb_id, epg_auth_host (ip:port).
+    """
+    result: dict[str, str] = {}
+    request_streams = {k: v for k, v in streams.items() if k[0] == stb_ip}
+    for (src_ip, src_port, dst_ip, dst_port), data in request_streams.items():
+        text = data.decode("utf-8", errors="replace")
+        # UserID from /EDS/jsp/AuthenticationURL?UserID=...
+        if not result.get("epg_user_id"):
+            m = re.search(r"/EDS/jsp/AuthenticationURL[^\r\n]*[?&]UserID=([^&\s\r\n/]+)", text)
+            if m:
+                uid = urllib.parse.unquote(m.group(1)).strip()
+                if uid:
+                    result["epg_user_id"] = uid
+                    result.setdefault("epg_auth_host", f"{dst_ip}:{dst_port}")
+        # STBID from POST body to ValidAuthenticationHWCTC
+        if not result.get("epg_stb_id"):
+            if "ValidAuthenticationHWCTC" in text or "authLoginHWCTC" in text:
+                m = re.search(r"[?&]?STBID=([^&\s\r\n]+)", text)
+                if m:
+                    stbid = urllib.parse.unquote(m.group(1)).strip()
+                    if stbid:
+                        result["epg_stb_id"] = stbid
+                result.setdefault("epg_auth_host", f"{dst_ip}:{dst_port}")
+        # EPG host from any /EPG/jsp/ or /EDS/jsp/ request
+        if not result.get("epg_auth_host"):
+            if b"/EPG/jsp/" in data or b"/EDS/jsp/" in data:
+                result["epg_auth_host"] = f"{dst_ip}:{dst_port}"
+    return result
+
+
 def _detect_timeshift_host(streams: dict[Any, bytes], channels: list[dict[str, Any]]) -> str:
     """Return first timeshift server host:port found in channels or HTTP traffic."""
     # 1. Check backtv_url field captured from channel list (may be rtsp:// or http://)
@@ -654,11 +688,13 @@ class StbDiscoveryService:
                 channels: list[dict[str, Any]] = []
                 auth_info: dict[str, Any] = {}
                 timeshift_host: str = ""
+                epg_creds: dict[str, str] = {}
                 if pcap_path and os.path.exists(pcap_path):
                     streams = _reassemble_tcp_streams(pcap_path)
                     channels = analyze_pcap_for_channels(pcap_path, stb_ip or "")
                     timeshift_host = _detect_timeshift_host(streams, channels)
                     auth_info = _extract_dhcp_from_pcap(pcap_path)
+                    epg_creds = _extract_epg_credentials(streams, stb_ip or "")
                     try:
                         os.unlink(pcap_path)
                     except Exception:
@@ -669,10 +705,12 @@ class StbDiscoveryService:
                     self._state["channel_count"] = len(channels)
                     self._state["auth_info"] = auth_info
                     self._state["timeshift_host"] = timeshift_host
+                    self._state["epg_creds"] = epg_creds
                 has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
                 self.logger.info(
                     f"STB 频道发现完成：共发现 {len(channels)} 个频道，"
                     f"认证信息：{'已提取（MAC=' + auth_info.get('mac','') + '）' if has_auth else '未捕获到 DHCP'}"
+                    + (f"，EPG 认证信息：UserID={epg_creds.get('epg_user_id','')} STBID={epg_creds.get('epg_stb_id','')} Host={epg_creds.get('epg_auth_host','')}" if epg_creds else "")
                 )
             except Exception as exc:
                 self.logger.error(f"STB 频道发现分析失败：{exc}")

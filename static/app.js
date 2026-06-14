@@ -920,6 +920,14 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
       if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host_detected;
       updateCatchupSourceUI();
     }
+    if (data.epg_creds_detected) {
+      const c = data.epg_creds_detected;
+      if (c.epg_user_id && $("epgUserId")) $("epgUserId").value = c.epg_user_id;
+      if (c.epg_stb_id && $("epgStbId")) $("epgStbId").value = c.epg_stb_id;
+      if (c.epg_auth_host && $("epgAuthHost")) $("epgAuthHost").value = c.epg_auth_host;
+      const fields = [c.epg_user_id && `UserID=${c.epg_user_id}`, c.epg_stb_id && `STBID=${c.epg_stb_id}`, c.epg_auth_host && `EPG=${c.epg_auth_host}`].filter(Boolean);
+      msg += `\n已自动提取 EPG 认证信息：${fields.join("，")}`;
+    }
     alert(msg);
     state.channelListSection = "list";
     showTab("channelList");
@@ -962,7 +970,13 @@ $("refreshBacktvBtn")?.addEventListener("click", async () => {
   btn.textContent = "刷新中…";
   btn.disabled = true;
   try {
-    const result = await requestJson("/api/catchup/refresh", {method: "POST"});
+    const result = await requestJson("/api/catchup/refresh", {method: "POST", body: JSON.stringify({
+      iptv_password: $("iptvPassword")?.value || "",
+      epg_user_id: $("epgUserId")?.value.trim() || "",
+      epg_stb_id: $("epgStbId")?.value.trim() || "",
+      epg_des3_key: $("epgDes3Key")?.value.trim() || "",
+      epg_auth_host: $("epgAuthHost")?.value.trim() || "",
+    })});
     alert(`回看地址刷新完成：更新 ${result.updated} / ${result.total} 个频道（EPG：${result.epg_host}）`);
   } catch (err) {
     alert("刷新失败：" + err.message);

@@ -78,7 +78,7 @@ def refresh_backtv_urls(
 
     Returns {"updated": int, "total": int, "epg_host": str, "errors": list[str]}.
     """
-    epg_auth_host = str(settings.get("epg_auth_host") or "").strip()
+    epg_auth_host = re.sub(r"^https?://", "", str(settings.get("epg_auth_host") or "").strip()).rstrip("/")
     user_id = str(settings.get("epg_user_id") or "").strip()
     stb_id = str(settings.get("epg_stb_id") or "").strip()
     des3_key = str(settings.get("epg_des3_key") or "").strip()
