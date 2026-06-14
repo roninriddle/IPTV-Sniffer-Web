@@ -147,7 +147,7 @@ class ExportService:
             item.port,
         )
 
-    def export(self, rows: list[dict[str, Any]], settings: dict[str, Any], operator_channels: dict[str, Any] | None = None) -> dict[str, Any]:
+    def export(self, rows: list[dict[str, Any]], settings: dict[str, Any], operator_channels: dict[str, Any] | None = None, flask_base_url: str = "") -> dict[str, Any]:
         channels = self._normalize_channels(rows)
         if not channels:
             raise ValueError("没有填写任何频道名称，未生成输出文件")
@@ -157,7 +157,8 @@ class ExportService:
         if path_mode not in {"rtp", "udp"}:
             path_mode = "rtp"
         epg_url = str(settings.get("epg_url", "") or "").strip()
-        catchup_days = int(settings.get("catchup_days", 7) or 0)
+        catchup_enabled = bool(settings.get("catchup_enabled", False))
+        catchup_days = int(settings.get("catchup_days", 7) or 0) if catchup_enabled else 0
         catchup_source_mode = str(settings.get("catchup_source_mode", "aptv") or "aptv").strip()
         ts_host = str(settings.get("timeshift_host", "") or "").strip()
         if catchup_source_mode == "hls" and ts_host:
@@ -171,7 +172,8 @@ class ExportService:
         best_channels = self._select_best_channels(channels)
         m3u_kwargs = dict(http_host=http_host, http_port=http_port, path_mode=path_mode,
                           epg_url=epg_url, catchup_days=catchup_days,
-                          catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type)
+                          catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type,
+                          flask_base_url=flask_base_url)
         # New canonical files
         best_m3u_path  = self.output_dir / "channels-best.m3u"
         all_m3u_path   = self.output_dir / "channels-all.m3u"
@@ -243,6 +245,7 @@ class ExportService:
         catchup_template: str = "",
         fcc_type: str = "",
         op_ch: dict[str, Any] | None = None,
+        flask_base_url: str = "",
     ) -> None:
         # Each source is written exactly once, grouped by its original category.
         op_ch = op_ch or {}
@@ -256,7 +259,7 @@ class ExportService:
             else:
                 handle.write(f"#EXTM3U{catchup_attr}\n")
             for channel in channels:
-                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
+                self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type, flask_base_url)
 
     def _write_m3u_item(
         self,
@@ -271,6 +274,7 @@ class ExportService:
         catchup_template: str = "",
         op_ch: dict[str, Any] | None = None,
         fcc_type: str = "",
+        flask_base_url: str = "",
     ) -> None:
         safe_group = group.replace('"', "'")
         tvg_name = (channel.tvg_name or channel.name).replace('"', "'")
@@ -296,12 +300,19 @@ class ExportService:
                     safe_cu = catchup_template.replace("{channel_id}", str(channel_id)).replace('"', "%22")
                     catchup_source_attr = f' catchup-source="{safe_cu}"'
                 else:
-                    # Per-channel RTSP/HTTP URL from TimeShiftURL field + APTV playseek params
-                    # :utc suffix sends UTC/GMT time — CU IPTV catchup servers use GMT
                     backtv = str(ch_info.get("backtv_url", "") or "").strip()
                     if backtv:
-                        sep = "&" if "?" in backtv else "?"
-                        safe_cu = (backtv + f"{sep}playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}").replace('"', "%22")
+                        if flask_base_url:
+                            # Route through Flask proxy so player uses HTTP and gets fresh tokens
+                            hls_key = f"{channel.host}_{channel.port}"
+                            safe_cu = (
+                                f"{flask_base_url}/hls/{hls_key}/catchup"
+                                f"?playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}"
+                            )
+                        else:
+                            # Fallback: embed raw RTSP URL (tokens may expire)
+                            sep = "&" if "?" in backtv else "?"
+                            safe_cu = (backtv + f"{sep}playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}").replace('"', "%22")
                         catchup_source_attr = f' catchup-source="{safe_cu}"'
                 catchup_attr = f' catchup="default" catchup-days="{eff_days}"{catchup_source_attr}'
         handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{channel.name}\n')

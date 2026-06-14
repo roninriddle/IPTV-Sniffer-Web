@@ -1110,7 +1110,8 @@ def api_export():
         rows = enrich_channel_rows(rows, settings)
         operator_channels = operator_channel_store.load()
         rows, health_summary = apply_pre_export_health_check(rows, settings, operator_channels)
-        result = export_service.export(rows, settings, operator_channels=operator_channels)
+        flask_base_url = request.url_root.rstrip("/")
+        result = export_service.export(rows, settings, operator_channels=operator_channels, flask_base_url=flask_base_url)
         result["health_check"] = health_summary
         channel_store.save_rows(rows)
         logger.info(
@@ -1217,7 +1218,7 @@ def hls_catchup(hls_key: str):
                 "-c", "copy", "-f", "mpegts", "pipe:1",
             ],
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         try:
             while True:
@@ -1231,6 +1232,9 @@ def hls_catchup(hls_key: str):
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            stderr_out = proc.stderr.read().decode(errors="replace").strip()
+            if stderr_out:
+                logger.warning(f"catchup ffmpeg [{hls_key}]: {stderr_out[-400:]}")
 
     resp = Response(generate(), mimetype="video/mp2t")
     resp.headers["Access-Control-Allow-Origin"] = "*"

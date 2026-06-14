@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v1.1.8
+# IPTV Sniffer Web v1.1.9
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现** 的 IPTV 频道发现、线路整理与 `rtp2httpd` 播放列表工作台。
 
@@ -179,6 +179,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 ## 版本记录
 
+- `v1.1.9`：回看功能改为默认关闭、勾选后才显示回看设置；导出时 catchup-source 改为走 Flask HTTP 代理（`/hls/<key>/catchup`）而非内嵌过期的 RTSP token，代理通过 ffmpeg 转封装实时回看流；代理失败时将 ffmpeg 错误写入应用日志便于诊断；
 - `v1.1.8`：首页底部新增作者赞赏码；修复 catchup-source 格式选择框布局溢出问题（改用 display:block 替代 flex，彻底解决文字右侧溢出）；
 - `v1.1.7`：首页底部新增作者赞赏码；
 - `v1.1.6`：修复直播 M3U 回看地址双问号 bug（backtv_url 已含 `?` 参数，playseek 错误拼接第二个 `?` 导致无效 URL）；飞牛 HLS M3U 新增回看支持（EXTINF 行注入 `catchup`/`catchup-days`/`catchup-source` 属性，`#EXTM3U` 头增加 `catchup-correction="8"`）；新增 `/hls/<key>/catchup` Flask 代理端点，通过 ffmpeg 将 RTSP 回看流转为 MPEG-TS 流式传输给播放器；

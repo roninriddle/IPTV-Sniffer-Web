@@ -394,8 +394,14 @@
             </div>
             <div class="section-subtitle">
               <h3>回看（时移）设置</h3>
-              <span class="muted small">仅对运营商频道表中标记支持回看的频道生效；天数设为 0 可禁用</span>
             </div>
+            <div class="form-grid" style="margin-bottom:4px">
+              <label class="checkbox-label align-self-center" style="grid-column: 1 / -1">
+                <input type="checkbox" id="catchupEnabled">
+                启用回看 / 时移（仅对运营商频道表中标记支持回看的频道生效）
+              </label>
+            </div>
+            <div id="catchupSettingsBlock" style="display:none">
             <div class="notice compact">
               <span>回看服务器在 IPTV 子网，需完成认证后才可访问。抓包导入频道时会自动检测并填入服务器地址。</span>
             </div>
@@ -426,6 +432,7 @@
                 <input id="catchupSourceTemplate" type="text" style="display:none" placeholder="http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
               </div>
             </div>
+            </div><!-- /catchupSettingsBlock -->
             <div class="button-row" style="margin-bottom: 8px">
               <button id="saveExportSettingsBtn" class="secondary" type="button">保存导出设置</button>
             </div>

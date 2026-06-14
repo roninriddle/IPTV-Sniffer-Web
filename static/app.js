@@ -59,6 +59,7 @@ function formSettings() {
     duration: 0,
     auto_probe: false,
     auto_epg: true,
+    catchup_enabled: $("catchupEnabled")?.checked ?? false,
     catchup_days: Number($("catchupDays")?.value ?? 7),
     timeshift_host: $("timeshiftHost")?.value.trim() || "",
     catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
@@ -257,6 +258,11 @@ async function loadSettings() {
   $("httpPort").value = data.http_port ?? 5140;
   if ($("diagConfigPath")) $("diagConfigPath").value = data.rtp2httpd_config_path || "";
   $("pathMode").value = data.path_mode || "rtp";
+  if ($("catchupEnabled")) {
+    $("catchupEnabled").checked = !!data.catchup_enabled;
+    const block = $("catchupSettingsBlock");
+    if (block) block.style.display = data.catchup_enabled ? "" : "none";
+  }
   $("catchupDays").value = data.catchup_days ?? 7;
   if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host || "";
   const _csmEl = document.querySelector(`input[name="catchupSourceMode"][value="${data.catchup_source_mode || 'aptv'}"]`);
@@ -515,6 +521,7 @@ $("saveExportSettingsBtn").addEventListener("click", async () => {
       http_port: Number($("httpPort").value || 5140),
       path_mode: $("pathMode").value,
       fcc_type: $("fccType")?.value || "",
+      catchup_enabled: $("catchupEnabled")?.checked ?? false,
       catchup_days: Number($("catchupDays")?.value ?? 7),
       timeshift_host: $("timeshiftHost")?.value.trim() || "",
       catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
@@ -927,6 +934,10 @@ function updateCatchupSourceUI() {
 document.querySelectorAll('input[name="catchupSourceMode"]').forEach(el =>
   el.addEventListener("change", updateCatchupSourceUI));
 $("timeshiftHost")?.addEventListener("input", updateCatchupSourceUI);
+$("catchupEnabled")?.addEventListener("change", function() {
+  const block = $("catchupSettingsBlock");
+  if (block) block.style.display = this.checked ? "" : "none";
+});
 
 // ── IPTV auth helper ──────────────────────────────────────────────────────
 
