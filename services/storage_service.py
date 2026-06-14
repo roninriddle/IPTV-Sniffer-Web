@@ -319,6 +319,21 @@ class StbTokenStore:
                 history = []
             return {"latest": data.get("latest"), "history": history[-100:]}
 
+    def load_auth_info(self) -> dict[str, Any]:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict):
+                return {}
+            return data.get("auth_info") or {}
+
+    def save_auth_info(self, auth_info: dict[str, Any]) -> None:
+        with self._lock:
+            data = _safe_load_json(self.path, {})
+            if not isinstance(data, dict):
+                data = {}
+            data["auth_info"] = auth_info
+            _atomic_dump_json(self.path, data)
+
     def save_token(self, record: dict[str, Any]) -> bool:
         token = str(record.get("token", "")).strip()
         if not token:

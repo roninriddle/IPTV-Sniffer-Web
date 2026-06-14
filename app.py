@@ -1308,6 +1308,10 @@ def api_channels_set_primary():
 def api_stb_summary():
     """Compact summary of STB auth/channel state for the top status bar."""
     auth = stb_discovery_service.status().get("auth_info") or {}
+    if auth.get("mac") or auth.get("assigned_ip"):
+        token_store.save_auth_info(auth)
+    else:
+        auth = token_store.load_auth_info()
     token_data = token_store.load()
     has_token = bool((token_data.get("history") or []))
     fcc_count = len(fcc_store.load())
