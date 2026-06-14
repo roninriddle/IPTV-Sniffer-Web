@@ -335,6 +335,10 @@ td.empty { color: var(--muted); text-align: center; padding: 20px; }
 td.mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Channel list table has 5 cols: checkbox / name / address / category / EPG */
 .cl-table { min-width: 700px; }
+.cl-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.cl-table th.sortable::after { content: " ⇅"; opacity: 0.35; font-size: 11px; }
+.cl-table th.sort-asc::after { content: " ↑"; opacity: 1; }
+.cl-table th.sort-desc::after { content: " ↓"; opacity: 1; }
 .cl-table th:nth-child(1), .cl-table td:nth-child(1) { width: 42px; }
 .cl-table th:nth-child(2), .cl-table td:nth-child(2) { width: auto; }
 .cl-table th:nth-child(3), .cl-table td:nth-child(3) { width: 170px; }

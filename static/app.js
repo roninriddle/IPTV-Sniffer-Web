@@ -420,7 +420,7 @@ function filterAndRenderChannelList() {
   let filtered = state.channelList || [];
   if (name) filtered = filtered.filter(ch => (ch.name || "").toLowerCase().includes(name));
   if (category) filtered = filtered.filter(ch => ch.category === category);
-  renderChannelList(filtered);
+  renderChannelList(_sortChannels(filtered));
 }
 
 function renderChannelList(channels) {
@@ -794,7 +794,7 @@ function renderStbDiscoveryStatus(state) {
     if (liveCount > 0) liveParts.push(`已发现 ${liveCount} 个频道`);
     if (state.live_has_auth) liveParts.push("已捕获认证信息");
     const liveHint = liveParts.length ? `，${liveParts.join("、")}` : "";
-    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒${liveHint}）…请立即重启机顶盒。`;
+    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒）…请立即重启机顶盒。${liveHint ? liveHint.slice(1) + "。" : ""}`;
     box.className = "result-box ok";
   } else if (isAnalyzing) {
     box.textContent = "正在分析 pcap 数据，提取频道信息…";
@@ -1201,6 +1201,7 @@ $("iptvAuthImportFile").addEventListener("change", async function () {
     const data = JSON.parse(text);
     await requestJson("/api/iptv-auth/backup-import", { method: "POST", body: JSON.stringify(data) });
     alert(`接口 ${data.interface} 的初始备份已导入，恢复功能现在可用。`);
+    await refreshIptvAuthStatus();
   } catch (e) {
     alert("导入失败：" + e.message);
   } finally {
@@ -1268,6 +1269,47 @@ async function runDiagnose() {
 }
 
 $("diagRunBtn").addEventListener("click", runDiagnose);
+
+// ── Channel list sort ─────────────────────────────────────────────────────
+
+let _clSort = { col: null, dir: 1 }; // dir: 1=asc, -1=desc
+
+function _sortChannels(channels) {
+  if (!_clSort.col) return channels;
+  const col = _clSort.col;
+  const dir = _clSort.dir;
+  return [...channels].sort((a, b) => {
+    let va, vb;
+    if (col === "name")     { va = a.name || ""; vb = b.name || ""; }
+    else if (col === "addr"){ va = a.key || ""; vb = b.key || ""; }
+    else if (col === "category") { va = a.category || ""; vb = b.category || ""; }
+    else                    { va = a.tvg_id || ""; vb = b.tvg_id || ""; }
+    return dir * va.localeCompare(vb, "zh");
+  });
+}
+
+function _updateSortHeaders() {
+  document.querySelectorAll(".cl-table th.sortable").forEach(th => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === _clSort.col) {
+      th.classList.add(_clSort.dir === 1 ? "sort-asc" : "sort-desc");
+    }
+  });
+}
+
+document.querySelectorAll(".cl-table th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    const col = th.dataset.sort;
+    if (_clSort.col === col) {
+      _clSort.dir *= -1;
+    } else {
+      _clSort.col = col;
+      _clSort.dir = 1;
+    }
+    _updateSortHeaders();
+    filterAndRenderChannelList();
+  });
+});
 
 // ── Channel group view ────────────────────────────────────────────────────
 

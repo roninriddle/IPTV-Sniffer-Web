@@ -318,12 +318,11 @@
         <div id="channelListTab" class="tab-panel" hidden>
           <div class="channel-section-tabs" role="tablist" aria-label="频道线路分区">
             <button class="tab-button active" data-cl-section="list" type="button">频道列表</button>
-            <button class="tab-button" data-cl-section="export" type="button">导出</button>
-            <button class="tab-button" data-cl-section="epg" type="button">EPG / 台标</button>
+            <button class="tab-button" data-cl-section="export" type="button">导出 / EPG</button>
             <button class="tab-button" data-cl-section="snapshots" type="button">快照</button>
           </div>
 
-          <section class="card cl-section" data-cl-panel="epg" hidden>
+          <section class="card cl-section" data-cl-panel="export" hidden>
             <div class="section-title">
               <h2>EPG 与台标</h2>
               <span id="epgBadge2" class="chip neutral">未加载</span>
@@ -365,10 +364,7 @@
               <button id="rematchEpgBtn" class="secondary" type="button">重新匹配节目单</button>
             </div>
             <div id="epgStatusBox" class="result-box muted compact-result"></div>
-          </section>
-
-          <section class="card cl-section" data-cl-panel="export" hidden>
-            <div class="section-title">
+            <div class="section-title mt-16">
               <h2>导出结果</h2>
               <span class="muted">最佳线路每组只取主源；全部线路保留所有备线且每条源只写一次。不勾选则导出全部频道。</span>
             </div>
@@ -410,9 +406,9 @@
                 回看天数
                 <input id="catchupDays" type="number" min="0" max="30" value="7">
               </label>
-              <label>
-                catchup-source 模板（可选）
-                <input id="catchupSourceTemplate" type="text" placeholder="http://server/timeshift/{channel_id}">
+              <label style="grid-column: 2 / -1">
+                catchup-source 模板（可选，<code>{channel_id}</code> 将替换为频道 ID，<code>{start}</code>/<code>{duration}</code> 由播放器填入）
+                <input id="catchupSourceTemplate" type="text" placeholder="http://timeshift-server/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
               </label>
             </div>
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
@@ -459,10 +455,10 @@
                 <thead>
                   <tr>
                     <th><input type="checkbox" id="clSelectAll"></th>
-                    <th>频道名称</th>
-                    <th>组播地址</th>
-                    <th>分类</th>
-                    <th>EPG 标识</th>
+                    <th class="sortable" data-sort="name">频道名称</th>
+                    <th class="sortable" data-sort="addr">组播地址</th>
+                    <th class="sortable" data-sort="category">分类</th>
+                    <th class="sortable" data-sort="epg">EPG 标识</th>
                   </tr>
                 </thead>
                 <tbody id="clChannelTableBody">
