@@ -389,12 +389,14 @@ def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
         chan_id = pairs.get("ChannelID", "")
         is_hd = pairs.get("IsHDChannel", "0") == "2"
         time_shift = pairs.get("TimeShift", "0") == "1"
+        time_shift_days_s = pairs.get("TimeShiftLength", "")
         fcc_ip = pairs.get("ChannelFCCIP", "").strip()
         fcc_port_s = pairs.get("ChannelFCCPort", "")
         fec_port_s = pairs.get("ChannelFECPort", "")
         backtv_url = (
-            pairs.get("BacktimeURL") or pairs.get("BackUrl") or
-            pairs.get("TimeshiftUrl") or pairs.get("startOverUrl") or ""
+            pairs.get("TimeShiftURL") or pairs.get("BacktimeURL") or
+            pairs.get("BackUrl") or pairs.get("TimeshiftUrl") or
+            pairs.get("startOverUrl") or ""
         ).strip()
         m = re.match(r"(?:igmp|udp|rtp)://([0-9.]+):(\d+)", channel_url)
         ip, port = (m.group(1), int(m.group(2))) if m else ("", 0)
@@ -409,6 +411,7 @@ def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
                 "channel_id": chan_id,
                 "is_hd": is_hd,
                 "time_shift": time_shift,
+                "time_shift_days": int(time_shift_days_s) if time_shift_days_s.isdigit() else None,
                 "fcc_ip": fcc_ip,
                 "fcc_port": int(fcc_port_s) if fcc_port_s.isdigit() else None,
                 "fec_port": int(fec_port_s) if fec_port_s.isdigit() else None,
@@ -483,27 +486,6 @@ def _detect_timeshift_host(streams: dict[Any, bytes], channels: list[dict[str, A
     return ""
 
 
-def _detect_catchup_template(channels: list[dict[str, Any]]) -> str:
-    """Derive a catchup-source URL template from per-channel backtv_url fields.
-
-    Replaces the channel_id segment with {channel_id} and appends {start}/{duration}
-    placeholders so the result is a valid IPTV catchup-source template.
-    Returns empty string if no usable backtv_url is found.
-    """
-    for ch in channels:
-        url = str(ch.get("backtv_url", "") or "").strip()
-        chan_id = str(ch.get("channel_id", "") or "").strip()
-        if not url or not url.startswith("http") or not chan_id:
-            continue
-        if chan_id not in url:
-            continue
-        template = url.replace(chan_id, "{channel_id}", 1)
-        if "{start}" not in template:
-            # Strip trailing filename (e.g. /index.m3u8) before appending time params
-            template = re.sub(r"/[^/]+\.[a-z0-9]+$", "", template, flags=re.IGNORECASE)
-            template = template.rstrip("/") + "/{start}/{duration}/index.m3u8"
-        return template
-    return ""
 
 
 def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any]]:
@@ -672,12 +654,10 @@ class StbDiscoveryService:
                 channels: list[dict[str, Any]] = []
                 auth_info: dict[str, Any] = {}
                 timeshift_host: str = ""
-                catchup_template: str = ""
                 if pcap_path and os.path.exists(pcap_path):
                     streams = _reassemble_tcp_streams(pcap_path)
                     channels = analyze_pcap_for_channels(pcap_path, stb_ip or "")
                     timeshift_host = _detect_timeshift_host(streams, channels)
-                    catchup_template = _detect_catchup_template(channels)
                     auth_info = _extract_dhcp_from_pcap(pcap_path)
                     try:
                         os.unlink(pcap_path)
@@ -689,7 +669,6 @@ class StbDiscoveryService:
                     self._state["channel_count"] = len(channels)
                     self._state["auth_info"] = auth_info
                     self._state["timeshift_host"] = timeshift_host
-                    self._state["catchup_template"] = catchup_template
                 has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
                 self.logger.info(
                     f"STB 频道发现完成：共发现 {len(channels)} 个频道，"

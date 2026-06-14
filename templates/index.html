@@ -405,8 +405,8 @@
                 <input id="timeshiftHost" type="text" placeholder="10.7.x.x 或 10.7.x.x:port">
               </label>
               <label style="grid-column: 1 / -1">
-                catchup-source 模板（留空则由回看服务器地址自动生成；{channel_id}/{start}/{duration} 由播放器填入）
-                <input id="catchupSourceTemplate" type="text" placeholder="留空自动：http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
+                catchup-source 模板（留空则用抓包获取的逐频道回看地址 + APTV playseek 格式；HLS 服务器可填此模板）
+                <input id="catchupSourceTemplate" type="text" placeholder="HLS 示例：http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
               </label>
             </div>
             <div class="button-row" style="margin-bottom: 8px">

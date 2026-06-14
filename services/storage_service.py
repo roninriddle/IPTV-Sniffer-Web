@@ -454,6 +454,7 @@ class OperatorChannelStore:
                     "channel_num": ch.get("num"),
                     "is_hd": ch.get("is_hd", False),
                     "time_shift": ch.get("time_shift", False),
+                    "time_shift_days": ch.get("time_shift_days"),
                     "fcc_ip": str(ch.get("fcc_ip", "")).strip(),
                     "fcc_port": ch.get("fcc_port"),
                     "fec_port": ch.get("fec_port"),
