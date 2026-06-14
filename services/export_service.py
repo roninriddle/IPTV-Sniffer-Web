@@ -300,7 +300,8 @@ class ExportService:
                     # :utc suffix sends UTC/GMT time — CU IPTV catchup servers use GMT
                     backtv = str(ch_info.get("backtv_url", "") or "").strip()
                     if backtv:
-                        safe_cu = (backtv + "?playseek=${(b)yyyyMMddHHmmss:utc}-${(e)yyyyMMddHHmmss:utc}").replace('"', "%22")
+                        sep = "&" if "?" in backtv else "?"
+                        safe_cu = (backtv + f"{sep}playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}").replace('"', "%22")
                         catchup_source_attr = f' catchup-source="{safe_cu}"'
                 catchup_attr = f' catchup="default" catchup-days="{eff_days}"{catchup_source_attr}'
         handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{channel.name}\n')
@@ -440,14 +441,24 @@ class ExportService:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
 
-    def hls_m3u(self, channels_data: dict, base_url: str, epg_url: str = "") -> str:
+    def hls_m3u(
+        self,
+        channels_data: dict,
+        base_url: str,
+        epg_url: str = "",
+        operator_channels: dict | None = None,
+        catchup_days: int = 7,
+    ) -> str:
         """Generate in-memory M3U with HLS stream URLs for browser-based players."""
         channels = self._normalize_channels(list(channels_data.values()))
         best = self._select_best_channels(channels)
         best.sort(key=self._channel_sort_key)
         lines: list[str] = []
         safe_epg = epg_url.replace('"', "%22")
-        lines.append(f'#EXTM3U x-tvg-url="{safe_epg}"' if epg_url else "#EXTM3U")
+        header = f'#EXTM3U x-tvg-url="{safe_epg}"' if epg_url else "#EXTM3U"
+        header += ' catchup-correction="8"'
+        lines.append(header)
+        op_chs = operator_channels or {}
         for ch in best:
             hls_key = f"{ch.host}_{ch.port}"
             url = f"{base_url}/hls/{hls_key}/stream.m3u8"
@@ -455,8 +466,19 @@ class ExportService:
             tvg_name = (ch.tvg_name or ch.name).replace('"', "'")
             safe_group = ch.category.replace('"', "'")
             logo_attr = f' tvg-logo="{ch.tvg_logo.replace(chr(34), "%22")}"' if ch.tvg_logo else ""
+            catchup_attr = ""
+            ch_info = op_chs.get(f"{ch.host}:{ch.port}") or {}
+            backtv = str(ch_info.get("backtv_url", "") or "").strip()
+            if backtv:
+                raw_shift = ch_info.get("time_shift_days") or 0
+                eff_days = max(1, raw_shift // 1440) if raw_shift else catchup_days
+                catchup_src = (
+                    f"{base_url}/hls/{hls_key}/catchup"
+                    f"?playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}"
+                )
+                catchup_attr = f' catchup="default" catchup-days="{eff_days}" catchup-source="{catchup_src}"'
             lines.append(
-                f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}",{ch.name}'
+                f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{ch.name}'
             )
             lines.append(url)
         return "\n".join(lines) + "\n"

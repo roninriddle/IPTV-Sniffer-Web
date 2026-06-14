@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v1.1.5
+# IPTV Sniffer Web v1.1.6
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现** 的 IPTV 频道发现、线路整理与 `rtp2httpd` 播放列表工作台。
 
@@ -179,6 +179,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 ## 版本记录
 
+- `v1.1.6`：修复直播 M3U 回看地址双问号 bug（backtv_url 已含 `?` 参数，playseek 错误拼接第二个 `?` 导致无效 URL）；飞牛 HLS M3U 新增回看支持（EXTINF 行注入 `catchup`/`catchup-days`/`catchup-source` 属性，`#EXTM3U` 头增加 `catchup-correction="8"`）；新增 `/hls/<key>/catchup` Flask 代理端点，通过 ffmpeg 将 RTSP 回看流转为 MPEG-TS 流式传输给播放器；
 - `v1.1.5`：修复 auth 备份恢复时若初始快照无 IPv4（捕获过早）会导致断网：自动补跑普通 udhcpc 恢复局域网 IP，导入此类备份时前端给出警告；所有导出文件（全量备份、per-interface auth 备份）内部新增 `_app_version` 和 `_exported_at` 字段；修复 catchup-days 换算 bug（任何非零 TimeShiftLength 均除以 1440，不再有阈值误判）；
 - `v1.1.4`：修复回看服务器地址（抓包后自动填入）在 RTSP 协议下为空的问题；修复备份导出 settings 为 null 的问题（改用内存设置，始终含默认值）；修复 TimeShiftLength 单位（分钟→天，14400 分钟正确导出为 10 天）；catchup-source 格式改为三选一（APTV 默认 / 飞牛 NAS·HLS 自动生成 / 其他手动填写）；
 - `v1.1.3`：顶部导航顺序调整为「发现 → 认证 → 线路 → 诊断」，与实际工作流对齐；回看/时移服务器地址改为独立输入框，抓包导入时自动检测并填入（从 BacktimeURL/BackUrl 字段或 HTTP 流量正则匹配）；catchup-source 模板留空时由回看服务器地址自动生成；新增「保存导出设置」按钮，方便持久化回看地址等配置；

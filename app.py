@@ -1188,6 +1188,56 @@ def hls_segment(hls_key: str, segment: str):
     return resp
 
 
+@app.get("/hls/<hls_key>/catchup")
+def hls_catchup(hls_key: str):
+    parsed = HlsService.parse_key(hls_key)
+    if not parsed:
+        return ("", 404)
+    host, port = parsed
+    if not valid_ipv4_multicast(host):
+        return ("", 404)
+    playseek = request.args.get("playseek", "").strip()
+    if not re.match(r'^\d{14}-\d{14}$', playseek):
+        return api_error("playseek 参数格式无效，需为 YYYYMMDDHHmmss-YYYYMMDDHHmmss", 400)
+    op_channels = operator_channel_store.load()
+    ch_info = op_channels.get(f"{host}:{port}") or {}
+    backtv = str(ch_info.get("backtv_url", "") or "").strip()
+    if not backtv:
+        return api_error("该频道无回看地址", 404)
+    if shutil.which("ffmpeg") is None:
+        return api_error("缺少 ffmpeg 命令，无法转换回看流", 503)
+    sep = "&" if "?" in backtv else "?"
+    rtsp_url = f"{backtv}{sep}playseek={playseek}"
+
+    def generate():
+        proc = subprocess.Popen(
+            [
+                "ffmpeg", "-rtsp_transport", "tcp",
+                "-i", rtsp_url,
+                "-c", "copy", "-f", "mpegts", "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    resp = Response(generate(), mimetype="video/mp2t")
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.get("/api/hls/status")
 def api_hls_status():
     return api_success({"streams": hls_service.status()})
@@ -1202,7 +1252,9 @@ def api_hls_m3u():
     if not channels:
         return api_error("尚无频道数据，请先完成运营商频道发现并导入。")
     try:
-        content = export_service.hls_m3u(channels, base_url, epg_url)
+        op_channels = operator_channel_store.load()
+        catchup_days = int(settings.get("catchup_days") or 7)
+        content = export_service.hls_m3u(channels, base_url, epg_url, op_channels, catchup_days)
         resp = Response(
             content,
             mimetype="audio/x-mpegurl",
