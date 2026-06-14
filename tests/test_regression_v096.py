@@ -501,7 +501,7 @@ def test_iptv_auth_clear_egress_bpf_only_targets_selected_interface(tmp_path, mo
 
     monkeypatch.setattr(iptv_auth_module.shutil, "which", fake_which)
     monkeypatch.setattr(iptv_auth_module, "_run", fake_run)
-    result = svc.clear_egress_bpf({"interface": "enp3s0", "confirm": "确认解除BPF"})
+    result = svc.clear_egress_bpf({"interface": "enp3s0", "confirm": "确认解除"})
     assert result["changed"] is True
     assert result["interface"] == "enp3s0"
     assert ["tc", "filter", "del", "dev", "enp3s0", "egress", "protocol", "all", "pref", "49152"] in calls
@@ -528,7 +528,7 @@ def test_iptv_auth_watch_requires_confirmation_when_enabling(tmp_path, monkeypat
         "enabled": True,
         "interface": "enp3s0",
         "interval_seconds": 5,
-        "confirm": "确认自动修复BPF",
+        "confirm": "确认恢复",
     })
     assert data["config"]["enabled"] is True
     assert data["config"]["interface"] == "enp3s0"
