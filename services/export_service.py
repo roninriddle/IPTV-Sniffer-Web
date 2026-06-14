@@ -244,11 +244,14 @@ class ExportService:
         # Each source is written exactly once, grouped by its original category.
         op_ch = op_ch or {}
         with target.open("w", encoding="utf-8", newline="\n") as handle:
+            # catchup-correction="8" shifts player's UTC time to Beijing time (UTC+8)
+            # so the catchup server receives the correct local time in the URL params.
+            catchup_attr = ' catchup-correction="8"' if catchup_days > 0 else ""
             if epg_url:
                 safe_epg_url = epg_url.replace('"', "%22")
-                handle.write(f'#EXTM3U x-tvg-url="{safe_epg_url}"\n')
+                handle.write(f'#EXTM3U x-tvg-url="{safe_epg_url}"{catchup_attr}\n')
             else:
-                handle.write("#EXTM3U\n")
+                handle.write(f"#EXTM3U{catchup_attr}\n")
             for channel in channels:
                 self._write_m3u_item(handle, channel, channel.category, http_host, http_port, path_mode, url_mode, catchup_days, catchup_template, op_ch, fcc_type)
 
@@ -290,9 +293,10 @@ class ExportService:
                     catchup_source_attr = f' catchup-source="{safe_cu}"'
                 else:
                     # Per-channel RTSP/HTTP URL from TimeShiftURL field + APTV playseek params
+                    # :utc suffix sends UTC/GMT time — CU IPTV catchup servers use GMT
                     backtv = str(ch_info.get("backtv_url", "") or "").strip()
                     if backtv:
-                        safe_cu = (backtv + "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}").replace('"', "%22")
+                        safe_cu = (backtv + "?playseek=${(b)yyyyMMddHHmmss:utc}-${(e)yyyyMMddHHmmss:utc}").replace('"', "%22")
                         catchup_source_attr = f' catchup-source="{safe_cu}"'
                 catchup_attr = f' catchup="default" catchup-days="{eff_days}"{catchup_source_attr}'
         handle.write(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{safe_group}"{catchup_attr},{channel.name}\n')
