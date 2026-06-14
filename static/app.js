@@ -64,6 +64,11 @@ function formSettings() {
     timeshift_host: $("timeshiftHost")?.value.trim() || "",
     catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
+    iptv_password: $("iptvPassword")?.value || "",
+    epg_user_id: $("epgUserId")?.value.trim() || "",
+    epg_stb_id: $("epgStbId")?.value.trim() || "",
+    epg_des3_key: $("epgDes3Key")?.value.trim() || "",
+    epg_auth_host: $("epgAuthHost")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
     pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
   };
@@ -269,6 +274,12 @@ async function loadSettings() {
   if (_csmEl) _csmEl.checked = true;
   if ($("catchupSourceTemplate")) $("catchupSourceTemplate").value = data.catchup_source_template || "";
   updateCatchupSourceUI();
+  if ($("iptvPassword")) $("iptvPassword").value = data.iptv_password || "";
+  if ($("epgUserId")) $("epgUserId").value = data.epg_user_id || "";
+  if ($("epgStbId")) $("epgStbId").value = data.epg_stb_id || "";
+  if ($("epgDes3Key")) $("epgDes3Key").value = data.epg_des3_key || "";
+  if ($("epgAuthHost")) $("epgAuthHost").value = data.epg_auth_host || "";
+  if ($("refreshBacktvBtn")) $("refreshBacktvBtn").style.display = data.catchup_enabled ? "" : "none";
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
   if ($("preExportHealthCheck")) $("preExportHealthCheck").checked = !!data.pre_export_health_check;
 }
@@ -526,6 +537,11 @@ $("saveExportSettingsBtn").addEventListener("click", async () => {
       timeshift_host: $("timeshiftHost")?.value.trim() || "",
       catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
       catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
+      iptv_password: $("iptvPassword")?.value || "",
+      epg_user_id: $("epgUserId")?.value.trim() || "",
+      epg_stb_id: $("epgStbId")?.value.trim() || "",
+      epg_des3_key: $("epgDes3Key")?.value.trim() || "",
+      epg_auth_host: $("epgAuthHost")?.value.trim() || "",
       pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
     })});
     alert("导出设置已保存");
@@ -937,6 +953,23 @@ $("timeshiftHost")?.addEventListener("input", updateCatchupSourceUI);
 $("catchupEnabled")?.addEventListener("change", function() {
   const block = $("catchupSettingsBlock");
   if (block) block.style.display = this.checked ? "" : "none";
+  if ($("refreshBacktvBtn")) $("refreshBacktvBtn").style.display = this.checked ? "" : "none";
+});
+
+$("refreshBacktvBtn")?.addEventListener("click", async () => {
+  const btn = $("refreshBacktvBtn");
+  const orig = btn.textContent;
+  btn.textContent = "刷新中…";
+  btn.disabled = true;
+  try {
+    const result = await requestJson("/api/catchup/refresh", {method: "POST"});
+    alert(`回看地址刷新完成：更新 ${result.updated} / ${result.total} 个频道（EPG：${result.epg_host}）`);
+  } catch (err) {
+    alert("刷新失败：" + err.message);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
+  }
 });
 
 // ── IPTV auth helper ──────────────────────────────────────────────────────

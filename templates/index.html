@@ -103,6 +103,17 @@
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             roninriddle/IPTV-Sniffer-Web
           </a>
+          <div style="margin-top:16px; font-size:0.8em; color:var(--muted); line-height:1.7">
+            <div style="margin-bottom:4px; font-weight:600; color:var(--text)">参考与致谢</div>
+            <a href="https://www.right.com.cn/forum/thread-8314608-1-1.html" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">恩山论坛 · IPTV 相关讨论（一）</a>
+            <a href="https://www.right.com.cn/forum/thread-8314231-1-1.html" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">恩山论坛 · IPTV 相关讨论（二）</a>
+            <a href="https://github.com/supzhang/get_iptv_channels" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">supzhang/get_iptv_channels</a>
+            <a href="https://github.com/zzzz0317/beijing-unicom-iptv-playlist" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">zzzz0317/beijing-unicom-iptv-playlist</a>
+            <a href="https://github.com/zzzz0317/beijing-unicom-iptv-playlist-sniffer" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">zzzz0317/beijing-unicom-iptv-playlist-sniffer</a>
+            <a href="https://github.com/CGG888/SrcBox" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">CGG888/SrcBox</a>
+            <a href="https://epg.51zmt.top:8001/" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">epg.51zmt.top（老张 EPG）</a>
+            <a href="https://github.com/wanglindl/TVlogo" target="_blank" rel="noreferrer" style="display:block; color:var(--muted)">wanglindl/TVlogo</a>
+          </div>
           <div style="text-align:center; padding-top:24px; opacity:0.75">
             <img src="{{ url_for('static', filename='donate-qr.jpg') }}" alt="赞赏码" style="width:160px; border-radius:12px; display:block; margin:0 auto 8px">
             <div style="font-size:0.82em; color:var(--muted)">觉得好用，请作者喝杯咖啡 ☕</div>
@@ -432,9 +443,36 @@
                 <input id="catchupSourceTemplate" type="text" style="display:none" placeholder="http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
               </div>
             </div>
+            <div class="section-subtitle" style="margin-top:12px"><h3>回看 Token 刷新</h3></div>
+            <div class="notice compact">
+              <span>填写以下认证信息后点击「刷新回看地址」，系统将重新登录运营商 EPG 门户并更新各频道的回看 RTSP Token。</span>
+            </div>
+            <div class="form-grid">
+              <label>
+                IPTV 密码
+                <input id="iptvPassword" type="password" autocomplete="current-password" placeholder="此密码可向运维小哥获取">
+              </label>
+              <label>
+                用户ID（UserID）
+                <input id="epgUserId" type="text" autocomplete="off" placeholder="运营商账户 ID，如 12345678901">
+              </label>
+              <label>
+                机顶盒设备ID（STBID）
+                <input id="epgStbId" type="text" autocomplete="off" placeholder="机顶盒设备 ID，如 JTIPTV-XXXXXXXXXX">
+              </label>
+              <label>
+                DES3 加密密钥（8位）
+                <input id="epgDes3Key" type="text" autocomplete="off" maxlength="24" placeholder="8位数字或字母，运营商提供">
+              </label>
+              <label>
+                EPG 服务器地址（留空自动检测）
+                <input id="epgAuthHost" type="text" autocomplete="off" placeholder="10.x.x.x:8082（自动从回看地址提取）">
+              </label>
+            </div>
             </div><!-- /catchupSettingsBlock -->
             <div class="button-row" style="margin-bottom: 8px">
               <button id="saveExportSettingsBtn" class="secondary" type="button">保存导出设置</button>
+              <button id="refreshBacktvBtn" class="secondary" type="button" style="display:none">刷新回看地址</button>
             </div>
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
             <div class="form-grid compact-grid" style="margin-bottom: 8px">

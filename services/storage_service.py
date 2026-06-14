@@ -467,6 +467,12 @@ class OperatorChannelStore:
             _atomic_dump_json(self.path, data)
         return saved
 
+    def save_dict(self, data: dict[str, dict[str, Any]]) -> None:
+        """Overwrite the store with a pre-formatted dict (same shape as load() returns)."""
+        with self._lock:
+            self._cache = dict(data)
+            _atomic_dump_json(self.path, self._cache)
+
     def invalidate(self) -> None:
         with self._lock:
             self._cache = None

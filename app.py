@@ -52,6 +52,7 @@ from config import (
     WEB_PORT,
 )
 from services.capture_service import CaptureService
+from services.epg_refresh_service import refresh_backtv_urls
 from services.epg_service import EpgService, normalize_channel_name
 from services.export_service import ExportService
 from services.iptv_auth_service import IptvAuthService
@@ -1240,6 +1241,32 @@ def hls_catchup(hls_key: str):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+@app.post("/api/catchup/refresh")
+def api_catchup_refresh():
+    """Re-authenticate to EPG portal and refresh backtv_url tokens in operator_channels.json."""
+    settings = settings_store.load()
+    op_channels = operator_channel_store.load()
+    if not op_channels:
+        return api_error("运营商频道表为空，请先完成 STB 开机捕获并导入频道", 400)
+    auth = stb_discovery_service.status().get("auth_info") or {}
+    if not (auth.get("mac") or auth.get("assigned_ip")):
+        auth = token_store.load_auth_info()
+    try:
+        result = refresh_backtv_urls(settings, op_channels, auth, logger)
+    except (ValueError, RuntimeError) as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:
+        logger.error(f"EPG 回看地址刷新异常：{exc}")
+        return api_error(f"刷新失败：{exc}", 500)
+    # Persist the updated backtv_url values directly (preserving the existing format)
+    operator_channel_store.save_dict(op_channels)
+    logger.info(
+        f"EPG 回看地址刷新：更新 {result['updated']} / {result['total']} 个频道，"
+        f"EPG={result['epg_host']}"
+    )
+    return api_success(result)
 
 
 @app.get("/api/hls/status")

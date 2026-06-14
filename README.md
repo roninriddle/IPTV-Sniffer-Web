@@ -1,20 +1,17 @@
-# IPTV Sniffer Web v1.1.9
+# IPTV Sniffer Web v1.2.0
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现** 的 IPTV 频道发现、线路整理与 `rtp2httpd` 播放列表工作台。
 
-v0.6 起基于以下两个开源项目的思路重构而来，并整合为单一 Web 图形化页面：
+参考与致谢：
 
-- [`zzzz0317/beijing-unicom-iptv-playlist`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist)：参考多源播放列表、代理地址转换与 M3U 生成思路；
-- [`zzzz0317/beijing-unicom-iptv-playlist-sniffer`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist-sniffer)：参考机顶盒 `channelAcquire` 请求与 `UserToken` 嗅探方式。
-
-特别感谢以上项目作者的公开实现与整理工作。
-
-另参考并致谢：
-
-- [`CGG888/SrcBox`](https://github.com/CGG888/SrcBox)：参考 FCC 快速换台、UDP/RTP/IGMP 多协议流识别以及 XMLTV EPG 模糊匹配的工程实现思路；
+- [恩山论坛 · IPTV 相关讨论](https://www.right.com.cn/forum/thread-8314608-1-1.html)
+- [恩山论坛 · IPTV 相关讨论](https://www.right.com.cn/forum/thread-8314231-1-1.html)
+- [`supzhang/get_iptv_channels`](https://github.com/supzhang/get_iptv_channels)：CU IPTV EPG 认证与回看地址获取思路；
+- [`zzzz0317/beijing-unicom-iptv-playlist`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist)：多源播放列表、代理地址转换与 M3U 生成；
+- [`zzzz0317/beijing-unicom-iptv-playlist-sniffer`](https://github.com/zzzz0317/beijing-unicom-iptv-playlist-sniffer)：机顶盒 `channelAcquire` 请求与 `UserToken` 嗅探；
+- [`CGG888/SrcBox`](https://github.com/CGG888/SrcBox)：FCC 快速换台、UDP/RTP/IGMP 多协议流识别以及 XMLTV EPG 模糊匹配；
 - [`epg.51zmt.top`](https://epg.51zmt.top:8001/)：老张的 EPG / 51zmt 数据；
-- [`wanglindl/TVlogo`](https://github.com/wanglindl/TVlogo)：频道台标 M3U 资源；
-- [`epg.112114.xyz`](https://epg.112114.xyz/)：EPG 数据参考。
+- [`wanglindl/TVlogo`](https://github.com/wanglindl/TVlogo)：频道台标 M3U 资源。
 
 ## 核心特性
 
@@ -179,6 +176,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 ## 版本记录
 
+- `v1.2.0`：新增「刷新回看地址」功能：重新登录运营商 EPG 门户（支持 CU IPTV DES3 认证），自动刷新 operator_channels.json 中各频道的 backtv_url Token；新增 IPTV 密码、用户ID、STBID、DES3 密钥、EPG 服务器地址输入字段，EPG 服务器地址可从已有回看地址自动提取；整理首页致谢；
 - `v1.1.9`：回看功能改为默认关闭、勾选后才显示回看设置；导出时 catchup-source 改为走 Flask HTTP 代理（`/hls/<key>/catchup`）而非内嵌过期的 RTSP token，代理通过 ffmpeg 转封装实时回看流；代理失败时将 ffmpeg 错误写入应用日志便于诊断；
 - `v1.1.8`：首页底部新增作者赞赏码；修复 catchup-source 格式选择框布局溢出问题（改用 display:block 替代 flex，彻底解决文字右侧溢出）；
 - `v1.1.7`：首页底部新增作者赞赏码；
