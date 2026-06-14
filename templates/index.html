@@ -82,16 +82,16 @@
             <span>填写机顶盒 IP，点击「开始捕获」后重启机顶盒，系统自动从 STB 开机流量中解析频道表与 DHCP 认证信息（MAC / IPTV IP / Option60 等），一键「导入到频道线路」。</span>
           </article>
           <article>
-            <strong>2. 频道线路与导出</strong>
-            <span>确认频道名称、分组、主源和备线，按播放器或 rtp2httpd 需要导出最佳线路、全部线路或 HLS 播放列表。</span>
+            <strong>2. IPTV 认证（需要主动播放时）</strong>
+            <span>FCC 服务器、回看服务器与组播流均在 IPTV 子网，未认证时 rtp2httpd 不可达。完成 IPTV 认证后，FCC 快速换台和回看才能正常工作。</span>
           </article>
           <article>
-            <strong>3. 播放诊断</strong>
+            <strong>3. 频道线路与导出</strong>
+            <span>确认频道名称、分组、主源和备线，导出最佳线路、全部线路或 HLS 播放列表。认证完成后可勾选「导出前线路健康检查」，自动选出可用主源。</span>
+          </article>
+          <article>
+            <strong>4. 播放诊断</strong>
             <span>先检测 rtp2httpd、M3U、FCC、IGMP 和组播回流，判断问题在播放列表、配置、上游链路还是镜像口限制。</span>
-          </article>
-          <article>
-            <strong>4. IPTV 认证助手（高级）</strong>
-            <span>只有需要让本机主动播放时再使用；实验模式只操作选定接口，执行前备份，支持恢复。FNOS 需勾选 NET_ADMIN 和 NET_RAW。</span>
           </article>
           <article>
             <strong>5. EPG 与台标维护</strong>
@@ -193,11 +193,6 @@
               <strong>强提醒：</strong>
               <span>实验性一键认证会改选定网口的 MAC、IPv4 地址和指向该网口的 IPTV 路由。执行前请断开机顶盒 IPTV 线避免 MAC 冲突，并确认当前页面可从其它网口访问。系统会在更改前备份该接口初始状态，恢复按钮只恢复这个接口。FNOS 里需要在容器「高级设置 → 功能」勾选 NET_ADMIN 与 NET_RAW。</span>
             </div>
-            <div class="auth-section-tabs" role="tablist" aria-label="IPTV 认证分区">
-              <button class="tab-button active" data-auth-section="summary" type="button">状态与参数</button>
-              <button class="tab-button" data-auth-section="advanced" type="button">一键认证</button>
-            </div>
-            <div data-auth-panel="summary">
             <div class="auth-summary-grid mt-12" id="iptvAuthSummary">
               <div><span>STB MAC</span><strong id="iptvAuthSummaryMac">未捕获</strong></div>
               <div><span>Hostname</span><strong id="iptvAuthSummaryHostname">未捕获</strong></div>
@@ -249,6 +244,26 @@
             </div>
             <div id="iptvAuthStatus" class="result-box muted">请选择接口并刷新状态。</div>
             <div class="section-subtitle mt-12">
+              <h3>实验性一键认证与恢复</h3>
+              <span class="chip warning">高级功能</span>
+            </div>
+            <p class="task-description">一键认证仅操作上方选择的接口：保存初始快照 → 清空该接口 IPv4 → 克隆 STB MAC → 发送 Hostname/Option60 DHCP 请求 → 按路由策略写入 IPTV 路由。恢复会清空该接口 IPv4 与路由，并按首次备份恢复 MAC、IPv4 和路由。</p>
+            <div class="form-grid">
+              <label>
+                执行确认文本
+                <input id="iptvAuthConfirm" type="text" placeholder="确认执行">
+              </label>
+              <label>
+                恢复确认文本
+                <input id="iptvAuthRestoreConfirm" type="text" placeholder="确认恢复">
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="iptvAuthApplyBtn" class="danger-btn" type="button">实验性一键认证</button>
+              <button id="iptvAuthRestoreBtn" class="secondary" type="button">恢复到初始设置</button>
+            </div>
+            <div id="iptvAuthApplyResult" class="result-box muted">未执行。</div>
+            <div class="section-subtitle mt-12">
               <h3>组播拦截检测</h3>
               <span id="iptvTcBadge" class="chip neutral">未检测</span>
             </div>
@@ -288,30 +303,6 @@
               </div>
             </div>
             <div id="iptvTcWatchStatus" class="result-box muted">自动修复默认关闭。</div>
-            </div>
-          </section>
-
-          <section class="card" data-auth-panel="advanced" hidden>
-            <div class="section-title">
-              <h2>实验性一键认证与恢复</h2>
-              <span class="chip warning">高级功能</span>
-            </div>
-            <p class="task-description">一键认证仅操作上方选择的接口：保存初始快照 → 清空该接口 IPv4 → 克隆 STB MAC → 发送 Hostname/Option60 DHCP 请求 → 按路由策略写入 IPTV 路由。恢复会清空该接口 IPv4 与路由，并按首次备份恢复 MAC、IPv4 和路由。</p>
-            <div class="form-grid">
-              <label>
-                执行确认文本
-                <input id="iptvAuthConfirm" type="text" placeholder="确认执行">
-              </label>
-              <label>
-                恢复确认文本
-                <input id="iptvAuthRestoreConfirm" type="text" placeholder="确认恢复">
-              </label>
-            </div>
-            <div class="button-row">
-              <button id="iptvAuthApplyBtn" class="danger-btn" type="button">实验性一键认证</button>
-              <button id="iptvAuthRestoreBtn" class="secondary" type="button">恢复到初始设置</button>
-            </div>
-            <div id="iptvAuthApplyResult" class="result-box muted">未执行。</div>
           </section>
         </div>
 
@@ -401,6 +392,9 @@
               <h3>回看（时移）设置</h3>
               <span class="muted small">仅对运营商频道表中标记支持回看的频道生效；天数设为 0 可禁用</span>
             </div>
+            <div class="notice compact">
+              <span>回看服务器通常在 IPTV 子网（如 10.7.x.x），需先完成 IPTV 认证才可访问。请将模板中的 <strong>timeshift-server</strong> 替换为实际回看服务器 IP。</span>
+            </div>
             <div class="form-grid">
               <label>
                 回看天数
@@ -412,6 +406,12 @@
               </label>
             </div>
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
+            <div class="form-grid compact-grid" style="margin-bottom: 8px">
+              <label class="checkbox-label align-self-center" style="grid-column: 1 / -1">
+                <input id="preExportHealthCheck" type="checkbox">
+                导出前线路健康检查（需已完成 IPTV 认证，rtp2httpd 能访问组播流）
+              </label>
+            </div>
             <div class="button-row">
               <button id="clDownloadBestM3u" class="primary" type="button">播放器 M3U：最佳线路</button>
               <button id="clDownloadFnosHlsM3u" class="primary" type="button">飞牛影视 HLS M3U</button>

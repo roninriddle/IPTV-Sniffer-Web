@@ -140,8 +140,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
-.channel-section-tabs,
-.auth-section-tabs {
+.channel-section-tabs {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -151,7 +150,6 @@ body {
   border-radius: 8px;
   background: #e9eef5;
 }
-.auth-section-tabs { margin-top: 12px; }
 
 .section-title { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .section-title h2, .logs-header h2 { margin: 0; font-size: 18px; }
@@ -552,8 +550,8 @@ body.logs-open .footer {
   .home-hero { padding: 18px; min-height: 0; }
   .home-hero h2 { font-size: 23px; }
   .grid.two, .home-steps, .form-grid, .metrics-grid { grid-template-columns: 1fr; }
-  .channel-section-tabs, .auth-section-tabs { overflow-x: auto; flex-wrap: nowrap; }
-  .channel-section-tabs .tab-button, .auth-section-tabs .tab-button { white-space: nowrap; }
+  .channel-section-tabs { overflow-x: auto; flex-wrap: nowrap; }
+  .channel-section-tabs .tab-button { white-space: nowrap; }
   .source-row-grid { grid-template-columns: 1fr; }
   .source-name-input { max-width: none; }
   .auto-grid .checkbox-label { flex: 0 0 100%; }

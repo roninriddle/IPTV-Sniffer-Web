@@ -15,7 +15,6 @@ const state = {
   channelList: [],
   selectedChannelKeys: new Set(),
   channelListSection: "list",
-  iptvAuthSection: "summary",
   ignoredKeys: _loadIgnoredKeys(),
 };
 
@@ -63,6 +62,7 @@ function formSettings() {
     catchup_days: Number($("catchupDays")?.value ?? 7),
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
+    pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
   };
 }
 
@@ -72,7 +72,6 @@ function showHome() {
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.add("active"));
   document.querySelectorAll("[data-nav-tab]").forEach((item) => item.classList.remove("active"));
   hideChannelListSections();
-  hideIptvAuthSections();
 }
 
 function showChannelListSection(sectionName = "list") {
@@ -92,22 +91,6 @@ function hideChannelListSections() {
   document.querySelectorAll("[data-cl-section]").forEach((button) => button.classList.remove("active"));
 }
 
-function showIptvAuthSection(sectionName = "summary") {
-  const allowed = new Set(["summary", "advanced"]);
-  const target = allowed.has(sectionName) ? sectionName : "summary";
-  state.iptvAuthSection = target;
-  document.querySelectorAll("[data-auth-panel]").forEach((panel) => {
-    panel.hidden = panel.dataset.authPanel !== target;
-  });
-  document.querySelectorAll("[data-auth-section]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.authSection === target);
-  });
-}
-
-function hideIptvAuthSections() {
-  document.querySelectorAll("[data-auth-panel]").forEach((panel) => { panel.hidden = true; });
-  document.querySelectorAll("[data-auth-section]").forEach((button) => button.classList.remove("active"));
-}
 
 function showTab(tabName) {
   $("homePage").hidden = true;
@@ -126,10 +109,7 @@ function showTab(tabName) {
   }
   if (tabName === "stbDiscovery") loadSavedOperatorCount();
   if (tabName === "iptvAuth") {
-    showIptvAuthSection(state.iptvAuthSection || "summary");
     initIptvAuthTab();
-  } else {
-    hideIptvAuthSections();
   }
   if (tabName === "diagnose") initDiagnoseTab();
   document.querySelectorAll("[data-page='home']").forEach((item) => item.classList.remove("active"));
@@ -278,6 +258,7 @@ async function loadSettings() {
   $("catchupDays").value = data.catchup_days ?? 7;
   $("catchupSourceTemplate").value = data.catchup_source_template || "";
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
+  if ($("preExportHealthCheck")) $("preExportHealthCheck").checked = !!data.pre_export_health_check;
 }
 
 async function appendLogs() {
@@ -517,9 +498,6 @@ document.querySelectorAll("[data-nav-tab]").forEach((item) => item.addEventListe
 document.querySelectorAll("[data-home-tab]").forEach((item) => item.addEventListener("click", () => showTab(item.dataset.homeTab)));
 document.querySelectorAll("[data-cl-section]").forEach((item) => {
   item.addEventListener("click", () => showChannelListSection(item.dataset.clSection));
-});
-document.querySelectorAll("[data-auth-section]").forEach((item) => {
-  item.addEventListener("click", () => showIptvAuthSection(item.dataset.authSection));
 });
 $("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
 $("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("useLogo").checked; });

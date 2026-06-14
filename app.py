@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -498,11 +499,23 @@ def apply_pre_export_health_check(
         summary["limit_reached"] = True
         multi_groups = multi_groups[:max_groups]
 
+    summary["groups_checked"] = len(multi_groups)
+    candidates: list[dict[str, Any]] = []
     for members in multi_groups:
-        summary["groups_checked"] += 1
         ordered = sorted(members, key=channel_primary_score, reverse=True)[:max_candidates]
-        for row in ordered:
-            health = _export_health_check_one(row, settings, operator_channels)
+        candidates.extend(ordered)
+
+    if candidates:
+        max_workers = min(len(candidates), 16)
+        check_results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_row = {
+                executor.submit(_export_health_check_one, row, settings, operator_channels): row
+                for row in candidates
+            }
+            for future in as_completed(future_to_row):
+                check_results.append((future_to_row[future], future.result()))
+        for row, health in check_results:
             row.update(health)
             status = str(health.get("export_health_status") or "error")
             if status not in {"ok", "failed", "timeout", "error", "skipped"}:
