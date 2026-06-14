@@ -509,6 +509,7 @@ async function bootstrap() {
   if (localStorage.getItem("logsOpen") === "1") openLogs();
   else setLogsDrawerOpen(false);
   loadIptvAuthSummary().catch(() => {});
+  loadSavedOperatorCount().catch(() => {});
 }
 
 document.querySelectorAll("[data-page='home']").forEach((item) => item.addEventListener("click", showHome));
@@ -688,6 +689,8 @@ $("backupImportFile").addEventListener("change", async function () {
     const result = await requestJson("/api/backup/import", {method: "POST", body: JSON.stringify(data)});
     box.className = "result-box ok";
     box.textContent = `导入完成：已恢复 ${result.restored.join("、") || "无"}；跳过 ${result.skipped.join("、") || "无"}。页面将在 2 秒后刷新。`;
+    loadSavedOperatorCount().catch(() => {});
+    loadIptvAuthSummary().catch(() => {});
     setTimeout(() => location.reload(), 2000);
   } catch (err) {
     box.className = "result-box error";

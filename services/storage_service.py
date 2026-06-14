@@ -450,6 +450,10 @@ class OperatorChannelStore:
             _atomic_dump_json(self.path, data)
         return saved
 
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cache = None
+
     def clear(self) -> None:
         with self._lock:
             self._cache = {}

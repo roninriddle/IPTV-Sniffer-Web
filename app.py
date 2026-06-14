@@ -915,6 +915,8 @@ def api_backup_import():
         except Exception as exc:
             logger.warning(f"backup import: failed to write {key}: {exc}")
             skipped.append(key)
+    if "operator_channels" in restored:
+        operator_channel_store.invalidate()
     logger.info(f"备份导入完成：已恢复 {len(restored)} 项，跳过 {len(skipped)} 项")
     return api_success({"restored": restored, "skipped": skipped})
 

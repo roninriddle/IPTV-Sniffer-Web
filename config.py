@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.1.0"
 APP_DESCRIPTION = "IPTV 运营商频道发现、线路整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -84,7 +84,7 @@ DEFAULT_SETTINGS = {
     "logo_name": DEFAULT_LOGO_NAME,
     "logo_url": DEFAULT_LOGO_URL,
     "catchup_days": 7,
-    "catchup_source_template": "",
+    "catchup_source_template": "http://timeshift-server/timeshift/{channel_id}/{start}/{duration}/index.m3u8",
     "fcc_type": "",
     "pre_export_health_check": True,
 }
