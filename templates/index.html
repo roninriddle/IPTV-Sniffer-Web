@@ -410,17 +410,17 @@
               </label>
               <div style="grid-column: 1 / -1; min-width:0; display:flex; flex-direction:column; gap:6px">
                 <div style="font-size:0.82em; color: var(--muted)">catchup-source 格式</div>
-                <label style="display:flex; align-items:center; gap:10px; min-height:36px; padding:0 10px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; min-width:0">
-                  <input type="radio" name="catchupSourceMode" value="aptv" id="csmAptv" style="flex-shrink:0; margin:0">
-                  <span style="min-width:0"><strong>APTV（默认）</strong> — 自动使用逐频道 RTSP 回看地址 + playseek 参数</span>
+                <label style="display:block; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
+                  <input type="radio" name="catchupSourceMode" value="aptv" id="csmAptv" style="margin-right:6px">
+                  <strong>APTV（默认）</strong> — 自动使用逐频道 RTSP 回看地址 + playseek 参数
                 </label>
-                <label style="display:flex; align-items:center; gap:10px; min-height:36px; padding:0 10px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; min-width:0">
-                  <input type="radio" name="catchupSourceMode" value="hls" id="csmHls" style="flex-shrink:0; margin:0">
-                  <span style="min-width:0"><strong>飞牛 NAS / HLS</strong> — 自动根据回看服务器地址生成 HLS 模板</span>
+                <label style="display:block; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
+                  <input type="radio" name="catchupSourceMode" value="hls" id="csmHls" style="margin-right:6px">
+                  <strong>飞牛 NAS / HLS</strong> — 自动根据回看服务器地址生成 HLS 模板
                 </label>
-                <label style="display:flex; align-items:center; gap:10px; min-height:36px; padding:0 10px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; min-width:0">
-                  <input type="radio" name="catchupSourceMode" value="custom" id="csmCustom" style="flex-shrink:0; margin:0">
-                  <span style="min-width:0"><strong>其他</strong> — 手动填写模板</span>
+                <label style="display:block; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
+                  <input type="radio" name="catchupSourceMode" value="custom" id="csmCustom" style="margin-right:6px">
+                  <strong>其他</strong> — 手动填写模板
                 </label>
                 <div id="catchupHlsPreview" class="muted" style="display:none; font-size:0.82em; font-family:monospace; word-break:break-all"></div>
                 <input id="catchupSourceTemplate" type="text" style="display:none" placeholder="http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
