@@ -393,71 +393,128 @@
               </label>
             </div>
             <div class="section-subtitle">
-              <h3>回看（时移）设置</h3>
+              <h3>回看 / 时移</h3>
+              <span class="muted small">直播源与回看源分开处理：直播走 rtp2httpd/HLS，回看走运营商 RTSP backtv_url</span>
             </div>
             <div class="form-grid" style="margin-bottom:4px">
               <label class="checkbox-label align-self-center" style="grid-column: 1 / -1">
                 <input type="checkbox" id="catchupEnabled">
-                启用回看 / 时移（仅对运营商频道表中标记支持回看的频道生效）
+                启用回看 / 时移导出（仅对运营商频道表中带 TimeShift 与 backtv_url 的频道生效）
               </label>
             </div>
             <div id="catchupSettingsBlock" style="display:none">
-            <div class="notice compact">
-              <span>回看服务器在 IPTV 子网，需完成认证后才可访问。抓包导入频道时会自动检测并填入服务器地址。</span>
-            </div>
-            <div class="form-grid">
-              <label>
-                回看天数
-                <input id="catchupDays" type="number" min="0" max="30" value="7">
-              </label>
-              <label>
-                回看服务器地址（抓包后自动填入）
-                <input id="timeshiftHost" type="text" placeholder="10.7.x.x 或 10.7.x.x:port">
-              </label>
-              <div style="grid-column: 1 / -1; min-width:0; display:flex; flex-direction:column; gap:6px">
-                <div style="font-size:0.82em; color: var(--muted)">catchup-source 格式</div>
-                <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
-                  <input type="radio" name="catchupSourceMode" value="aptv" id="csmAptv" style="width:auto; flex-shrink:0">
-                  <span><strong>APTV（默认）</strong> — 自动使用逐频道 RTSP 回看地址 + playseek 参数</span>
-                </label>
-                <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
-                  <input type="radio" name="catchupSourceMode" value="hls" id="csmHls" style="width:auto; flex-shrink:0">
-                  <span><strong>飞牛 NAS / HLS</strong> — 自动根据回看服务器地址生成 HLS 模板</span>
-                </label>
-                <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
-                  <input type="radio" name="catchupSourceMode" value="custom" id="csmCustom" style="width:auto; flex-shrink:0">
-                  <span><strong>其他</strong> — 手动填写模板</span>
-                </label>
-                <div id="catchupHlsPreview" class="muted" style="display:none; font-size:0.82em; font-family:monospace; word-break:break-all"></div>
-                <input id="catchupSourceTemplate" type="text" style="display:none" placeholder="http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
+              <div class="notice compact">
+                <strong>工作方式：</strong>
+                <span>频道表导入时记录运营商提供的 TimeShiftLength 与 backtv_url；播放器请求回看时访问本机 <code>/hls/&lt;key&gt;/catchup</code>，再由服务端用 ffmpeg 打开 RTSP 回看流并转成 HTTP MPEG-TS。回看服务器在 IPTV 子网，需完成 IPTV 认证后才可访问。</span>
               </div>
-            </div>
-            <div class="section-subtitle" style="margin-top:12px"><h3>回看 Token 刷新</h3></div>
-            <div class="notice compact">
-              <span>填写以下认证信息后点击「刷新回看地址」，系统将重新登录运营商 EPG 门户并更新各频道的回看 RTSP Token。</span>
-            </div>
-            <div class="form-grid" style="grid-template-columns: repeat(2, 1fr)">
-              <label>
-                IPTV 密码
-                <input id="iptvPassword" type="password" autocomplete="current-password" placeholder="此密码可向运维小哥获取">
-              </label>
-              <label>
-                用户ID（UserID）
-                <input id="epgUserId" type="text" autocomplete="off" placeholder="运营商账户 ID，如 12345678901">
-              </label>
-              <label>
-                机顶盒设备ID（STBID）
-                <input id="epgStbId" type="text" autocomplete="off" placeholder="机顶盒设备 ID，如 JTIPTV-XXXXXXXXXX">
-              </label>
-              <label>
-                DES3 加密密钥（8位）
-                <input id="epgDes3Key" type="text" autocomplete="off" maxlength="24" placeholder="8位数字或字母，运营商提供">
-              </label>
-              <label style="grid-column: 1 / -1">
-                EPG 服务器地址（留空自动检测）
-                <input id="epgAuthHost" type="text" autocomplete="off" placeholder="10.x.x.x:8082（自动从回看地址提取）">
-              </label>
-            </div>
+              <div class="form-grid">
+                <label>
+                  回看天数
+                  <input id="catchupDays" type="number" min="0" max="30" value="7">
+                  <small>运营商 TimeShiftLength 会按分钟自动换算；没有该字段时使用这里的默认值。</small>
+                </label>
+                <label>
+                  回看服务器地址
+                  <input id="timeshiftHost" type="text" placeholder="10.7.x.x 或 10.7.x.x:port">
+                  <small>抓包导入时会自动从 BacktimeURL / BackUrl / RTSP 地址提取。</small>
+                </label>
+                <div style="grid-column: 1 / -1; min-width:0; display:flex; flex-direction:column; gap:6px">
+                  <div style="font-size:0.82em; color: var(--muted)">播放端兼容模式</div>
+                  <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
+                    <input type="radio" name="catchupSourceMode" value="aptv" id="csmAptv" style="width:auto; flex-shrink:0">
+                    <span><strong>APTV（默认）</strong> — <code>catchup-source</code> 指向本机代理，代理再打开逐频道 RTSP 回看地址。</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
+                    <input type="radio" name="catchupSourceMode" value="hls" id="csmHls" style="width:auto; flex-shrink:0">
+                    <span><strong>飞牛 NAS / HLS 模板</strong> — 按回看服务器地址生成 <code>/timeshift/{channel_id}/{start}/{duration}/index.m3u8</code>。</span>
+                  </label>
+                  <label style="display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font-weight:normal; line-height:1.5">
+                    <input type="radio" name="catchupSourceMode" value="custom" id="csmCustom" style="width:auto; flex-shrink:0">
+                    <span><strong>自定义模板</strong> — 用于其他播放器或外部回看代理。</span>
+                  </label>
+                  <div id="catchupHlsPreview" class="muted" style="display:none; font-size:0.82em; font-family:monospace; word-break:break-all"></div>
+                  <input id="catchupSourceTemplate" type="text" style="display:none" placeholder="http://回看服务器/timeshift/{channel_id}/{start}/{duration}/index.m3u8">
+                </div>
+              </div>
+              <div class="section-subtitle" style="margin-top:12px"><h3>回看地址刷新</h3></div>
+              <div class="notice compact">
+                <strong>什么时候用：</strong>
+                <span>播放回看返回 403、IPTV 认证 IP 变化、或 backtv_url token 过期时再刷新。刷新会使用当前表单值重新登录运营商 EPG 门户，并写回 operator_channels.json。</span>
+              </div>
+              <div class="form-grid" style="grid-template-columns: repeat(2, 1fr)">
+                <label class="checkbox-label align-self-center" style="grid-column: 1 / -1">
+                  <input type="checkbox" id="catchupAutoRefreshEnabled">
+                  自动定时刷新回看地址（建议先手动刷新成功一次，再打开）
+                </label>
+                <label>
+                  自动刷新间隔（小时）
+                  <input id="catchupAutoRefreshHours" type="number" min="1" max="168" value="12">
+                  <small>门户没有明确 token 有效期时，建议 6-12 小时；如果回看经常 403，再调短。</small>
+                </label>
+                <div id="catchupAutoRefreshStatus" class="result-box muted" style="grid-column: 1 / -1">自动刷新状态尚未加载。</div>
+              </div>
+              <div class="form-grid" style="grid-template-columns: repeat(2, 1fr)">
+                <label>
+                  认证模式
+                  <select id="epgAuthProfile">
+                    <option value="auto">自动：优先 CTC-HWCTC，失败回退 CU-HWCTC</option>
+                    <option value="ctc_hwctc">电信 CTC-HWCTC（supzhang/get_iptv_channels）</option>
+                    <option value="cu_hwctc">联通 / 通用 CU-HWCTC</option>
+                  </select>
+                </label>
+                <label>
+                  加密模式
+                  <select id="epgCryptoMode">
+                    <option value="auto">自动</option>
+                    <option value="ctc_des3_zero16">CTC 3DES：key + 16 个 0</option>
+                    <option value="des">DES 8 位 key</option>
+                    <option value="des3">3DES 16/24 位 key</option>
+                  </select>
+                </label>
+                <label>
+                  IPTV 密码
+                  <input id="iptvPassword" type="password" autocomplete="current-password" placeholder="运营商 IPTV 业务密码">
+                </label>
+                <label>
+                  用户ID（UserID）
+                  <input id="epgUserId" type="text" autocomplete="off" placeholder="运营商账户 ID，如 12345678901">
+                </label>
+                <label>
+                  机顶盒设备ID（STBID）
+                  <input id="epgStbId" type="text" autocomplete="off" placeholder="机顶盒设备 ID，如 JTIPTV-XXXXXXXXXX">
+                </label>
+                <label>
+                  DES / DES3 加密密钥
+                  <input id="epgDes3Key" type="text" autocomplete="off" maxlength="24" placeholder="8 / 16 / 24 位密钥，按运营商环境填写">
+                </label>
+                <label style="grid-column: 1 / -1">
+                  EPG 认证服务器（留空自动检测）
+                  <input id="epgAuthHost" type="text" autocomplete="off" placeholder="10.x.x.x:8082（可从 backtv_url 自动提取）">
+                </label>
+                <label>
+                  STBType
+                  <input id="epgStbType" type="text" autocomplete="off" placeholder="抓包自动提取，CTC-HWCTC 必填">
+                </label>
+                <label>
+                  STBVersion
+                  <input id="epgStbVersion" type="text" autocomplete="off" placeholder="抓包自动提取，CTC-HWCTC 必填">
+                </label>
+                <label>
+                  AccessUserName
+                  <input id="epgAccessUserName" type="text" autocomplete="off" placeholder="抓包自动提取，可选">
+                </label>
+                <label>
+                  DES padding
+                  <select id="epgDesPadding">
+                    <option value="pkcs5">PKCS5Padding（推荐）</option>
+                    <option value="zero">Zero padding（兼容旧环境）</option>
+                  </select>
+                </label>
+                <label style="grid-column: 1 / -1">
+                  UserAgent
+                  <input id="epgUserAgent" type="text" autocomplete="off" placeholder="抓包自动提取，CTC-HWCTC 必填">
+                </label>
+              </div>
             </div><!-- /catchupSettingsBlock -->
             <div class="button-row" style="margin-bottom: 8px">
               <button id="saveExportSettingsBtn" class="secondary" type="button">保存导出设置</button>

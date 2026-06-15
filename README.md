@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v1.2.0
+# IPTV Sniffer Web v1.2.1-test
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现** 的 IPTV 频道发现、线路整理与 `rtp2httpd` 播放列表工作台。
 
@@ -147,6 +147,35 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 ?fcc=FCC服务器IP:FCC服务器端口&fcc-type=telecom&fec=FEC端口
 ```
 
+## 回看 / 时移工作流
+
+本项目把直播和回看拆成两条链路，参考了致谢项目中“直播源 / timeshift 源分离”的做法：
+
+- 直播源：频道播放仍走组播、`rtp2httpd` 或本机 HLS 转封装；
+- 回看源：使用运营商频道表中的 `TimeShift`、`TimeShiftLength`、`TimeShiftURL` / `BacktimeURL` / `BackUrl` 等字段；
+- 导出：只对带回看地址的频道写入 `catchup="default"`、`catchup-days` 和 `catchup-source`；
+- 代理：默认 `catchup-source` 指向本机 `/hls/<key>/catchup?playseek=...`，由服务端用 FFmpeg 打开运营商 RTSP 回看地址并转成 HTTP MPEG-TS；
+- 刷新：当回看返回 403、IPTV IP 变化、或 RTSP Token 过期时，在页面填写 IPTV 密码、UserID、STBID、DES/DES3 密钥并点击「刷新回看地址」；也可以开启「自动定时刷新回看地址」，由后台按小时周期重新登录 EPG 门户并更新 `operator_channels.json`。
+- 门户 Token：STB 开机捕获会额外识别恩山帖子提到的 `CTCGetAuthInfo`、`/uploadAuthInfo` 响应头 `UserToken`、`X-Frame-SessionID`，捕获到的 `UserToken` 会写入现有 token 记录，用于认证摘要和诊断判断。
+- 认证模式：支持自动 / 电信 CTC-HWCTC / 联通 CU-HWCTC。自动模式会在字段完整时优先使用 `supzhang/get_iptv_channels` 的 CTC-HWCTC 链路获取 `JSESSIONID` 与频道表，失败后回退到 CU-HWCTC。
+
+几个容易混淆的点：
+
+- `channels-best.m3u` / `channels-all.m3u` 是播放器入口，里面的直播 URL 可以是 `rtp2httpd` HTTP 地址；
+- `channels-rtp2httpd-best.m3u` / `channels-rtp2httpd-all.m3u` 是给 `rtp2httpd external-m3u` 使用的源文件，里面保留 `rtp://` / `udp://` 组播源；
+- 回看 RTSP Token 通常与账号、机顶盒信息、IPTV 侧 IP 绑定，能直播不代表回看 Token 一定有效；
+- `catchup-source` 关闭时不会写入 HLS M3U；没有 `backtv_url` 的频道也不会写入回看属性；
+- 导出的回看 M3U 入口是稳定的：播放器仍访问本机 `/hls/<key>/catchup`，无需因为 token 刷新而频繁替换播放列表；真正会变化的是服务端保存的 `backtv_url` token；
+- Token 有效期不一定可见：如果门户 `JSESSIONID` 暴露 expires，页面会显示过期时间；如果只返回会话 Cookie 或不透明 RTSP token，页面会显示“未暴露明确有效期”，建议按 6-12 小时定时刷新；
+- `/app/data` 必须持久化，否则频道表、认证摘要和刷新后的回看地址会随容器删除而丢失。
+
+回看故障判断：
+
+- HTTP 403：多半是 `backtv_url` Token 过期、IPTV 认证 IP 变化、门户 `UserToken` 未捕获，或 UserID/STBID/密码不匹配；
+- 超时或 0 字节：先检查 IPTV 认证、`enp3s0` 是否有 10.x IPTV 地址、是否存在到 10.0.0.0/8 或回看服务器的路由；
+- M3U 没有 `catchup-source`：确认页面已启用回看，且运营商频道表中该频道带 `TimeShift` 与 `backtv_url`；
+- 播放器时间偏移：当前导出头会在启用回看时写入 `catchup-correction="8"`，让支持该字段的播放器按北京时间生成 `playseek`。
+
 ## API 摘要
 
 | 方法 | 路径 | 说明 |
@@ -170,12 +199,15 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 | POST | `/api/diagnose` | 播放链路诊断 |
 | POST | `/api/export` | 导出频道文件 |
 | GET | `/api/hls/m3u` | 生成飞牛影视 HLS M3U 文件 |
+| POST | `/api/catchup/refresh` | 手动刷新运营商回看 backtv_url |
+| GET | `/api/catchup/refresh/status` | 查看回看地址定时刷新状态 |
 | GET | `/api/hls/status` | 查看当前 HLS 转流实例状态 |
 | GET | `/hls/<key>/stream.m3u8` | HLS 播放列表（按需启动 FFmpeg） |
 | GET | `/hls/<key>/<segment>.ts` | HLS 媒体分片 |
 
 ## 版本记录
 
+- `v1.2.1-test`：回看刷新新增认证 Profile：自动 / 电信 CTC-HWCTC / 联通 CU-HWCTC；参考 `supzhang/get_iptv_channels` 增加 `EncryptToken → Authenticator → ValidAuthenticationHWCTC → JSESSIONID → getchannellistHWCTC` 链路；新增 STBType、STBVersion、UserAgent、AccessUserName、加密模式、padding 设置；STB 开机抓包自动提取并填充这些字段；新增回看地址自动定时刷新开关、刷新状态与 token 有效期可见性提示；导出的回看 M3U 保持稳定入口，由后端刷新内部 `backtv_url`；
 - `v1.2.0`：新增「刷新回看地址」功能：重新登录运营商 EPG 门户（支持 CU IPTV DES3 认证），自动刷新 operator_channels.json 中各频道的 backtv_url Token；新增 IPTV 密码、用户ID、STBID、DES3 密钥、EPG 服务器地址输入字段，EPG 服务器地址可从已有回看地址自动提取；整理首页致谢；
 - `v1.1.9`：回看功能改为默认关闭、勾选后才显示回看设置；导出时 catchup-source 改为走 Flask HTTP 代理（`/hls/<key>/catchup`）而非内嵌过期的 RTSP token，代理通过 ffmpeg 转封装实时回看流；代理失败时将 ffmpeg 错误写入应用日志便于诊断；
 - `v1.1.8`：首页底部新增作者赞赏码；修复 catchup-source 格式选择框布局溢出问题（改用 display:block 替代 flex，彻底解决文字右侧溢出）；

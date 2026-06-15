@@ -60,7 +60,7 @@ from services.log_service import AppLogger
 from services.hls_service import HlsService
 from services.stb_discovery_service import StbDiscoveryService
 from services.storage_service import ChannelSnapshotStore, ChannelStore, DiscoveryStore, FccStore, OperatorChannelStore, SettingsStore, StbTokenStore
-from utils import channel_group_key, channel_primary_score, channel_variant_key, classify_channel_name, natural_key, normalize_channel_name_for_group, valid_ip_or_host, valid_ipv4_multicast
+from utils import channel_group_key, channel_primary_score, channel_variant_key, classify_channel_name, natural_key, normalize_channel_name_for_group, redact_sensitive_text, valid_ip_or_host, valid_ipv4_multicast
 
 app = Flask(__name__)
 logger = AppLogger(LOG_FILE, LOG_MEMORY_LIMIT)
@@ -69,8 +69,8 @@ channel_store = ChannelStore(CHANNELS_FILE)
 fcc_store = FccStore(FCC_FILE)
 operator_channel_store = OperatorChannelStore(OPERATOR_CHANNELS_FILE)
 snapshot_store = ChannelSnapshotStore(SNAPSHOTS_FILE)
-stb_discovery_service = StbDiscoveryService(logger)
 token_store = StbTokenStore(STB_TOKEN_FILE)
+stb_discovery_service = StbDiscoveryService(logger, token_store)
 discovery_store = DiscoveryStore(DISCOVERY_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
 export_service = ExportService(OUTPUT_DIR)
@@ -88,6 +88,18 @@ _version_check: dict[str, Any] = {
     "error": None,
     "release_url": "",
 }
+_catchup_refresh_lock = threading.RLock()
+_catchup_auto_state: dict[str, Any] = {
+    "running": False,
+    "last_run_at": None,
+    "last_success_at": None,
+    "next_run_at": None,
+    "last_error": "",
+    "last_result": None,
+    "token_expires_at": None,
+    "token_expiry_note": "尚未刷新",
+}
+_catchup_auto_thread_started = False
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -1054,14 +1066,31 @@ def api_stb_discovery_import():
         # Auto-populate EPG credentials extracted from pcap (never overwrite existing values)
         epg_creds = state.get("epg_creds") or {}
         epg_updates: dict[str, str] = {}
-        for key in ("epg_user_id", "epg_stb_id", "epg_auth_host"):
-            val = str(epg_creds.get(key) or "").strip()
-            if val and not str(current.get(key) or "").strip():
-                epg_updates[key] = val
+        epg_key_map = {
+            "epg_user_id": "epg_user_id",
+            "epg_stb_id": "epg_stb_id",
+            "epg_auth_host": "epg_auth_host",
+            "epg_user_agent": "epg_user_agent",
+            "epg_stb_type": "epg_stb_type",
+            "epg_stb_version": "epg_stb_version",
+            "access_user_name": "epg_access_user_name",
+        }
+        for src_key, dst_key in epg_key_map.items():
+            val = str(epg_creds.get(src_key) or "").strip()
+            if val and not str(current.get(dst_key) or "").strip():
+                epg_updates[dst_key] = val
         if epg_updates:
             settings_store.save(epg_updates)
             result["epg_creds_detected"] = epg_updates
             logger.info(f"从抓包自动提取 EPG 认证信息：{epg_updates}")
+        portal_auth = state.get("portal_auth") or {}
+        if portal_auth:
+            result["portal_auth_detected"] = {
+                "ctc_auth_info": bool(portal_auth.get("has_ctc_auth_info")),
+                "upload_user_token": bool(portal_auth.get("has_upload_user_token")),
+                "x_frame_session_id": bool(portal_auth.get("has_x_frame_session_id")),
+                "portal_auth_host": str(portal_auth.get("portal_auth_host") or ""),
+            }
         logger.info(f"已从 STB 开机捕获导入 {result['imported']} 个频道，FCC {result['fcc_saved']} 条，频道记录 {result['channels_saved']} 条（含 EPG 匹配）")
         return api_success(result)
     except Exception as exc:
@@ -1245,12 +1274,137 @@ def hls_catchup(hls_key: str):
                 proc.kill()
             stderr_out = proc.stderr.read().decode(errors="replace").strip()
             if stderr_out:
-                logger.warning(f"catchup ffmpeg [{hls_key}]: {stderr_out[-400:]}")
+                logger.warning(f"catchup ffmpeg [{hls_key}]: {redact_sensitive_text(stderr_out, 400)}")
 
     resp = Response(generate(), mimetype="video/mp2t")
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+def _effective_stb_auth_info() -> dict[str, Any]:
+    auth = stb_discovery_service.status().get("auth_info") or {}
+    if auth.get("mac") or auth.get("assigned_ip"):
+        return auth
+    return token_store.load_auth_info()
+
+
+def _catchup_refresh_interval_hours(settings: dict[str, Any]) -> int:
+    try:
+        hours = int(settings.get("catchup_auto_refresh_hours") or 12)
+    except (TypeError, ValueError):
+        hours = 12
+    return min(max(hours, 1), 168)
+
+
+def _catchup_auto_enabled(settings: dict[str, Any]) -> bool:
+    return bool(settings.get("catchup_enabled")) and bool(settings.get("catchup_auto_refresh_enabled"))
+
+
+def _catchup_refresh_status(settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = settings or settings_store.load()
+    interval_hours = _catchup_refresh_interval_hours(settings)
+    auto_enabled = _catchup_auto_enabled(settings)
+    now = int(time.time())
+    with _catchup_refresh_lock:
+        state = dict(_catchup_auto_state)
+    next_run_at = state.get("next_run_at")
+    if auto_enabled and not next_run_at:
+        base = state.get("last_success_at") or state.get("last_run_at") or now
+        next_run_at = int(base) + interval_hours * 3600
+    if not auto_enabled:
+        next_run_at = None
+    return {
+        "enabled": auto_enabled,
+        "interval_hours": interval_hours,
+        "running": bool(state.get("running")),
+        "last_run_at": state.get("last_run_at"),
+        "last_success_at": state.get("last_success_at"),
+        "next_run_at": next_run_at,
+        "last_error": state.get("last_error") or "",
+        "last_result": state.get("last_result") or None,
+        "token_expires_at": state.get("token_expires_at"),
+        "token_expiry_note": state.get("token_expiry_note") or "未暴露明确有效期",
+    }
+
+
+def _refresh_backtv_with_state(settings: dict[str, Any], source: str) -> dict[str, Any]:
+    now = int(time.time())
+    with _catchup_refresh_lock:
+        if _catchup_auto_state.get("running"):
+            raise RuntimeError("回看地址刷新正在执行，请稍后再试")
+        _catchup_auto_state.update({
+            "running": True,
+            "last_run_at": now,
+            "last_error": "",
+        })
+
+    try:
+        op_channels = operator_channel_store.load()
+        if not op_channels:
+            raise ValueError("运营商频道表为空，请先完成 STB 开机捕获并导入频道")
+        result = refresh_backtv_urls(settings, op_channels, _effective_stb_auth_info(), logger)
+        operator_channel_store.save_dict(op_channels)
+        finished_at = int(time.time())
+        result = dict(result)
+        result["source"] = source
+        result["refreshed_at"] = finished_at
+        next_run_at = finished_at + _catchup_refresh_interval_hours(settings) * 3600
+        with _catchup_refresh_lock:
+            _catchup_auto_state.update({
+                "running": False,
+                "last_success_at": finished_at,
+                "next_run_at": next_run_at if _catchup_auto_enabled(settings) else None,
+                "last_error": "",
+                "last_result": result,
+                "token_expires_at": result.get("token_expires_at"),
+                "token_expiry_note": result.get("token_expiry_note") or "未暴露明确有效期",
+            })
+        return result
+    except Exception as exc:
+        with _catchup_refresh_lock:
+            _catchup_auto_state.update({
+                "running": False,
+                "last_error": str(exc),
+                "next_run_at": int(time.time()) + _catchup_refresh_interval_hours(settings) * 3600
+                if _catchup_auto_enabled(settings) else None,
+            })
+        raise
+
+
+def _start_catchup_auto_refresh_loop() -> None:
+    global _catchup_auto_thread_started
+    with _catchup_refresh_lock:
+        if _catchup_auto_thread_started:
+            return
+        _catchup_auto_thread_started = True
+
+    def worker() -> None:
+        while True:
+            settings = settings_store.load()
+            interval_seconds = _catchup_refresh_interval_hours(settings) * 3600
+            now = int(time.time())
+            auto_enabled = _catchup_auto_enabled(settings)
+            with _catchup_refresh_lock:
+                running = bool(_catchup_auto_state.get("running"))
+                last_success = _catchup_auto_state.get("last_success_at")
+                last_run = _catchup_auto_state.get("last_run_at")
+                base = int(last_success or last_run or now)
+                next_run = base + interval_seconds if auto_enabled else None
+                _catchup_auto_state["next_run_at"] = next_run
+            if auto_enabled and not running and next_run is not None and now >= next_run:
+                try:
+                    result = _refresh_backtv_with_state(settings, source="auto")
+                    logger.info(
+                        f"定时刷新回看地址完成：更新 {result.get('updated', 0)} / "
+                        f"{result.get('total', 0)} 个频道，下一次约 "
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(time.time()) + interval_seconds))}"
+                    )
+                except Exception as exc:
+                    logger.warning(f"定时刷新回看地址失败：{redact_sensitive_text(str(exc))}")
+            time.sleep(60)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 @app.post("/api/catchup/refresh")
@@ -1259,29 +1413,39 @@ def api_catchup_refresh():
     settings = settings_store.load()
     # Allow caller to supply credentials directly (so user needn't save first)
     override = request.get_json(silent=True) or {}
-    for key in ("iptv_password", "epg_user_id", "epg_stb_id", "epg_des3_key", "epg_auth_host"):
+    for key in (
+        "iptv_password",
+        "epg_user_id",
+        "epg_stb_id",
+        "epg_des3_key",
+        "epg_auth_host",
+        "epg_auth_profile",
+        "epg_crypto_mode",
+        "epg_des_padding",
+        "epg_stb_type",
+        "epg_stb_version",
+        "epg_user_agent",
+        "epg_access_user_name",
+    ):
         if override.get(key):
             settings[key] = override[key]
-    op_channels = operator_channel_store.load()
-    if not op_channels:
-        return api_error("运营商频道表为空，请先完成 STB 开机捕获并导入频道", 400)
-    auth = stb_discovery_service.status().get("auth_info") or {}
-    if not (auth.get("mac") or auth.get("assigned_ip")):
-        auth = token_store.load_auth_info()
     try:
-        result = refresh_backtv_urls(settings, op_channels, auth, logger)
+        result = _refresh_backtv_with_state(settings, source="manual")
     except (ValueError, RuntimeError) as exc:
         return api_error(str(exc), 400)
     except Exception as exc:
         logger.error(f"EPG 回看地址刷新异常：{exc}")
         return api_error(f"刷新失败：{exc}", 500)
-    # Persist the updated backtv_url values directly (preserving the existing format)
-    operator_channel_store.save_dict(op_channels)
     logger.info(
         f"EPG 回看地址刷新：更新 {result['updated']} / {result['total']} 个频道，"
-        f"EPG={result['epg_host']}"
+        f"EPG={result['epg_host']}，Profile={result.get('profile', 'auto')}"
     )
     return api_success(result)
+
+
+@app.get("/api/catchup/refresh/status")
+def api_catchup_refresh_status():
+    return api_success(_catchup_refresh_status())
 
 
 @app.get("/api/hls/status")
@@ -1299,8 +1463,16 @@ def api_hls_m3u():
         return api_error("尚无频道数据，请先完成运营商频道发现并导入。")
     try:
         op_channels = operator_channel_store.load()
-        catchup_days = int(settings.get("catchup_days") or 7)
-        content = export_service.hls_m3u(channels, base_url, epg_url, op_channels, catchup_days)
+        catchup_enabled = bool(settings.get("catchup_enabled", False))
+        catchup_days = int(settings.get("catchup_days") or 7) if catchup_enabled else 0
+        content = export_service.hls_m3u(
+            channels,
+            base_url,
+            epg_url,
+            op_channels,
+            catchup_enabled=catchup_enabled,
+            catchup_days=catchup_days,
+        )
         resp = Response(
             content,
             mimetype="audio/x-mpegurl",
@@ -1854,6 +2026,7 @@ def boot() -> None:
     capture_service.validate_runtime()
     epg_service.start_auto_refresh(settings_store)
     iptv_auth_service.start_egress_bpf_watchdog()
+    _start_catchup_auto_refresh_loop()
     threading.Thread(target=_startup_epg_refresh, daemon=True).start()
     _start_version_check_loop()
     logger.info(f"数据目录：{DATA_DIR}")

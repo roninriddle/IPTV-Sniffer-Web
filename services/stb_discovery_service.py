@@ -520,6 +520,101 @@ def _detect_timeshift_host(streams: dict[Any, bytes], channels: list[dict[str, A
     return ""
 
 
+def _extract_ctc_portal_auth(streams: dict[Any, bytes], stb_ip: str) -> dict[str, Any]:
+    """Extract CTC portal auth crumbs from STB boot traffic.
+
+    Enshan's Jiangsu Telecom flow obtains a portal UserToken through:
+    CTCGetAuthInfo -> Authenticator -> /uploadAuthInfo.  We do not actively
+    replay that regional flow here; this parser only records values already
+    visible in STB traffic so the Web UI can show whether they were captured.
+    """
+    result: dict[str, Any] = {}
+    if not stb_ip:
+        return result
+
+    def _host_from_request(text: str) -> str:
+        m = re.search(r"(?im)^Host:\s*([^\r\n]+)", text)
+        return m.group(1).strip() if m else ""
+
+    def _header(text: str, name: str) -> str:
+        m = re.search(rf"(?im)^{re.escape(name)}:\s*([^\r\n]+)", text)
+        return m.group(1).strip() if m else ""
+
+    def _remember_server(dst_ip: str, dst_port: int, text: str) -> None:
+        if not result.get("portal_auth_host"):
+            result["portal_auth_host"] = _host_from_request(text) or f"{dst_ip}:{dst_port}"
+        result.setdefault("server_ip", dst_ip)
+        result.setdefault("server_port", dst_port)
+
+    for (src_ip, _src_port, dst_ip, dst_port), raw in streams.items():
+        if src_ip != stb_ip:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        if "/auth?" in text or "/uploadAuthInfo" in text or "/getServiceList" in text or "/iptvepg/" in text:
+            _remember_server(dst_ip, dst_port, text)
+        if not result.get("epg_user_agent"):
+            ua = _header(text, "User-Agent")
+            if ua:
+                result["epg_user_agent"] = ua
+        if not result.get("epg_user_id"):
+            m = re.search(r"(?:/auth[^\r\n]*[?&]UserID=|[?&]UserID=)([^&\s\r\n]+)", text)
+            if m:
+                result["epg_user_id"] = urllib.parse.unquote(m.group(1)).strip()
+        if not result.get("epg_stb_id"):
+            m = re.search(r"[?&]STBID=([^&\s\r\n]+)", text)
+            if m:
+                result["epg_stb_id"] = urllib.parse.unquote(m.group(1)).strip()
+        if not result.get("access_user_name"):
+            m = re.search(r"[?&]AccessUserName=([^&\s\r\n]+)", text)
+            if m:
+                result["access_user_name"] = urllib.parse.unquote(m.group(1)).strip()
+        if not result.get("epg_stb_type"):
+            m = re.search(r"[?&]STBType=([^&\s\r\n]+)", text)
+            if m:
+                result["epg_stb_type"] = urllib.parse.unquote(m.group(1)).strip()
+        if not result.get("epg_stb_version"):
+            m = re.search(r"[?&]STBVersion=([^&\s\r\n]+)", text)
+            if m:
+                result["epg_stb_version"] = urllib.parse.unquote(m.group(1)).strip()
+        if "/uploadAuthInfo" in text:
+            result.setdefault("token_path", "/uploadAuthInfo")
+
+    for (src_ip, src_port, dst_ip, _dst_port), raw in streams.items():
+        if dst_ip != stb_ip:
+            continue
+        headers_bodies = _split_http_responses(raw)
+        chunks = []
+        if headers_bodies:
+            for headers, body in headers_bodies:
+                chunks.append(headers)
+                chunks.append(body.decode("utf-8", errors="replace"))
+        else:
+            chunks.append(raw.decode("utf-8", errors="replace"))
+        for text in chunks:
+            if not result.get("ctc_auth_info"):
+                m = re.search(r"CTCGetAuthInfo\(['\"]([^'\"]+)['\"]\)", text)
+                if m:
+                    result["ctc_auth_info"] = m.group(1).strip()
+                    result.setdefault("server_ip", src_ip)
+                    result.setdefault("server_port", src_port)
+            if not result.get("user_token"):
+                m = re.search(r"(?im)^Set-Cookie:\s*UserToken=([^;\r\n]+)", text)
+                if not m:
+                    m = re.search(r"CTCSetConfig\s*\(\s*['\"]UserToken['\"]\s*,\s*['\"]([^'\"]+)['\"]", text)
+                if m:
+                    result["user_token"] = urllib.parse.unquote(m.group(1)).strip()
+                    result.setdefault("token_path", "/uploadAuthInfo")
+                    result.setdefault("server_ip", src_ip)
+                    result.setdefault("server_port", src_port)
+            if not result.get("x_frame_session_id"):
+                m = re.search(r"(?im)^X-Frame-Sessionid:\s*([^\r\n]+)", text)
+                if m:
+                    result["x_frame_session_id"] = m.group(1).strip()
+                    result.setdefault("server_ip", src_ip)
+                    result.setdefault("server_port", src_port)
+    return result
+
+
 
 
 def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any]]:
@@ -569,8 +664,9 @@ class StbDiscoveryService:
     STATUS_DONE = "done"
     STATUS_ERROR = "error"
 
-    def __init__(self, logger: AppLogger) -> None:
+    def __init__(self, logger: AppLogger, token_store: Any | None = None) -> None:
         self.logger = logger
+        self.token_store = token_store
         self._lock = threading.RLock()
         self._state: dict[str, Any] = {
             "status": self.STATUS_IDLE,
@@ -689,16 +785,45 @@ class StbDiscoveryService:
                 auth_info: dict[str, Any] = {}
                 timeshift_host: str = ""
                 epg_creds: dict[str, str] = {}
+                portal_auth: dict[str, Any] = {}
                 if pcap_path and os.path.exists(pcap_path):
                     streams = _reassemble_tcp_streams(pcap_path)
                     channels = analyze_pcap_for_channels(pcap_path, stb_ip or "")
                     timeshift_host = _detect_timeshift_host(streams, channels)
                     auth_info = _extract_dhcp_from_pcap(pcap_path)
                     epg_creds = _extract_epg_credentials(streams, stb_ip or "")
+                    portal_auth = _extract_ctc_portal_auth(streams, stb_ip or "")
+                    if portal_auth.get("epg_user_id") and not epg_creds.get("epg_user_id"):
+                        epg_creds["epg_user_id"] = str(portal_auth.get("epg_user_id") or "")
+                    if portal_auth.get("epg_stb_id") and not epg_creds.get("epg_stb_id"):
+                        epg_creds["epg_stb_id"] = str(portal_auth.get("epg_stb_id") or "")
+                    if portal_auth.get("portal_auth_host") and not epg_creds.get("epg_auth_host"):
+                        epg_creds["epg_auth_host"] = str(portal_auth.get("portal_auth_host") or "")
+                    for key in ("epg_user_agent", "epg_stb_type", "epg_stb_version", "access_user_name"):
+                        if portal_auth.get(key) and not epg_creds.get(key):
+                            epg_creds[key] = str(portal_auth.get(key) or "")
+                    token = str(portal_auth.get("user_token") or "").strip()
+                    if token and self.token_store:
+                        self.token_store.save_token({
+                            "token": token,
+                            "sip": stb_ip or "",
+                            "sport": None,
+                            "dip": portal_auth.get("server_ip", ""),
+                            "dport": portal_auth.get("server_port"),
+                            "path": portal_auth.get("token_path") or "/uploadAuthInfo",
+                            "captured_at": int(time.time()),
+                        })
                     try:
                         os.unlink(pcap_path)
                     except Exception:
                         pass
+                safe_portal_auth: dict[str, Any] = {}
+                for key in ("portal_auth_host", "server_ip", "server_port", "token_path"):
+                    if portal_auth.get(key):
+                        safe_portal_auth[key] = portal_auth[key]
+                safe_portal_auth["has_ctc_auth_info"] = bool(portal_auth.get("ctc_auth_info"))
+                safe_portal_auth["has_upload_user_token"] = bool(portal_auth.get("user_token"))
+                safe_portal_auth["has_x_frame_session_id"] = bool(portal_auth.get("x_frame_session_id"))
                 with self._lock:
                     self._state["status"] = self.STATUS_DONE
                     self._state["channels"] = channels
@@ -706,11 +831,13 @@ class StbDiscoveryService:
                     self._state["auth_info"] = auth_info
                     self._state["timeshift_host"] = timeshift_host
                     self._state["epg_creds"] = epg_creds
+                    self._state["portal_auth"] = safe_portal_auth
                 has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
                 self.logger.info(
                     f"STB 频道发现完成：共发现 {len(channels)} 个频道，"
                     f"认证信息：{'已提取（MAC=' + auth_info.get('mac','') + '）' if has_auth else '未捕获到 DHCP'}"
                     + (f"，EPG 认证信息：UserID={epg_creds.get('epg_user_id','')} STBID={epg_creds.get('epg_stb_id','')} Host={epg_creds.get('epg_auth_host','')}" if epg_creds else "")
+                    + (f"，CTC门户：CTCGetAuthInfo={'已捕获' if portal_auth.get('ctc_auth_info') else '未捕获'} UserToken={'已捕获' if portal_auth.get('user_token') else '未捕获'}" if portal_auth else "")
                 )
             except Exception as exc:
                 self.logger.error(f"STB 频道发现分析失败：{exc}")

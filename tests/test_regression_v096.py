@@ -15,8 +15,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.stb_discovery_service import _parse_chanlist_html, _reassemble_tcp_streams
+from services.stb_discovery_service import _extract_ctc_portal_auth, _parse_chanlist_html, _reassemble_tcp_streams
 from services.export_service import ExportService
+from services.epg_refresh_service import _pad_des_plaintext
 from services.iptv_auth_service import IptvAuthService
 import services.iptv_auth_service as iptv_auth_module
 from services.log_service import AppLogger
@@ -24,7 +25,7 @@ import app as app_module
 from app import _parse_rtp2httpd_config_text, fill_channel_name_from_metadata
 from services.epg_service import normalize_channel_name
 from services.storage_service import ChannelStore
-from utils import channel_group_key
+from utils import channel_group_key, redact_sensitive_text
 
 
 # ── pcap helpers ─────────────────────────────────────────────────────────
@@ -201,6 +202,49 @@ class TestCUSetConfigParsing:
         assert channels[1]["num"] == 2
 
 
+def test_ctc_portal_auth_fields_are_extracted_from_stb_boot_streams():
+    stb_ip = "192.168.100.13"
+    srv_ip = "10.7.10.10"
+    request = (
+        b"GET /auth?UserID=10001&Action=Login&Mode=MENU HTTP/1.1\r\n"
+        b"User-Agent: test-stb-agent\r\n"
+        b"Host: itv.example:8298\r\n\r\n"
+        b"POST /uploadAuthInfo HTTP/1.1\r\n"
+        b"Host: itv.example:8298\r\n"
+        b"Content-Type: application/x-www-form-urlencoded\r\n\r\n"
+        b"UserID=10001&Authenticator=ABC&AccessMethod=dhcp&AccessUserName=acc001&STBID=STB123"
+        b"&STBType=EC6108V9&STBVersion=V100R005"
+    )
+    response_body = b"Authentication.CTCGetAuthInfo('AUTHINFO123')"
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Length: " + str(len(response_body)).encode() + b"\r\n\r\n" + response_body +
+        b"HTTP/1.1 200 OK\r\n"
+        b"Set-Cookie: UserToken=TOKEN123; Path=/\r\n"
+        b"X-Frame-Sessionid: SESSION123\r\n"
+        b"Content-Length: 0\r\n\r\n"
+    )
+    parsed = _extract_ctc_portal_auth({
+        (stb_ip, 50000, srv_ip, 8298): request,
+        (srv_ip, 8298, stb_ip, 50000): response,
+    }, stb_ip)
+    assert parsed["portal_auth_host"] == "itv.example:8298"
+    assert parsed["epg_user_id"] == "10001"
+    assert parsed["epg_stb_id"] == "STB123"
+    assert parsed["access_user_name"] == "acc001"
+    assert parsed["epg_stb_type"] == "EC6108V9"
+    assert parsed["epg_stb_version"] == "V100R005"
+    assert parsed["epg_user_agent"] == "test-stb-agent"
+    assert parsed["ctc_auth_info"] == "AUTHINFO123"
+    assert parsed["user_token"] == "TOKEN123"
+    assert parsed["x_frame_session_id"] == "SESSION123"
+
+
+def test_des_authenticator_defaults_to_pkcs5_padding():
+    assert _pad_des_plaintext(b"12345678") == b"12345678" + (b"\x08" * 8)
+    assert _pad_des_plaintext(b"12345678", padding="zero") == b"12345678"
+
+
 # ── Export URL tests ──────────────────────────────────────────────────────
 
 class TestExportUrl:
@@ -369,6 +413,67 @@ class TestExportFiles:
         text = (tmp_path / "channels-rtp2httpd-best.m3u").read_text(encoding="utf-8")
         assert "rtp://239.1.1.10:8010" in text
         assert "rtp://239.1.1.9:8009" not in text
+
+    def test_hls_m3u_omits_catchup_when_disabled(self, tmp_path):
+        svc = ExportService(tmp_path)
+        rows = {
+            "239.1.1.1:8001": self._row("CCTV1", "239.1.1.1", 8001),
+        }
+        op_channels = {
+            "239.1.1.1:8001": {
+                "time_shift": True,
+                "time_shift_days": 14400,
+                "backtv_url": "rtsp://10.7.10.1/PLTV/888?accountinfo=secret-token",
+            }
+        }
+        text = svc.hls_m3u(
+            rows,
+            "http://127.0.0.1:8787",
+            operator_channels=op_channels,
+            catchup_enabled=False,
+            catchup_days=7,
+        )
+        assert "catchup-source" not in text
+        assert "catchup-correction" not in text
+        assert "rtsp://10.7.10.1" not in text
+
+    def test_hls_m3u_emits_local_catchup_proxy_when_enabled(self, tmp_path):
+        svc = ExportService(tmp_path)
+        rows = {
+            "239.1.1.1:8001": self._row("CCTV1", "239.1.1.1", 8001),
+        }
+        op_channels = {
+            "239.1.1.1:8001": {
+                "time_shift": True,
+                "time_shift_days": 14400,
+                "backtv_url": "rtsp://10.7.10.1/PLTV/888?accountinfo=secret-token",
+            }
+        }
+        text = svc.hls_m3u(
+            rows,
+            "http://127.0.0.1:8787",
+            operator_channels=op_channels,
+            catchup_enabled=True,
+            catchup_days=7,
+        )
+        assert 'catchup-correction="8"' in text
+        assert 'catchup-days="10"' in text
+        assert "http://127.0.0.1:8787/hls/239.1.1.1_8001/catchup" in text
+        assert "rtsp://10.7.10.1" not in text
+
+
+def test_sensitive_iptv_tokens_are_redacted_before_logging():
+    text = (
+        "ffmpeg failed rtsp://10.7.10.1/PLTV/888?"
+        "accountinfo=very-secret&UserToken=abc123 "
+        "Authenticator=deadbeef UserPassword=pw"
+    )
+    redacted = redact_sensitive_text(text)
+    assert "very-secret" not in redacted
+    assert "abc123" not in redacted
+    assert "deadbeef" not in redacted
+    assert "UserPassword=pw" not in redacted
+    assert "rtsp://<redacted>" in redacted
 
 
 # ── Multicast link diagnostic ─────────────────────────────────────────────

@@ -22,6 +22,26 @@ NOISE_MULTICAST_PORTS = {
     5355,  # LLMNR
 }
 
+SENSITIVE_QUERY_KEYS = {
+    "accountinfo",
+    "authenticator",
+    "jsessionid",
+    "password",
+    "r2h-token",
+    "token",
+    "userpassword",
+    "usertoken",
+}
+_SENSITIVE_QUERY_KEY_PATTERN = "|".join(
+    re.escape(key) for key in sorted(SENSITIVE_QUERY_KEYS, key=len, reverse=True)
+)
+_RTSP_URL_RE = re.compile(r"(?i)rtsp://[^\s\"'<>]+")
+_SENSITIVE_PARAM_RE = re.compile(
+    r"(?i)([?&;\s]|^)"
+    rf"({_SENSITIVE_QUERY_KEY_PATTERN})"
+    r"=([^&;\s\"'<>]+)"
+)
+
 
 def valid_ip_or_host(value: str) -> bool:
     value = value.strip()
@@ -90,6 +110,24 @@ def ip_sort_key(value: str) -> tuple[int, ...]:
 
 def stream_key(host: str, port: int) -> str:
     return f"{host}:{port}"
+
+
+def redact_sensitive_text(value: str, limit: int | None = None) -> str:
+    """Redact IPTV auth tokens before writing user-visible logs.
+
+    回看 RTSP URL 经常把账号、token、Authenticator 等放在查询参数中。
+    先替换完整 RTSP URL，再处理普通 HTTP/文本片段，避免日志截断后泄露 token。
+    """
+    text = str(value or "")
+    text = _RTSP_URL_RE.sub("rtsp://<redacted>", text)
+
+    def _replace(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}=<redacted>"
+
+    text = _SENSITIVE_PARAM_RE.sub(_replace, text)
+    if limit is not None and len(text) > limit:
+        return text[-limit:]
+    return text
 
 
 def classify_channel_name(name: str) -> str:

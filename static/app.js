@@ -61,14 +61,11 @@ function formSettings() {
     auto_epg: true,
     catchup_enabled: $("catchupEnabled")?.checked ?? false,
     catchup_days: Number($("catchupDays")?.value ?? 7),
+    catchup_auto_refresh_enabled: $("catchupAutoRefreshEnabled")?.checked ?? false,
+    catchup_auto_refresh_hours: Number($("catchupAutoRefreshHours")?.value ?? 12),
     timeshift_host: $("timeshiftHost")?.value.trim() || "",
     catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
     catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
-    iptv_password: $("iptvPassword")?.value || "",
-    epg_user_id: $("epgUserId")?.value.trim() || "",
-    epg_stb_id: $("epgStbId")?.value.trim() || "",
-    epg_des3_key: $("epgDes3Key")?.value.trim() || "",
-    epg_auth_host: $("epgAuthHost")?.value.trim() || "",
     fcc_type: $("fccType")?.value || "",
     pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
   };
@@ -255,6 +252,36 @@ function renderEpgBadge(useEpg, epg) {
   }
 }
 
+function renderCatchupAutoRefreshStatus(data) {
+  const box = $("catchupAutoRefreshStatus");
+  if (!box) return;
+  const parts = [];
+  parts.push(data.enabled ? `已开启，每 ${data.interval_hours} 小时刷新` : "未开启自动刷新");
+  if (data.running) parts.push("正在刷新");
+  if (data.last_success_at) parts.push(`上次成功：${formatDateTime(data.last_success_at)}`);
+  else if (data.last_run_at) parts.push(`上次尝试：${formatDateTime(data.last_run_at)}`);
+  if (data.next_run_at) parts.push(`下次刷新：${formatDateTime(data.next_run_at)}`);
+  if (data.token_expires_at) parts.push(`门户 Cookie 过期：${formatDateTime(data.token_expires_at)}`);
+  else if (data.token_expiry_note) parts.push(`有效期：${data.token_expiry_note}`);
+  if (data.last_result) parts.push(`最近更新：${data.last_result.updated ?? 0}/${data.last_result.total ?? 0}，模式：${data.last_result.profile || "auto"}`);
+  if (data.last_error) parts.push(`最近错误：${data.last_error}`);
+  box.textContent = parts.join("；");
+  box.className = "result-box " + (data.last_error ? "warning" : (data.enabled ? "ok" : "muted"));
+}
+
+async function loadCatchupAutoRefreshStatus() {
+  try {
+    const data = await requestJson("/api/catchup/refresh/status");
+    renderCatchupAutoRefreshStatus(data);
+  } catch (err) {
+    const box = $("catchupAutoRefreshStatus");
+    if (box) {
+      box.textContent = "自动刷新状态加载失败：" + err.message;
+      box.className = "result-box warning";
+    }
+  }
+}
+
 async function loadSettings() {
   const data = await requestJson("/api/settings");
   state.settings = data;
@@ -269,6 +296,8 @@ async function loadSettings() {
     if (block) block.style.display = data.catchup_enabled ? "" : "none";
   }
   $("catchupDays").value = data.catchup_days ?? 7;
+  if ($("catchupAutoRefreshEnabled")) $("catchupAutoRefreshEnabled").checked = !!data.catchup_auto_refresh_enabled;
+  if ($("catchupAutoRefreshHours")) $("catchupAutoRefreshHours").value = data.catchup_auto_refresh_hours ?? 12;
   if ($("timeshiftHost")) $("timeshiftHost").value = data.timeshift_host || "";
   const _csmEl = document.querySelector(`input[name="catchupSourceMode"][value="${data.catchup_source_mode || 'aptv'}"]`);
   if (_csmEl) _csmEl.checked = true;
@@ -279,7 +308,15 @@ async function loadSettings() {
   if ($("epgStbId")) $("epgStbId").value = data.epg_stb_id || "";
   if ($("epgDes3Key")) $("epgDes3Key").value = data.epg_des3_key || "";
   if ($("epgAuthHost")) $("epgAuthHost").value = data.epg_auth_host || "";
+  if ($("epgAuthProfile")) $("epgAuthProfile").value = data.epg_auth_profile || "auto";
+  if ($("epgCryptoMode")) $("epgCryptoMode").value = data.epg_crypto_mode || "auto";
+  if ($("epgDesPadding")) $("epgDesPadding").value = data.epg_des_padding || "pkcs5";
+  if ($("epgStbType")) $("epgStbType").value = data.epg_stb_type || "";
+  if ($("epgStbVersion")) $("epgStbVersion").value = data.epg_stb_version || "";
+  if ($("epgUserAgent")) $("epgUserAgent").value = data.epg_user_agent || "";
+  if ($("epgAccessUserName")) $("epgAccessUserName").value = data.epg_access_user_name || "";
   if ($("refreshBacktvBtn")) $("refreshBacktvBtn").style.display = data.catchup_enabled ? "" : "none";
+  loadCatchupAutoRefreshStatus().catch(() => {});
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
   if ($("preExportHealthCheck")) $("preExportHealthCheck").checked = !!data.pre_export_health_check;
 }
@@ -534,6 +571,8 @@ $("saveExportSettingsBtn").addEventListener("click", async () => {
       fcc_type: $("fccType")?.value || "",
       catchup_enabled: $("catchupEnabled")?.checked ?? false,
       catchup_days: Number($("catchupDays")?.value ?? 7),
+      catchup_auto_refresh_enabled: $("catchupAutoRefreshEnabled")?.checked ?? false,
+      catchup_auto_refresh_hours: Number($("catchupAutoRefreshHours")?.value ?? 12),
       timeshift_host: $("timeshiftHost")?.value.trim() || "",
       catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
       catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
@@ -542,8 +581,16 @@ $("saveExportSettingsBtn").addEventListener("click", async () => {
       epg_stb_id: $("epgStbId")?.value.trim() || "",
       epg_des3_key: $("epgDes3Key")?.value.trim() || "",
       epg_auth_host: $("epgAuthHost")?.value.trim() || "",
+      epg_auth_profile: $("epgAuthProfile")?.value || "auto",
+      epg_crypto_mode: $("epgCryptoMode")?.value || "auto",
+      epg_des_padding: $("epgDesPadding")?.value || "pkcs5",
+      epg_stb_type: $("epgStbType")?.value.trim() || "",
+      epg_stb_version: $("epgStbVersion")?.value.trim() || "",
+      epg_user_agent: $("epgUserAgent")?.value.trim() || "",
+      epg_access_user_name: $("epgAccessUserName")?.value.trim() || "",
       pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
     })});
+    await loadCatchupAutoRefreshStatus();
     alert("导出设置已保存");
   } catch (err) { alert(err.message); }
 });
@@ -925,8 +972,29 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
       if (c.epg_user_id && $("epgUserId")) $("epgUserId").value = c.epg_user_id;
       if (c.epg_stb_id && $("epgStbId")) $("epgStbId").value = c.epg_stb_id;
       if (c.epg_auth_host && $("epgAuthHost")) $("epgAuthHost").value = c.epg_auth_host;
-      const fields = [c.epg_user_id && `UserID=${c.epg_user_id}`, c.epg_stb_id && `STBID=${c.epg_stb_id}`, c.epg_auth_host && `EPG=${c.epg_auth_host}`].filter(Boolean);
+      if (c.epg_stb_type && $("epgStbType")) $("epgStbType").value = c.epg_stb_type;
+      if (c.epg_stb_version && $("epgStbVersion")) $("epgStbVersion").value = c.epg_stb_version;
+      if (c.epg_user_agent && $("epgUserAgent")) $("epgUserAgent").value = c.epg_user_agent;
+      if (c.epg_access_user_name && $("epgAccessUserName")) $("epgAccessUserName").value = c.epg_access_user_name;
+      const fields = [
+        c.epg_user_id && `UserID=${c.epg_user_id}`,
+        c.epg_stb_id && `STBID=${c.epg_stb_id}`,
+        c.epg_auth_host && `EPG=${c.epg_auth_host}`,
+        c.epg_stb_type && "STBType",
+        c.epg_stb_version && "STBVersion",
+        c.epg_user_agent && "UserAgent",
+        c.epg_access_user_name && "AccessUserName",
+      ].filter(Boolean);
       msg += `\n已自动提取 EPG 认证信息：${fields.join("，")}`;
+    }
+    if (data.portal_auth_detected) {
+      const p = data.portal_auth_detected;
+      const fields = [
+        p.ctc_auth_info && "CTCGetAuthInfo",
+        p.upload_user_token && "uploadAuthInfo UserToken",
+        p.x_frame_session_id && "X-Frame-SessionID",
+      ].filter(Boolean);
+      if (fields.length) msg += `\n已捕获门户认证字段：${fields.join("，")}`;
     }
     alert(msg);
     state.channelListSection = "list";
@@ -962,6 +1030,7 @@ $("catchupEnabled")?.addEventListener("change", function() {
   const block = $("catchupSettingsBlock");
   if (block) block.style.display = this.checked ? "" : "none";
   if ($("refreshBacktvBtn")) $("refreshBacktvBtn").style.display = this.checked ? "" : "none";
+  loadCatchupAutoRefreshStatus().catch(() => {});
 });
 
 $("refreshBacktvBtn")?.addEventListener("click", async () => {
@@ -976,8 +1045,16 @@ $("refreshBacktvBtn")?.addEventListener("click", async () => {
       epg_stb_id: $("epgStbId")?.value.trim() || "",
       epg_des3_key: $("epgDes3Key")?.value.trim() || "",
       epg_auth_host: $("epgAuthHost")?.value.trim() || "",
+      epg_auth_profile: $("epgAuthProfile")?.value || "auto",
+      epg_crypto_mode: $("epgCryptoMode")?.value || "auto",
+      epg_des_padding: $("epgDesPadding")?.value || "pkcs5",
+      epg_stb_type: $("epgStbType")?.value.trim() || "",
+      epg_stb_version: $("epgStbVersion")?.value.trim() || "",
+      epg_user_agent: $("epgUserAgent")?.value.trim() || "",
+      epg_access_user_name: $("epgAccessUserName")?.value.trim() || "",
     })});
-    alert(`回看地址刷新完成：更新 ${result.updated} / ${result.total} 个频道（EPG：${result.epg_host}）`);
+    alert(`回看地址刷新完成：更新 ${result.updated} / ${result.total} 个频道（EPG：${result.epg_host}，模式：${result.profile || "auto"}）`);
+    await loadCatchupAutoRefreshStatus();
   } catch (err) {
     alert("刷新失败：" + err.message);
   } finally {

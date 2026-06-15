@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1-test"
 APP_DESCRIPTION = "IPTV 运营商频道发现、线路整理与 rtp2httpd 播放列表统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -85,6 +85,8 @@ DEFAULT_SETTINGS = {
     "logo_url": DEFAULT_LOGO_URL,
     "catchup_enabled": False,
     "catchup_days": 7,
+    "catchup_auto_refresh_enabled": False,
+    "catchup_auto_refresh_hours": 12,
     "timeshift_host": "",
     "catchup_source_mode": "aptv",
     "catchup_source_template": "",
@@ -93,6 +95,13 @@ DEFAULT_SETTINGS = {
     "epg_stb_id": "",
     "epg_des3_key": "",
     "epg_auth_host": "",
+    "epg_auth_profile": "auto",
+    "epg_crypto_mode": "auto",
+    "epg_des_padding": "pkcs5",
+    "epg_stb_type": "",
+    "epg_stb_version": "",
+    "epg_user_agent": "",
+    "epg_access_user_name": "",
     "fcc_type": "",
     "pre_export_health_check": False,
 }

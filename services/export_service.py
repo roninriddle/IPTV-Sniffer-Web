@@ -459,6 +459,7 @@ class ExportService:
         base_url: str,
         epg_url: str = "",
         operator_channels: dict | None = None,
+        catchup_enabled: bool = False,
         catchup_days: int = 7,
     ) -> str:
         """Generate in-memory M3U with HLS stream URLs for browser-based players."""
@@ -468,7 +469,8 @@ class ExportService:
         lines: list[str] = []
         safe_epg = epg_url.replace('"', "%22")
         header = f'#EXTM3U x-tvg-url="{safe_epg}"' if epg_url else "#EXTM3U"
-        header += ' catchup-correction="8"'
+        if catchup_enabled and catchup_days > 0:
+            header += ' catchup-correction="8"'
         lines.append(header)
         op_chs = operator_channels or {}
         for ch in best:
@@ -481,7 +483,7 @@ class ExportService:
             catchup_attr = ""
             ch_info = op_chs.get(f"{ch.host}:{ch.port}") or {}
             backtv = str(ch_info.get("backtv_url", "") or "").strip()
-            if backtv:
+            if catchup_enabled and catchup_days > 0 and backtv:
                 raw_shift = ch_info.get("time_shift_days") or 0
                 eff_days = max(1, raw_shift // 1440) if raw_shift else catchup_days
                 catchup_src = (
