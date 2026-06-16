@@ -37,7 +37,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/output:/app/output \
-  roninriddle/iptv-sniffer-web:latest
+  roninriddle/iptv-sniffer-web:1.2.1-test
 ```
 
 打开：
@@ -59,6 +59,13 @@ docker compose up -d --build
 python -m pip install -r requirements-dev.txt
 pytest -q
 ```
+
+## 版本标签策略
+
+- 测试版使用 `x.y.z-test`，例如 `1.2.1-test`；
+- 测试版只推送 GitHub tag 与 Docker Hub 同名 tag，不推送 `latest`；
+- 正式版使用 `x.y.z`，例如 `1.2.1`；
+- 正式版发布时才同时推送 Docker Hub `x.y.z` 与 `latest`。
 
 ## 唯一推荐拓扑：交换机镜像口
 
