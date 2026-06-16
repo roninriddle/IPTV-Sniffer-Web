@@ -339,8 +339,6 @@ def refresh_backtv_urls(
     if profile not in {"auto", "ctc_hwctc", "cu_hwctc"}:
         profile = "auto"
 
-    errors: list[str] = []
-
     # Auto-detect EPG host from backtv_url if not configured
     if not epg_auth_host:
         for ch_info in operator_channels.values():
@@ -364,30 +362,53 @@ def refresh_backtv_urls(
         raise ValueError("未找到机顶盒 IP 地址，请先完成 STB 开机捕获以记录认证信息")
 
     mac_plain = mac.replace(":", "")
+    cu_ready = bool(password)
+    ctc_ready = bool(des3_key and settings.get("epg_user_agent") and settings.get("epg_stb_type") and settings.get("epg_stb_version"))
 
-    if profile in {"auto", "ctc_hwctc"}:
-        ctc_ready = bool(des3_key and settings.get("epg_user_agent") and settings.get("epg_stb_type") and settings.get("epg_stb_version"))
-        if profile == "ctc_hwctc" or ctc_ready:
-            try:
-                return _refresh_ctc_hwctc(
-                    settings,
-                    operator_channels,
-                    epg_auth_host,
-                    user_id,
-                    stb_id,
-                    des3_key,
-                    mac_plain,
-                    stb_ip,
-                    logger,
-                )
-            except Exception as exc:
-                if profile == "ctc_hwctc":
-                    raise
-                logger.warning(f"CTC-HWCTC 回看刷新失败，尝试 CU-HWCTC 回退：{redact_sensitive_text(str(exc))}")
+    # Auto mode tries Unicom (CU-HWCTC) first, then falls back to Telecom (CTC-HWCTC).
+    if profile in {"auto", "cu_hwctc"} and (profile == "cu_hwctc" or cu_ready):
+        try:
+            return _refresh_cu_hwctc(
+                settings, operator_channels, epg_auth_host, user_id, stb_id,
+                des3_key, password, mac_plain, stb_ip, logger,
+            )
+        except Exception as exc:
+            if profile == "cu_hwctc":
+                raise
+            logger.warning(f"CU-HWCTC 回看刷新失败，尝试 CTC-HWCTC 回退：{redact_sensitive_text(str(exc))}")
 
+    if profile in {"auto", "ctc_hwctc"} and (profile == "ctc_hwctc" or ctc_ready):
+        try:
+            return _refresh_ctc_hwctc(
+                settings, operator_channels, epg_auth_host, user_id, stb_id,
+                des3_key, mac_plain, stb_ip, logger,
+            )
+        except Exception as exc:
+            if profile == "ctc_hwctc":
+                raise
+            logger.warning(f"CTC-HWCTC 回看刷新失败：{redact_sensitive_text(str(exc))}")
+
+    if not cu_ready and not ctc_ready:
+        raise ValueError("CU-HWCTC 回看刷新需要 IPTV 密码；若使用电信 CTC-HWCTC，请填写 key、UserAgent、STBType、STBVersion")
+    raise RuntimeError("CU-HWCTC 与 CTC-HWCTC 认证均失败，请检查认证参数或查看日志详情")
+
+
+def _refresh_cu_hwctc(
+    settings: dict[str, Any],
+    operator_channels: dict[str, dict[str, Any]],
+    epg_auth_host: str,
+    user_id: str,
+    stb_id: str,
+    des3_key: str,
+    password: str,
+    mac_plain: str,
+    stb_ip: str,
+    logger: AppLogger,
+) -> dict[str, Any]:
     if not password:
         raise ValueError("CU-HWCTC 回看刷新需要 IPTV 密码；若使用电信 CTC-HWCTC，请填写 key、UserAgent、STBType、STBVersion")
 
+    errors: list[str] = []
     base_url = f"http://{epg_auth_host}"
     opener, jar = _build_opener_with_cookies()
     des_padding = str(settings.get("epg_des_padding") or "pkcs5").strip().lower()

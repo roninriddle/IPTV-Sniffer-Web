@@ -896,6 +896,7 @@ def api_operator_channels_clear():
 
 
 _BACKUP_VERSION = 1
+_CLEAR_ALL_CONFIRM_TEXT = "确认清除"
 _BACKUP_FILES: list[tuple[str, Path]] = [
     ("settings", SETTINGS_FILE),
     ("channels", CHANNELS_FILE),
@@ -949,6 +950,26 @@ def api_backup_import():
         operator_channel_store.invalidate()
     logger.info(f"备份导入完成：已恢复 {len(restored)} 项，跳过 {len(skipped)} 项")
     return api_success({"restored": restored, "skipped": skipped})
+
+
+@app.post("/api/backup/clear-all")
+def api_backup_clear_all():
+    """Delete all locally persisted config/data files, resetting the app to a fresh state."""
+    data = request.get_json(silent=True) or {}
+    confirm = str(data.get("confirm", "")).strip()
+    if confirm != _CLEAR_ALL_CONFIRM_TEXT:
+        return api_error(f"请输入确认文本：{_CLEAR_ALL_CONFIRM_TEXT}", 400)
+    cleared: list[str] = []
+    for key, path in _BACKUP_FILES:
+        try:
+            if path.exists():
+                path.unlink()
+            cleared.append(key)
+        except Exception as exc:
+            logger.warning(f"清除配置失败：{key}: {exc}")
+    operator_channel_store.invalidate()
+    logger.info(f"本地配置已清除：{', '.join(cleared) or '无'}")
+    return api_success({"cleared": cleared, "confirm_text": _CLEAR_ALL_CONFIRM_TEXT})
 
 
 @app.get("/api/channels/snapshots")

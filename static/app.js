@@ -562,38 +562,67 @@ document.querySelectorAll("[data-cl-section]").forEach((item) => {
 $("useEpg").addEventListener("change", () => { $("epgSourceRow").hidden = !$("useEpg").checked; });
 $("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("useLogo").checked; });
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
-$("saveExportSettingsBtn").addEventListener("click", async () => {
+function collectExportSettings() {
+  return {
+    http_host: $("httpHost").value.trim(),
+    http_port: Number($("httpPort").value || 5140),
+    path_mode: $("pathMode").value,
+    fcc_type: $("fccType")?.value || "",
+    catchup_enabled: $("catchupEnabled")?.checked ?? false,
+    catchup_days: Number($("catchupDays")?.value ?? 7),
+    catchup_auto_refresh_enabled: $("catchupAutoRefreshEnabled")?.checked ?? false,
+    catchup_auto_refresh_hours: Number($("catchupAutoRefreshHours")?.value ?? 12),
+    timeshift_host: $("timeshiftHost")?.value.trim() || "",
+    catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
+    catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
+    iptv_password: $("iptvPassword")?.value || "",
+    epg_user_id: $("epgUserId")?.value.trim() || "",
+    epg_stb_id: $("epgStbId")?.value.trim() || "",
+    epg_des3_key: $("epgDes3Key")?.value.trim() || "",
+    epg_auth_host: $("epgAuthHost")?.value.trim() || "",
+    epg_auth_profile: $("epgAuthProfile")?.value || "auto",
+    epg_crypto_mode: $("epgCryptoMode")?.value || "auto",
+    epg_des_padding: $("epgDesPadding")?.value || "pkcs5",
+    epg_stb_type: $("epgStbType")?.value.trim() || "",
+    epg_stb_version: $("epgStbVersion")?.value.trim() || "",
+    epg_user_agent: $("epgUserAgent")?.value.trim() || "",
+    epg_access_user_name: $("epgAccessUserName")?.value.trim() || "",
+    pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
+  };
+}
+
+let exportSettingsSaveTimer = null;
+async function autoSaveExportSettings() {
+  const status = $("exportSettingsSaveStatus");
   try {
-    await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
-      http_host: $("httpHost").value.trim(),
-      http_port: Number($("httpPort").value || 5140),
-      path_mode: $("pathMode").value,
-      fcc_type: $("fccType")?.value || "",
-      catchup_enabled: $("catchupEnabled")?.checked ?? false,
-      catchup_days: Number($("catchupDays")?.value ?? 7),
-      catchup_auto_refresh_enabled: $("catchupAutoRefreshEnabled")?.checked ?? false,
-      catchup_auto_refresh_hours: Number($("catchupAutoRefreshHours")?.value ?? 12),
-      timeshift_host: $("timeshiftHost")?.value.trim() || "",
-      catchup_source_mode: document.querySelector('input[name="catchupSourceMode"]:checked')?.value || "aptv",
-      catchup_source_template: $("catchupSourceTemplate")?.value.trim() || "",
-      iptv_password: $("iptvPassword")?.value || "",
-      epg_user_id: $("epgUserId")?.value.trim() || "",
-      epg_stb_id: $("epgStbId")?.value.trim() || "",
-      epg_des3_key: $("epgDes3Key")?.value.trim() || "",
-      epg_auth_host: $("epgAuthHost")?.value.trim() || "",
-      epg_auth_profile: $("epgAuthProfile")?.value || "auto",
-      epg_crypto_mode: $("epgCryptoMode")?.value || "auto",
-      epg_des_padding: $("epgDesPadding")?.value || "pkcs5",
-      epg_stb_type: $("epgStbType")?.value.trim() || "",
-      epg_stb_version: $("epgStbVersion")?.value.trim() || "",
-      epg_user_agent: $("epgUserAgent")?.value.trim() || "",
-      epg_access_user_name: $("epgAccessUserName")?.value.trim() || "",
-      pre_export_health_check: $("preExportHealthCheck")?.checked ?? false,
-    })});
+    await requestJson("/api/settings", {method: "POST", body: JSON.stringify(collectExportSettings())});
     await loadCatchupAutoRefreshStatus();
-    alert("导出设置已保存");
-  } catch (err) { alert(err.message); }
-});
+    if (status) {
+      status.textContent = "已自动保存";
+      status.className = "muted small";
+      clearTimeout(status._clearTimer);
+      status._clearTimer = setTimeout(() => { status.textContent = ""; }, 2000);
+    }
+  } catch (err) {
+    if (status) { status.textContent = `自动保存失败：${err.message}`; status.className = "danger-text small"; }
+  }
+}
+function scheduleExportSettingsSave() {
+  clearTimeout(exportSettingsSaveTimer);
+  exportSettingsSaveTimer = setTimeout(autoSaveExportSettings, 600);
+}
+const EXPORT_SETTINGS_TEXT_INPUT_IDS = [
+  "httpHost", "httpPort", "catchupDays", "timeshiftHost", "catchupSourceTemplate",
+  "iptvPassword", "epgUserId", "epgStbId", "epgDes3Key", "epgAuthHost",
+  "epgStbType", "epgStbVersion", "epgUserAgent", "epgAccessUserName", "catchupAutoRefreshHours",
+];
+const EXPORT_SETTINGS_IMMEDIATE_IDS = [
+  "pathMode", "fccType", "catchupEnabled", "catchupAutoRefreshEnabled",
+  "epgAuthProfile", "epgCryptoMode", "epgDesPadding", "preExportHealthCheck",
+];
+EXPORT_SETTINGS_TEXT_INPUT_IDS.forEach((id) => $(id)?.addEventListener("input", scheduleExportSettingsSave));
+EXPORT_SETTINGS_IMMEDIATE_IDS.forEach((id) => $(id)?.addEventListener("change", autoSaveExportSettings));
+document.querySelectorAll('input[name="catchupSourceMode"]').forEach((el) => el.addEventListener("change", autoSaveExportSettings));
 $("saveEpgSettingsBtn").addEventListener("click", async () => {
   try {
     await requestJson("/api/settings", {method: "POST", body: JSON.stringify({
@@ -728,7 +757,7 @@ $("backupExportBtn").addEventListener("click", async () => {
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const ts = new Date().toISOString().slice(0, 10);
+    const ts = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
     a.href = url; a.download = `iptv-sniffer-backup-${ts}.json`;
     document.body.appendChild(a); a.click();
     document.body.removeChild(a); URL.revokeObjectURL(url);
@@ -766,6 +795,26 @@ $("backupImportFile").addEventListener("change", async function () {
     box.className = "result-box error";
     box.textContent = `导入失败：${err.message}`;
   } finally { btn.disabled = false; btn.textContent = "导入本地配置"; }
+});
+$("backupClearAllBtn")?.addEventListener("click", async () => {
+  const CLEAR_ALL_CONFIRM_TEXT = "确认清除";
+  if (!confirm("将清除全部本地配置：设置、频道列表、运营商频道表、发现的频道、FCC 记录、回看 Token、IPTV 认证备份、频道快照。此操作不可恢复，建议先点「导出到本地」备份。是否继续？")) return;
+  const typed = prompt(`请输入「${CLEAR_ALL_CONFIRM_TEXT}」以确认清除：`);
+  if (typed !== CLEAR_ALL_CONFIRM_TEXT) { alert("确认文本不匹配，已取消。"); return; }
+  const btn = $("backupClearAllBtn");
+  btn.disabled = true; btn.textContent = "清除中…";
+  const box = $("backupStatus");
+  box.hidden = false; box.className = "result-box warning";
+  box.textContent = "正在清除本地配置…";
+  try {
+    const result = await requestJson("/api/backup/clear-all", {method: "POST", body: JSON.stringify({confirm: typed})});
+    box.className = "result-box ok";
+    box.textContent = `已清除：${result.cleared.join("、") || "无"}。页面将在 2 秒后刷新。`;
+    setTimeout(() => location.reload(), 2000);
+  } catch (err) {
+    box.className = "result-box error";
+    box.textContent = `清除失败：${err.message}`;
+  } finally { btn.disabled = false; btn.textContent = "清除所有配置"; }
 });
 $("reimportOperatorBtn").addEventListener("click", async () => {
   const btn = $("reimportOperatorBtn");
@@ -866,8 +915,8 @@ function renderStbDiscoveryStatus(state) {
     const liveParts = [];
     if (liveCount > 0) liveParts.push(`已发现 ${liveCount} 个频道`);
     if (state.live_has_auth) liveParts.push("已捕获认证信息");
-    const liveHint = liveParts.length ? `，${liveParts.join("、")}` : "";
-    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒）…请立即重启机顶盒。${liveHint ? liveHint.slice(1) + "。" : ""}`;
+    const liveHint = liveParts.length ? `\n${liveParts.join("\n")}。` : "";
+    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒）…请立即重启机顶盒。\n一般约 30 秒可捕获到认证信息，约 60 秒可捕获到频道信息。${liveHint}`;
     box.className = "result-box ok";
   } else if (isAnalyzing) {
     box.textContent = "正在分析 pcap 数据，提取频道信息…";

@@ -158,6 +158,7 @@
               <button id="backupExportBtn" class="secondary" type="button">导出到本地</button>
               <button id="backupImportBtn" class="secondary" type="button">导入本地配置</button>
               <input id="backupImportFile" type="file" accept=".json" class="hidden-control">
+              <button id="backupClearAllBtn" class="danger" type="button">清除所有配置</button>
             </div>
             <div id="backupStatus" class="result-box muted" hidden></div>
           </section>
@@ -394,6 +395,7 @@
             </div>
             <div class="section-subtitle">
               <h3>回看 / 时移</h3>
+              <span class="chip warning">暂不可用</span>
               <span class="muted small">直播源与回看源分开处理：直播走 rtp2httpd/HLS，回看走运营商 RTSP backtv_url</span>
             </div>
             <div class="form-grid" style="margin-bottom:4px">
@@ -457,7 +459,7 @@
                 <label>
                   认证模式
                   <select id="epgAuthProfile">
-                    <option value="auto">自动：优先 CTC-HWCTC，失败回退 CU-HWCTC</option>
+                    <option value="auto">自动：优先 CU-HWCTC，失败回退 CTC-HWCTC</option>
                     <option value="ctc_hwctc">电信 CTC-HWCTC（supzhang/get_iptv_channels）</option>
                     <option value="cu_hwctc">联通 / 通用 CU-HWCTC</option>
                   </select>
@@ -517,8 +519,8 @@
               </div>
             </div><!-- /catchupSettingsBlock -->
             <div class="button-row" style="margin-bottom: 8px">
-              <button id="saveExportSettingsBtn" class="secondary" type="button">保存导出设置</button>
               <button id="refreshBacktvBtn" class="secondary" type="button" style="display:none">刷新回看地址</button>
+              <span id="exportSettingsSaveStatus" class="muted small"></span>
             </div>
             <div class="section-subtitle"><h3>最佳线路（每频道组只导出主源）</h3></div>
             <div class="form-grid compact-grid" style="margin-bottom: 8px">
