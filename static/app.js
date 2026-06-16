@@ -1,5 +1,11 @@
 const $ = (id) => document.getElementById(id);
 
+function formatTimestampUtc8(date) {
+  const utc8 = new Date(date.getTime() + 8 * 3600 * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${utc8.getUTCFullYear()}-${pad(utc8.getUTCMonth() + 1)}-${pad(utc8.getUTCDate())}_${pad(utc8.getUTCHours())}-${pad(utc8.getUTCMinutes())}-${pad(utc8.getUTCSeconds())}`;
+}
+
 const _IGNORED_KEYS_STORAGE = "iptv_ignored_keys";
 function _loadIgnoredKeys() {
   try { return new Set(JSON.parse(localStorage.getItem(_IGNORED_KEYS_STORAGE) || "[]")); } catch { return new Set(); }
@@ -757,7 +763,7 @@ $("backupExportBtn").addEventListener("click", async () => {
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const ts = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+    const ts = formatTimestampUtc8(new Date());
     a.href = url; a.download = `iptv-sniffer-backup-${ts}.json`;
     document.body.appendChild(a); a.click();
     document.body.removeChild(a); URL.revokeObjectURL(url);
@@ -1167,7 +1173,7 @@ function _renderIptvAuthStatus(d) {
     `当前 IPv4：<span class="mono">${escapeHtml(ipv4)}</span>`,
     `工具：ip=${tools.ip ? "可用" : "缺失"}，udhcpc=${tools.udhcpc ? "可用" : "缺失"}`,
     `权限：root=${caps.root ? "是" : "否"}，NET_ADMIN=${caps.net_admin_hint ? "可用" : "不可用"}，NET_RAW=${caps.net_raw_hint ? "可用" : "不可用"}`,
-    `备份：${backup.has_initial ? `已有初始备份，历史 ${backup.history_count || 0} 次` : "尚未创建"}`,
+    `备份：${backup.has_initial ? "已有初始备份" : "尚未创建"}`,
   ];
   status.innerHTML = lines.map(line => `<div>${line}</div>`).join("");
   status.className = "result-box " + (d.has_iptv_ip ? "ok" : ok ? "warning" : "muted");
