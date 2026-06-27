@@ -623,22 +623,71 @@ def _iter_channel_dicts(data: Any):
                 yield from _iter_channel_dicts(item)
 
 
+def _extract_channel_objects_from_partial_json(text: str) -> list[dict[str, Any]]:
+    """Extract individual channel JSON objects from truncated or malformed JSON.
+
+    Used when the HTTP response headers and the opening of the JSON array are
+    missing (e.g. the first N TCP segments were not captured).  Uses brace
+    counting so each top-level ``{\u2026}`` object is extracted and parsed
+    independently; objects that look like channel entries are returned.
+    """
+    result: list[dict[str, Any]] = []
+    depth = 0
+    start = -1
+    for i, c in enumerate(text):
+        if c == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif c == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    obj_text = text[start : i + 1]
+                    try:
+                        obj = json.loads(obj_text)
+                    except Exception:
+                        start = -1
+                        continue
+                    if isinstance(obj, dict) and any(
+                        k.lower() in {
+                            "channelurl", "channelname", "channelid", "userchannelid"
+                        }
+                        for k in obj
+                    ):
+                        result.append(obj)
+                    start = -1
+    return result
+
+
 def _parse_channel_acquire_json(body: bytes) -> list[dict[str, Any]]:
     """Parse Beijing Unicom /bj_stb/V1/STB/channelAcquire channel list JSON."""
     text = _decode_payload_text(body).lstrip("\ufeff").strip()
+    # Strip HTTP chunked transfer-encoding size lines embedded in body fragments
+    # (e.g. "\r\n2000\r\n" appearing mid-string when first TCP segments are missing).
+    text = re.sub(r"\r\n[0-9a-fA-F]{1,8}\r\n", "", text)
     if not text or "channel" not in text.lower():
         return []
+
+    data: Any = None
     try:
         data = json.loads(text)
     except Exception:
         start = text.find("{")
         end = text.rfind("}")
-        if start < 0 or end <= start:
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(text[start : end + 1])
+            except Exception:
+                pass
+
+    if data is None:
+        # Last resort: brace-counted per-object extraction for partially captured
+        # responses where the JSON array opening is in the missing TCP segments.
+        channel_list = _extract_channel_objects_from_partial_json(text)
+        if not channel_list:
             return []
-        try:
-            data = json.loads(text[start : end + 1])
-        except Exception:
-            return []
+        data = channel_list  # treat as a flat list of channel dicts
 
     channels: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -924,6 +973,18 @@ def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any
                     if k not in seen_keys:
                         seen_keys.add(k)
                         all_channels.append(ch)
+
+        # Fallback: no complete HTTP responses found in this stream, but the raw
+        # bytes contain channel URL data.  This happens when the first TCP
+        # segments of the response (carrying HTTP headers + JSON array opening)
+        # were not captured, leaving only the body fragment starting mid-array.
+        if not responses and b"channelURL" in raw and b"channelName" in raw:
+            parsed = _parse_channel_acquire_json(raw)
+            for ch in parsed:
+                k = f"{ch['ip']}:{ch['port']}"
+                if k not in seen_keys:
+                    seen_keys.add(k)
+                    all_channels.append(ch)
 
     all_channels.sort(key=lambda x: x["num"])
     return all_channels
