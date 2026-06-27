@@ -71,14 +71,25 @@ def _run(cmd: Sequence[str], timeout: int = 12, check: bool = False) -> dict[str
 
 
 def _normalize_hex(value: str) -> str:
-    text = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
-    if not text:
+    raw = str(value or "").strip()
+    if not raw:
         return ""
+    hex_only = re.sub(r"[^0-9a-fA-F]", "", raw)
+    if len(hex_only) == len(raw):
+        # Pure hex string (possibly with no separators)
+        text = hex_only.lower()
+    else:
+        # Contains non-hex characters → treat entire input as ASCII text to be hex-encoded
+        # e.g. "dhcpcd-5.5.6" → "6468637063642d352e352e36"
+        try:
+            text = raw.encode("ascii").hex()
+        except UnicodeEncodeError:
+            text = raw.encode("utf-8").hex()
     if len(text) % 2:
         raise ValueError("Option60 十六进制长度必须是偶数")
     if len(text) > 1024:
         raise ValueError("Option60 过长，疑似粘贴内容不正确")
-    return text.lower()
+    return text
 
 
 def _colon_hex(value: str) -> str:

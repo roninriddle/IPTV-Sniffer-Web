@@ -225,7 +225,7 @@ def _extract_dhcp_from_pcap(pcap_path: str) -> dict[str, Any]:
         "netmask": _ip(opts_resp, 1),
         "dns": _ips(opts_resp, 6),
         "dhcp_server": _ip(opts_resp, 54),
-        "vendor_class": _str(opts_req, 60),
+        "vendor_class": opts_req[60].hex() if 60 in opts_req else "",
         "hostname": _str(opts_req, 12),
         "client_id": client_id,
         "vendor_specific_125": _parse_opt125(opts_req[125]) if 125 in opts_req else "",
