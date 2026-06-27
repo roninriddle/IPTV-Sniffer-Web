@@ -394,6 +394,10 @@ def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
         fcc_ip = pairs.get("ChannelFCCIP", "").strip()
         fcc_port_s = pairs.get("ChannelFCCPort", "")
         fec_port_s = pairs.get("ChannelFECPort", "")
+        group_name = (
+            pairs.get("GroupName") or pairs.get("ChannelGroupName") or pairs.get("ChannelGroup") or
+            pairs.get("CategoryName") or pairs.get("Category") or pairs.get("ChannelTypeName") or ""
+        ).strip()
         backtv_url = (
             pairs.get("TimeShiftURL") or pairs.get("BacktimeURL") or
             pairs.get("BackUrl") or pairs.get("TimeshiftUrl") or
@@ -407,6 +411,8 @@ def _parse_chanlist_html(html: bytes) -> list[dict[str, Any]]:
             {
                 "num": int(user_chan_id) if user_chan_id.isdigit() else 0,
                 "name": chan_name,
+                "category": _channel_category_from_group(group_name, chan_name),
+                "operator_group": _clean_group_name(group_name),
                 "ip": ip,
                 "port": port,
                 "channel_id": chan_id,
@@ -436,6 +442,7 @@ def _parse_vsp_json(body: bytes) -> list[dict[str, Any]]:
         name = str(ch.get("name", "")).strip()
         chan_no = ch.get("channelNO", "")
         chan_id = str(ch.get("ID", "")).strip()
+        group_name = str(ch.get("groupName") or ch.get("subjectName") or ch.get("categoryName") or "").strip()
         if not name:
             continue
         # Extract multicast URL from physicalChannels
@@ -451,6 +458,8 @@ def _parse_vsp_json(body: bytes) -> list[dict[str, Any]]:
                         {
                             "num": int(chan_no) if str(chan_no).isdigit() else 0,
                             "name": name,
+                            "category": _channel_category_from_group(group_name, name),
+                            "operator_group": _clean_group_name(group_name),
                             "ip": m.group(1),
                             "port": int(m.group(2)),
                             "channel_id": chan_id,
@@ -461,6 +470,231 @@ def _parse_vsp_json(body: bytes) -> list[dict[str, Any]]:
                             "fec_port": None,
                         }
                     )
+    return channels
+
+
+def _decode_payload_text(body: bytes) -> str:
+    """Decode STB HTTP payloads that may be UTF-8 or GB18030."""
+    for encoding in ("utf-8", "gb18030"):
+        try:
+            return body.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return body.decode("utf-8", errors="replace")
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if 0 <= number <= 65535 else None
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "2", "true", "yes", "y", "on", "enable", "enabled"}
+
+
+def _first_text(obj: dict[str, Any], *keys: str) -> str:
+    lowered = {str(k).lower(): v for k, v in obj.items()}
+    for key in keys:
+        val = lowered.get(key.lower())
+        if val not in (None, ""):
+            return str(val).strip()
+    return ""
+
+
+def _first_int(obj: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _first_text(obj, key)
+        number = _safe_int(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _clean_group_name(value: str) -> str:
+    group = re.sub(r"[\x00-\x1f\x7f]+", "", str(value or "")).strip()
+    group = re.sub(r"\s+", " ", group).strip(" ,;，；/\\")
+    return group[:40]
+
+
+def _channel_category_from_group(group: str, name: str) -> str:
+    raw = _clean_group_name(group)
+    if raw:
+        upper = raw.upper()
+        if "CCTV" in upper or "央视" in raw or "中央" in raw:
+            return "央视频道"
+        if "卫视" in raw:
+            return "卫视频道"
+        if raw in {"央视频道", "卫视频道", "其它频道"}:
+            return raw
+        return raw
+    return "其它频道" if not name else _fallback_classify_channel_name(name)
+
+
+def _fallback_classify_channel_name(name: str) -> str:
+    normalized = str(name or "").strip().upper()
+    if not normalized:
+        return "其它频道"
+    if "CCTV" in normalized or "央视" in name or "中央" in name:
+        return "央视频道"
+    if "卫视" in name:
+        return "卫视频道"
+    return "其它频道"
+
+
+def _parse_multicast_url(url: str) -> tuple[str, int]:
+    match = re.search(r"(?:igmp|udp|rtp)://([0-9.]+):(\d+)", str(url or ""), re.IGNORECASE)
+    return (match.group(1), int(match.group(2))) if match else ("", 0)
+
+
+def _parse_stream_params(ch: dict[str, Any]) -> tuple[str, int | None, int | None]:
+    """Extract FCC/FEC params from direct fields, query strings, or SDP snippets."""
+    fcc_ip = _first_text(ch, "channelFCCIP", "ChannelFCCIP", "fccIP", "fcc_ip")
+    fcc_port = _first_int(ch, "channelFCCPort", "ChannelFCCPort", "fccPort", "fcc_port")
+    fec_port = _first_int(ch, "channelFECPort", "ChannelFECPort", "fecPort", "fec_port")
+    raw_parts = [
+        _first_text(ch, "channelURL", "ChannelURL", "url", "mediaURL", "broadcastURL"),
+        _first_text(ch, "channelSDP", "ChannelSDP", "sdp"),
+    ]
+    for raw in raw_parts:
+        if not raw:
+            continue
+        parsed = urllib.parse.urlparse(raw)
+        query = urllib.parse.parse_qs(parsed.query)
+        if not fcc_ip:
+            fcc_val = (query.get("fcc") or [""])[0]
+            if ":" in fcc_val:
+                fcc_ip = fcc_val.split(":", 1)[0].strip()
+                if fcc_port is None:
+                    fcc_port = _safe_int(fcc_val.split(":", 1)[1])
+            else:
+                fcc_ip = (query.get("ChannelFCCIP") or query.get("fcc_ip") or [""])[0].strip()
+        if fcc_port is None:
+            fcc_port = _safe_int((query.get("ChannelFCCPort") or query.get("fcc_port") or [""])[0])
+        if fec_port is None:
+            fec_port = _safe_int((query.get("fec") or query.get("ChannelFECPort") or query.get("fec_port") or [""])[0])
+        if not fcc_ip:
+            m = re.search(r"(?:ChannelFCCIP|fcc[_-]?ip)\s*[=:]\s*([0-9.]+)", raw, re.IGNORECASE)
+            if m:
+                fcc_ip = m.group(1)
+        if fcc_port is None:
+            m = re.search(r"(?:ChannelFCCPort|fcc[_-]?port)\s*[=:]\s*(\d{1,5})", raw, re.IGNORECASE)
+            if m:
+                fcc_port = _safe_int(m.group(1))
+        if fec_port is None:
+            m = re.search(r"(?:ChannelFECPort|fec[_-]?port)\s*[=:]\s*(\d{1,5})", raw, re.IGNORECASE)
+            if m:
+                fec_port = _safe_int(m.group(1))
+    return fcc_ip, fcc_port, fec_port
+
+
+def _iter_channel_dicts(data: Any):
+    """Yield likely channel entries from regional JSON payloads."""
+    if isinstance(data, dict):
+        for key in (
+            "channleInfoStruct",  # Beijing Unicom / Hisense IP811N typo
+            "channelInfoStruct",
+            "channelDetails",
+            "channelList",
+            "channels",
+            "ChannelList",
+        ):
+            value = data.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        yield item
+        for value in data.values():
+            if isinstance(value, (dict, list)):
+                yield from _iter_channel_dicts(value)
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                if any(k.lower() in {"channelurl", "channelname", "channelid", "userchannelid"} for k in item):
+                    yield item
+                else:
+                    yield from _iter_channel_dicts(item)
+            elif isinstance(item, list):
+                yield from _iter_channel_dicts(item)
+
+
+def _parse_channel_acquire_json(body: bytes) -> list[dict[str, Any]]:
+    """Parse Beijing Unicom /bj_stb/V1/STB/channelAcquire channel list JSON."""
+    text = _decode_payload_text(body).lstrip("\ufeff").strip()
+    if not text or "channel" not in text.lower():
+        return []
+    try:
+        data = json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(text[start : end + 1])
+        except Exception:
+            return []
+
+    channels: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ch in _iter_channel_dicts(data):
+        name = _first_text(ch, "channelName", "ChannelName", "name", "Name")
+        channel_url = _first_text(ch, "channelURL", "ChannelURL", "url", "mediaURL", "broadcastURL")
+        ip, port = _parse_multicast_url(channel_url)
+        if not ip or not port:
+            ip, port = _parse_multicast_url(_first_text(ch, "channelSDP", "ChannelSDP", "sdp"))
+        if not ip or not port or not name:
+            continue
+        key = f"{ip}:{port}"
+        if key in seen:
+            continue
+        seen.add(key)
+        user_chan_id = _first_text(ch, "userChannelID", "UserChannelID", "channelNO", "channelNum", "num")
+        channel_id = _first_text(ch, "channelID", "ChannelID", "id", "ID")
+        time_shift_days = _first_int(ch, "timeShiftLength", "TimeShiftLength", "timeShiftDuration")
+        fcc_ip, fcc_port, fec_port = _parse_stream_params(ch)
+        group_name = _first_text(
+            ch,
+            "groupName",
+            "GroupName",
+            "channelGroup",
+            "ChannelGroup",
+            "channelGroupName",
+            "ChannelGroupName",
+            "category",
+            "Category",
+            "categoryName",
+            "CategoryName",
+            "channelTypeName",
+            "ChannelTypeName",
+            "subjectName",
+            "SubjectName",
+            "genre",
+            "Genre",
+        )
+        channels.append({
+            "num": int(user_chan_id) if user_chan_id.isdigit() else 0,
+            "name": name,
+            "category": _channel_category_from_group(group_name, name),
+            "operator_group": _clean_group_name(group_name),
+            "ip": ip,
+            "port": port,
+            "channel_id": channel_id,
+            "user_channel_id": user_chan_id,
+            "is_hd": _truthy(_first_text(ch, "isHDChannel", "IsHDChannel", "isHD", "hd")),
+            "time_shift": _truthy(_first_text(ch, "timeShift", "TimeShift", "timeshift")),
+            "time_shift_days": time_shift_days,
+            "fcc_ip": fcc_ip,
+            "fcc_port": fcc_port,
+            "fec_port": fec_port,
+            "backtv_url": _first_text(ch, "timeShiftURL", "TimeShiftURL", "backtvURL", "BacktimeURL", "BackUrl"),
+        })
+    channels.sort(key=lambda x: (x["num"] or 9999, x["name"], x["ip"], x["port"]))
     return channels
 
 
@@ -549,15 +783,30 @@ def _extract_ctc_portal_auth(streams: dict[Any, bytes], stb_ip: str) -> dict[str
     for (src_ip, _src_port, dst_ip, dst_port), raw in streams.items():
         if src_ip != stb_ip:
             continue
-        text = raw.decode("utf-8", errors="replace")
+        text = _decode_payload_text(raw)
         if "/auth?" in text or "/uploadAuthInfo" in text or "/getServiceList" in text or "/iptvepg/" in text:
             _remember_server(dst_ip, dst_port, text)
+        if "/bj_stb/V1/STB/channelAcquire" in text or "channelAcquire" in text:
+            _remember_server(dst_ip, dst_port, text)
+            if not result.get("token_path"):
+                m = re.search(r"(?im)^(?:POST|GET)\s+([^\s]+channelAcquire[^\s]*)", text)
+                result["token_path"] = m.group(1).strip() if m else "/bj_stb/V1/STB/channelAcquire"
+            if not result.get("user_token"):
+                m = re.search(r'"UserToken"\s*:\s*"([^"]+)"', text)
+                if m:
+                    result["user_token"] = m.group(1).strip()
         if not result.get("epg_user_agent"):
             ua = _header(text, "User-Agent")
             if ua:
                 result["epg_user_agent"] = ua
+                if not result.get("epg_stb_type"):
+                    stb_model = re.search(r"\b(?:IP811N|[A-Z]{2,}\d{3,}[A-Z0-9]*)\b", ua)
+                    if stb_model:
+                        result["epg_stb_type"] = stb_model.group(0)
         if not result.get("epg_user_id"):
             m = re.search(r"(?:/auth[^\r\n]*[?&]UserID=|[?&]UserID=)([^&\s\r\n]+)", text)
+            if not m:
+                m = re.search(r'"(?:UserID|userID|userId)"\s*:\s*"([^"]+)"', text)
             if m:
                 result["epg_user_id"] = urllib.parse.unquote(m.group(1)).strip()
         if not result.get("epg_stb_id"):
@@ -589,7 +838,7 @@ def _extract_ctc_portal_auth(streams: dict[Any, bytes], stb_ip: str) -> dict[str
                 chunks.append(headers)
                 chunks.append(body.decode("utf-8", errors="replace"))
         else:
-            chunks.append(raw.decode("utf-8", errors="replace"))
+            chunks.append(_decode_payload_text(raw))
         for text in chunks:
             if not result.get("ctc_auth_info"):
                 m = re.search(r"CTCGetAuthInfo\(['\"]([^'\"]+)['\"]\)", text)
@@ -601,11 +850,21 @@ def _extract_ctc_portal_auth(streams: dict[Any, bytes], stb_ip: str) -> dict[str
                 m = re.search(r"(?im)^Set-Cookie:\s*UserToken=([^;\r\n]+)", text)
                 if not m:
                     m = re.search(r"CTCSetConfig\s*\(\s*['\"]UserToken['\"]\s*,\s*['\"]([^'\"]+)['\"]", text)
+                if not m:
+                    m = re.search(r'"(?:userToken|UserToken)"\s*:\s*"([^"]+)"', text)
                 if m:
                     result["user_token"] = urllib.parse.unquote(m.group(1)).strip()
                     result.setdefault("token_path", "/uploadAuthInfo")
                     result.setdefault("server_ip", src_ip)
                     result.setdefault("server_port", src_port)
+            if not result.get("epg_auth_host"):
+                m = re.search(r'"epgDomain"\s*:\s*"(https?://[^"/]+(?::\d+)?)', text)
+                if m:
+                    result["epg_auth_host"] = urllib.parse.urlparse(m.group(1)).netloc
+            if not result.get("token_expired_time"):
+                m = re.search(r'"tokenExpiredTime"\s*:\s*"([^"]+)"', text)
+                if m:
+                    result["token_expired_time"] = m.group(1).strip()
             if not result.get("x_frame_session_id"):
                 m = re.search(r"(?im)^X-Frame-Sessionid:\s*([^\r\n]+)", text)
                 if m:
@@ -636,8 +895,21 @@ def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any
         for headers, body in responses:
             if not body:
                 continue
+            # Beijing Unicom / Hisense IP811N channelAcquire JSON response
+            # uses the misspelled channleInfoStruct field.
+            if (
+                b"channleInfoStruct" in body
+                or b"channelInfoStruct" in body
+                or (b"channelURL" in body and b"channelName" in body)
+            ):
+                parsed = _parse_channel_acquire_json(body)
+                for ch in parsed:
+                    k = f"{ch['ip']}:{ch['port']}"
+                    if k not in seen_keys:
+                        seen_keys.add(k)
+                        all_channels.append(ch)
             # Look for getchannellistHWCU.jsp response (has CUSetConfig Channel calls)
-            if b"CUSetConfig('Channel'" in body or b'CUSetConfig("Channel"' in body:
+            elif b"CUSetConfig('Channel'" in body or b'CUSetConfig("Channel"' in body:
                 parsed = _parse_chanlist_html(body)
                 for ch in parsed:
                     k = f"{ch['ip']}:{ch['port']}"
@@ -683,6 +955,23 @@ class StbDiscoveryService:
         self._pcap_path: str | None = None
         self._worker_thread: threading.Thread | None = None
 
+    def _pcap_meta_locked(self) -> dict[str, Any]:
+        path = self._pcap_path
+        if not path or not os.path.exists(path):
+            return {"pcap_available": False, "pcap_size": 0}
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        return {"pcap_available": size > 0, "pcap_size": size}
+
+    def pcap_path(self) -> str:
+        with self._lock:
+            path = self._pcap_path or ""
+            if path and os.path.exists(path):
+                return path
+            return ""
+
     def _live_watcher(self, pcap_path: str, stb_ip: str) -> None:
         while True:
             time.sleep(3)
@@ -706,7 +995,9 @@ class StbDiscoveryService:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._state)
+            state = dict(self._state)
+            state.update(self._pcap_meta_locked())
+            return state
 
     def start(self, stb_ip: str, interface: str = "any") -> None:
         rt = self.runtime_check()
@@ -715,6 +1006,11 @@ class StbDiscoveryService:
         with self._lock:
             if self._state["status"] == self.STATUS_CAPTURING:
                 raise RuntimeError("已有一个捕获任务正在进行")
+            if self._pcap_path and os.path.exists(self._pcap_path):
+                try:
+                    os.unlink(self._pcap_path)
+                except Exception:
+                    pass
             self._pcap_path = tempfile.mktemp(suffix=".pcap", prefix="stb_discovery_")
             self._state = {
                 "status": self.STATUS_CAPTURING,
@@ -728,6 +1024,8 @@ class StbDiscoveryService:
                 "live_channel_count": 0,
                 "live_has_auth": False,
                 "auth_info": {},
+                "pcap_available": False,
+                "pcap_size": 0,
             }
         cmd = [
             "tcpdump",
@@ -813,10 +1111,7 @@ class StbDiscoveryService:
                             "path": portal_auth.get("token_path") or "/uploadAuthInfo",
                             "captured_at": int(time.time()),
                         })
-                    try:
-                        os.unlink(pcap_path)
-                    except Exception:
-                        pass
+                    # Keep the latest pcap for one-click export. Reset or a new capture removes it.
                 safe_portal_auth: dict[str, Any] = {}
                 for key in ("portal_auth_host", "server_ip", "server_port", "token_path"):
                     if portal_auth.get(key):
@@ -832,6 +1127,7 @@ class StbDiscoveryService:
                     self._state["timeshift_host"] = timeshift_host
                     self._state["epg_creds"] = epg_creds
                     self._state["portal_auth"] = safe_portal_auth
+                    self._state.update(self._pcap_meta_locked())
                 has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
                 self.logger.info(
                     f"STB 频道发现完成：共发现 {len(channels)} 个频道，"
@@ -874,4 +1170,6 @@ class StbDiscoveryService:
                 "channels": [],
                 "channel_count": 0,
                 "auth_info": {},
+                "pcap_available": False,
+                "pcap_size": 0,
             }

@@ -80,9 +80,7 @@ class ExportService:
             key = str(row.get("key") or f"{host}:{port}")
             if key in seen_keys:
                 continue
-            category = str(row.get("category", "其它频道")).strip()
-            if category not in CATEGORY_OPTIONS:
-                category = "其它频道"
+            category = str(row.get("category", "其它频道")).strip() or "其它频道"
             width = self._safe_int(row.get("width"))
             height = self._safe_int(row.get("height"))
             quality_group = str(row.get("quality_group") or "未识别").strip() or "未识别"
@@ -134,6 +132,7 @@ class ExportService:
     def _channel_sort_key(item: ChannelRecord) -> tuple[Any, ...]:
         return (
             CATEGORY_ORDER.get(item.category, 99),
+            natural_key(item.category),
             natural_key(item.name),
             ip_sort_key(item.host),
             item.port,
@@ -337,6 +336,11 @@ class ExportService:
         ordered_sections: list[tuple[str, list[ChannelRecord]]] = [
             (category, grouped.get(category, [])) for category in CATEGORY_OPTIONS
         ]
+        ordered_sections.extend(
+            (category, group_channels)
+            for category, group_channels in sorted(grouped.items(), key=lambda kv: natural_key(kv[0]))
+            if category not in CATEGORY_OPTIONS
+        )
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             first_group = True
             for category, group_channels in ordered_sections:

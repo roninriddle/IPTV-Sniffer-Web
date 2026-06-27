@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import CATEGORY_OPTIONS, DEFAULT_SETTINGS
+from config import DEFAULT_SETTINGS
 from utils import classify_channel_name, stream_key, valid_ip_or_host
 
 
@@ -92,8 +92,6 @@ class ChannelStore:
                 key = str(row.get("key") or stream_key(host, port))
                 name = str(row.get("name", "")).strip()
                 category = str(row.get("category", "")).strip() or classify_channel_name(name)
-                if category not in CATEGORY_OPTIONS:
-                    category = classify_channel_name(name)
                 if not name:
                     if key in data:
                         data.pop(key, None)
@@ -105,6 +103,7 @@ class ChannelStore:
                     "port": port,
                     "name": name,
                     "category": category,
+                    "operator_group": str(row.get("operator_group") or data.get(key, {}).get("operator_group", "")).strip(),
                     "packets": int(row.get("packets", 0) or 0),
                     "probe_status": str(row.get("probe_status", data.get(key, {}).get("probe_status", "not_probed"))),
                     "probe_message": str(row.get("probe_message", data.get(key, {}).get("probe_message", "未识别"))),
@@ -455,6 +454,8 @@ class OperatorChannelStore:
                     "is_hd": ch.get("is_hd", False),
                     "time_shift": ch.get("time_shift", False),
                     "time_shift_days": ch.get("time_shift_days"),
+                    "category": str(ch.get("category") or classify_channel_name(name)).strip(),
+                    "operator_group": str(ch.get("operator_group", "")).strip(),
                     "fcc_ip": str(ch.get("fcc_ip", "")).strip(),
                     "fcc_port": ch.get("fcc_port"),
                     "fec_port": ch.get("fec_port"),

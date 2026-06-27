@@ -1,4 +1,4 @@
-# IPTV Sniffer Web v1.2.1
+# IPTV Sniffer Web v1.2.2
 
 适用于 **飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现** 的 IPTV 频道发现、线路整理与 `rtp2httpd` 播放列表工作台。
 
@@ -37,7 +37,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/output:/app/output \
-  roninriddle/iptv-sniffer-web:1.2.1
+  roninriddle/iptv-sniffer-web:1.2.2
 ```
 
 打开：
@@ -64,7 +64,7 @@ pytest -q
 
 - 测试版使用 `x.y.z-test`，例如 `1.2.1-test`；
 - 测试版只推送 GitHub tag 与 Docker Hub 同名 tag，不推送 `latest`；
-- 正式版使用 `x.y.z`，例如 `1.2.1`；
+- 正式版使用 `x.y.z`，例如 `1.2.2`；
 - 正式版发布时才同时推送 Docker Hub `x.y.z` 与 `latest`。
 
 ## 唯一推荐拓扑：交换机镜像口
@@ -214,6 +214,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 ## 版本记录
 
+- `v1.2.2`：STB 开机捕获新增北京联通 / 海信 IP811N `channelAcquire` JSON 频道表解析，支持一次开机抓取完整频道列表（含 `channleInfoStruct` 拼写兼容）、组播地址、FCC/FEC、回看地址与 UserToken；若运营商频道表包含频道分组，将分组应用到频道列表与导出文件，并保留原始运营商分组；STB 捕获完成后保留最近一次 pcap，页面新增「导出抓包文件」用于一键下载排查；频道分类筛选改为按当前频道表动态生成，支持运营商自定义分组；
 - `v1.2.1`：回看刷新新增认证 Profile：自动 / 电信 CTC-HWCTC / 联通 CU-HWCTC，自动模式改为优先尝试联通 CU-HWCTC，失败再回退电信 CTC-HWCTC；参考 `supzhang/get_iptv_channels` 增加 `EncryptToken → Authenticator → ValidAuthenticationHWCTC → JSESSIONID → getchannellistHWCTC` 链路；新增 STBType、STBVersion、UserAgent、AccessUserName、加密模式、padding 设置；STB 开机抓包自动提取并填充这些字段（含 STBID）；新增回看地址自动定时刷新开关、刷新状态与 token 有效期可见性提示；导出的回看 M3U 保持稳定入口，由后端刷新内部 `backtv_url`；修复频道无 `backtv_url` 且无自定义模板时仍写入 `catchup="default"` 但缺 `catchup-source` 的问题（会让播放器误以为支持回看）；修复回看认证字段表单溢出与单选按钮过大的布局问题；「保存导出设置」按钮移除，相关设置改为编辑后自动保存（文本类防抖、开关/下拉立即保存）；本地配置备份新增「清除所有配置」按钮（二次确认 + 输入确认文本）；备份导出文件名增加时分秒，避免同日多次导出互相覆盖；STB 开机捕获状态提示优化（约 30 秒可捕获认证信息、约 60 秒可捕获频道信息，发现频道数与认证状态分行显示）；回看 / 时移功能标注「暂不可用」（EPG 门户加密细节尚未完全验证，回看刷新可能不稳定）；
 - `v1.2.0`：新增「刷新回看地址」功能：重新登录运营商 EPG 门户（支持 CU IPTV DES3 认证），自动刷新 operator_channels.json 中各频道的 backtv_url Token；新增 IPTV 密码、用户ID、STBID、DES3 密钥、EPG 服务器地址输入字段，EPG 服务器地址可从已有回看地址自动提取；整理首页致谢；
 - `v1.1.9`：回看功能改为默认关闭、勾选后才显示回看设置；导出时 catchup-source 改为走 Flask HTTP 代理（`/hls/<key>/catchup`）而非内嵌过期的 RTSP token，代理通过 ffmpeg 转封装实时回看流；代理失败时将 ffmpeg 错误写入应用日志便于诊断；

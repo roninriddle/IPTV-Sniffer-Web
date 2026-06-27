@@ -7,6 +7,7 @@ Covers:
 - IPTV auth guarded executor payload / hook generation
 """
 import os
+import json
 import struct
 import sys
 import tempfile
@@ -15,7 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.stb_discovery_service import _extract_ctc_portal_auth, _parse_chanlist_html, _reassemble_tcp_streams
+from services.stb_discovery_service import _extract_ctc_portal_auth, _parse_channel_acquire_json, _parse_chanlist_html, _reassemble_tcp_streams
 from services.export_service import ExportService
 from services.epg_refresh_service import _pad_des_plaintext
 from services.iptv_auth_service import IptvAuthService
@@ -202,6 +203,72 @@ class TestCUSetConfigParsing:
         assert channels[1]["num"] == 2
 
 
+def test_beijing_unicom_channel_acquire_json_is_parsed():
+    body = json.dumps({
+        "channelCount": "2",
+        "channleInfoStruct": [
+            {
+                "channelName": "CCTV1",
+                "groupName": "\u592e\u89c6\u9891\u9053",
+                "userChannelID": "1",
+                "channelID": "1001",
+                "channelURL": "igmp://239.3.1.161:8001?fcc=10.7.10.172:8027&fec=9000",
+                "timeShift": "1",
+                "timeShiftLength": "14400",
+                "timeShiftURL": "rtsp://61.135.88.136/PLTV/1001",
+                "isHDChannel": "2",
+            },
+            {
+                "channelName": "\u5317\u4eac\u536b\u89c6",
+                "groupName": "\u5317\u4eac\u9891\u9053",
+                "userChannelID": "2",
+                "channelID": "1002",
+                "channelURL": "igmp://239.3.1.162:8002",
+                "channelFCCIP": "10.7.10.173",
+                "channelFCCPort": "8028",
+                "channelFECPort": "9001",
+                "timeShift": "0",
+            },
+        ],
+    }, ensure_ascii=False).encode("gb18030")
+    channels = _parse_channel_acquire_json(body)
+    assert len(channels) == 2
+    assert channels[0]["name"] == "CCTV1"
+    assert channels[0]["ip"] == "239.3.1.161"
+    assert channels[0]["port"] == 8001
+    assert channels[0]["fcc_ip"] == "10.7.10.172"
+    assert channels[0]["fcc_port"] == 8027
+    assert channels[0]["fec_port"] == 9000
+    assert channels[0]["time_shift"] is True
+    assert channels[0]["time_shift_days"] == 14400
+    assert channels[0]["backtv_url"].startswith("rtsp://61.135.88.136/")
+    assert channels[0]["is_hd"] is True
+    assert channels[0]["category"] == "\u592e\u89c6\u9891\u9053"
+    assert channels[0]["operator_group"] == "\u592e\u89c6\u9891\u9053"
+    assert channels[1]["name"] == "\u5317\u4eac\u536b\u89c6"
+    assert channels[1]["category"] == "\u5317\u4eac\u9891\u9053"
+    assert channels[1]["operator_group"] == "\u5317\u4eac\u9891\u9053"
+    assert channels[1]["fcc_ip"] == "10.7.10.173"
+    assert channels[1]["fcc_port"] == 8028
+    assert channels[1]["fec_port"] == 9001
+
+
+def test_channel_store_preserves_operator_custom_category(tmp_path):
+    store = ChannelStore(tmp_path / "channels.json")
+    result = store.save_rows([{
+        "key": "239.3.1.162:8002",
+        "host": "239.3.1.162",
+        "port": 8002,
+        "name": "\u5317\u4eac\u536b\u89c6",
+        "category": "\u5317\u4eac\u9891\u9053",
+        "operator_group": "\u5317\u4eac\u9891\u9053",
+    }])
+    assert result["saved"] == 1
+    saved = store.get("239.3.1.162:8002")
+    assert saved["category"] == "\u5317\u4eac\u9891\u9053"
+    assert saved["operator_group"] == "\u5317\u4eac\u9891\u9053"
+
+
 def test_ctc_portal_auth_fields_are_extracted_from_stb_boot_streams():
     stb_ip = "192.168.100.13"
     srv_ip = "10.7.10.10"
@@ -318,6 +385,15 @@ class TestExportFiles:
         self._export(tmp_path, rows)
         text = (tmp_path / "channels.txt").read_text(encoding="utf-8")
         assert text.count("rtp://239.1.1.1:8001") == 1
+
+    def test_operator_custom_category_is_exported(self, tmp_path):
+        rows = [self._row("\u5317\u4eac\u536b\u89c6", "239.3.1.162", 8002, category="\u5317\u4eac\u9891\u9053")]
+        self._export(tmp_path, rows)
+        m3u = (tmp_path / "channels-all.m3u").read_text(encoding="utf-8")
+        txt = (tmp_path / "channels.txt").read_text(encoding="utf-8")
+        assert 'group-title="\u5317\u4eac\u9891\u9053"' in m3u
+        assert "\u5317\u4eac\u9891\u9053,#genre#" in txt
+        assert "其它频道,#genre#" not in txt
 
     def test_csv_lists_each_source_once(self, tmp_path):
         rows = [self._row("CCTV1", "239.1.1.1", 8001, width=1920, height=1080)]

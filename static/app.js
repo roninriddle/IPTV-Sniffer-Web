@@ -411,9 +411,23 @@ async function loadChannelList() {
   try {
     const data = await requestJson("/api/channels");
     state.channelList = data.channels || [];
+    updateChannelCategoryFilter(data.categories || []);
     syncSelectedChannelKeys();
     filterAndRenderChannelList();
   } catch (err) { console.warn("loadChannelList:", err.message); }
+}
+
+function updateChannelCategoryFilter(categories) {
+  const select = $("clFilterCategory");
+  if (!select) return;
+  const current = select.value;
+  const known = categories.length
+    ? categories
+    : ["央视频道", "卫视频道", "其它频道"];
+  select.innerHTML = `<option value="">全部分类</option>` + known.map((cat) =>
+    `<option value="${escapeHtml(cat)}">${escapeHtml(cat)}</option>`
+  ).join("");
+  if (known.includes(current)) select.value = current;
 }
 
 function syncSelectedChannelKeys() {
@@ -914,6 +928,12 @@ function renderStbDiscoveryStatus(state) {
   $("stbDiscoveryStartBtn").disabled = isCapturing || isAnalyzing;
   $("stbDiscoveryStopBtn").disabled = !isCapturing;
   $("stbDiscoveryResetBtn").disabled = isCapturing || isAnalyzing;
+  if ($("stbDiscoveryPcapBtn")) {
+    $("stbDiscoveryPcapBtn").disabled = !state.pcap_available;
+    $("stbDiscoveryPcapBtn").title = state.pcap_available
+      ? `导出最近一次抓包文件（${Math.round((state.pcap_size || 0) / 1024)} KB）`
+      : "完成一次 STB 开机捕获后可导出";
+  }
 
   if (isCapturing) {
     const elapsed = state.started_at ? Math.round(Date.now() / 1000 - state.started_at) : 0;
@@ -956,6 +976,7 @@ function renderStbDiscoveryChannels(channels) {
     <tr>
       <td>${escapeHtml(String(ch.num || ""))}</td>
       <td>${escapeHtml(ch.name || "")}</td>
+      <td>${escapeHtml(ch.category || ch.operator_group || "")}</td>
       <td class="mono">${escapeHtml(ch.ip || "")}:${escapeHtml(String(ch.port || ""))}</td>
       <td>${ch.is_hd ? "✓" : ""}</td>
       <td>${ch.time_shift ? "✓" : ""}</td>
@@ -1055,6 +1076,15 @@ $("stbDiscoveryImportBtn").addEventListener("click", async () => {
     state.channelListSection = "list";
     showTab("channelList");
   } catch (err) { alert(err.message); }
+});
+
+$("stbDiscoveryPcapBtn").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = "/api/stb_discovery/pcap";
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 });
 
 // ── catchup-source mode UI ────────────────────────────────────────────────

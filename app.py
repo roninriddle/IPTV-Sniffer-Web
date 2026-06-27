@@ -24,6 +24,7 @@ from waitress import serve
 from config import (
     ALLOWED_DOWNLOADS,
     APP_DESCRIPTION,
+    CATEGORY_OPTIONS,
     CATEGORY_ORDER,
     APP_NAME,
     APP_VERSION,
@@ -305,8 +306,12 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
             if not str(item.get("auto_name_source", "")).strip():
                 item["auto_name_source"] = str(discovery.get("source", "stb_payload")).strip()
         fill_channel_name_from_metadata(item, allow_epg_name=False)
+        op_category = str((op_ch or {}).get("category") or "").strip()
+        row_category = str(item.get("category", "")).strip()
         _auto_cat = classify_channel_name(str(item.get("name", "")))
-        item["category"] = _auto_cat if _auto_cat != "其它频道" else (str(item.get("category", "")).strip() or "其它频道")
+        item["category"] = op_category or row_category or _auto_cat or "其它频道"
+        if op_ch and op_ch.get("operator_group") and not str(item.get("operator_group", "")).strip():
+            item["operator_group"] = str(op_ch.get("operator_group", "")).strip()
         # Pull is_hd from operator channel table if missing. The old quality_group
         # field is kept only for compatibility with existing data.
         if op_ch and "is_hd" in op_ch and "is_hd" not in item:
@@ -728,7 +733,14 @@ def api_streams():
 
 @app.get("/api/channels")
 def api_channels():
-    return api_success({"channels": display_channel_rows(channel_store.list())})
+    rows = display_channel_rows(channel_store.list())
+    seen = {cat: None for cat in CATEGORY_OPTIONS}
+    for row in rows:
+        cat = str(row.get("category") or "").strip()
+        if cat:
+            seen.setdefault(cat, None)
+    categories = sorted(seen.keys(), key=lambda cat: (CATEGORY_ORDER.get(cat, 99), natural_key(cat)))
+    return api_success({"channels": rows, "categories": categories})
 
 
 @app.get("/api/fcc")
@@ -832,13 +844,14 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "host": ch["ip"],
             "port": ch["port"],
             "name": ch.get("name", ""),
-            "category": classify_channel_name(ch.get("name", "")),
+            "category": str(ch.get("category") or "").strip() or classify_channel_name(ch.get("name", "")),
             "packets": stored.get("packets", 0),
             "fcc_ip": ch.get("fcc_ip", ""),
             "fcc_port": ch.get("fcc_port"),
             "fec_port": ch.get("fec_port"),
             "is_hd": ch.get("is_hd", False),
             "time_shift": ch.get("time_shift", False),
+            "operator_group": str(ch.get("operator_group", "")).strip(),
             "probe_status": stored.get("probe_status", "not_probed"),
             "width": stored.get("width"),
             "height": stored.get("height"),
@@ -859,6 +872,10 @@ def _do_operator_import(channels: list[dict]) -> dict:
                 for tech_field in ("fcc_ip", "fcc_port", "fec_port", "is_hd", "time_shift"):
                     if row.get(tech_field) is not None and row.get(tech_field) != "":
                         merged[tech_field] = row[tech_field]
+                if row.get("category"):
+                    merged["category"] = row["category"]
+                if row.get("operator_group"):
+                    merged["operator_group"] = row["operator_group"]
                 to_save.append(merged)
                 continue
         to_save.append(row)
@@ -1066,6 +1083,16 @@ def api_stb_discovery_stop():
 def api_stb_discovery_reset():
     stb_discovery_service.reset()
     return api_success(stb_discovery_service.status())
+
+
+@app.get("/api/stb_discovery/pcap")
+def api_stb_discovery_pcap():
+    path = stb_discovery_service.pcap_path()
+    if not path:
+        return api_error("暂无可导出的 STB 抓包文件，请先完成一次 STB 开机捕获", 404)
+    stopped_at = int(stb_discovery_service.status().get("stopped_at") or time.time())
+    filename = time.strftime("stb-boot-%Y%m%d-%H%M%S.pcap", time.localtime(stopped_at))
+    return send_file(path, as_attachment=True, download_name=filename, mimetype="application/vnd.tcpdump.pcap")
 
 
 @app.post("/api/stb_discovery/import")
