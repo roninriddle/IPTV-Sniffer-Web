@@ -2,6 +2,8 @@ name: Publish Docker image
 
 on:
   push:
+    branches:
+      - "codex/v1.3.5-test"
     tags:
       - "*"
 
@@ -20,10 +22,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-      - name: Validate tag against tested commit
+      - name: Validate release ref against tested commit
+        id: release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: python3 tools/check_release.py --tag "$RELEASE_TAG"
+          RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          RELEASE_TAG="${RELEASE_REF#codex/}"
+          VERSION=$(python3 tools/check_release.py --tag "$RELEASE_TAG")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -47,8 +53,8 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/iptv-sniffer-web
             docker.io/${{ secrets.DOCKERHUB_USERNAME }}/iptv-sniffer-web
           tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-test') }}
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-test') }}
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
