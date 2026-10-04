@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """JSON persistence for settings and named channel drafts."""
 from __future__ import annotations
+from services.io_limits import validate_http_url
+import copy
 
 import json
 import hashlib
@@ -12,7 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from config import DEFAULT_SETTINGS
+from config import DEFAULT_SETTINGS, MAX_TIMED_CAPTURE_SECONDS
+from services.backup_service import STORAGE_LOCK
 from utils import classify_channel_name, stream_key, valid_ip_or_host
 
 
@@ -45,7 +48,7 @@ def _atomic_dump_json(path: Path, payload: Any) -> None:
 class SettingsStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def load(self) -> dict[str, Any]:
         with self._lock:
@@ -56,11 +59,43 @@ class SettingsStore:
             return merged
 
     def save(self, data: dict[str, Any]) -> dict[str, Any]:
+        data = self.validate_update(data)
         with self._lock:
             current = self.load()
             current.update(data)
             _atomic_dump_json(self.path, current)
             return current
+
+    @staticmethod
+    def validate_update(data: dict[str, Any]) -> dict[str, Any]:
+        """Validate before any write, shared by API updates and backup restore."""
+        if not isinstance(data, dict):
+            raise ValueError("设置必须是 JSON 对象")
+        limits = {
+            "http_port": (1, 65535), "duration": (0, MAX_TIMED_CAPTURE_SECONDS),
+            "catchup_days": (0, 365), "catchup_auto_refresh_hours": (1, 168),
+        }
+        enums = {
+            "path_mode": {"rtp", "udp"},
+            "catchup_source_mode": {"aptv", "hls", "custom"},
+            "fcc_type": {"", "telecom", "huawei"},
+        }
+        for key, value in data.items():
+            if key in limits:
+                lo, hi = limits[key]
+                if type(value) is not int or not lo <= value <= hi:
+                    raise ValueError(f"{key} 必须为 {lo}–{hi} 范围内的整数")
+            elif key == "clear_epg_des3_key" or (key in DEFAULT_SETTINGS and isinstance(DEFAULT_SETTINGS[key], bool)):
+                if type(value) is not bool:
+                    raise ValueError(f"{key} 必须为布尔值")
+            elif key in DEFAULT_SETTINGS and isinstance(DEFAULT_SETTINGS[key], str):
+                if not isinstance(value, str):
+                    raise ValueError(f"{key} 必须为字符串")
+            if key in {"epg_url", "logo_url"} and value:
+                validate_http_url(value)
+            if key in enums and value not in enums[key]:
+                raise ValueError(f"{key} 的选项无效")
+        return dict(data)
 
 
 class LocalSecretStore:
@@ -74,7 +109,7 @@ class LocalSecretStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def get_epg_key(self) -> str:
         with self._lock:
@@ -107,7 +142,7 @@ class LocalSecretStore:
 class ChannelStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def load(self) -> dict[str, dict[str, Any]]:
         with self._lock:
@@ -216,6 +251,8 @@ class ChannelStore:
                     "resolution_label": str(row.get("resolution_label", data.get(key, {}).get("resolution_label", "未识别"))),
                     "quality_group": str(row.get("quality_group", data.get(key, {}).get("quality_group", "未识别"))),
                     "detected_name": str(row.get("detected_name") or data.get(key, {}).get("detected_name", "")),
+                    "source_origin": "operator" if str(row.get("stable_id") or data.get(key, {}).get("stable_id") or "").startswith("c-") else "manual",
+                    "provenance": row.get("provenance") or data.get(key, {}).get("provenance", {}),
                     "detected_name_source": str(row.get("detected_name_source") or data.get(key, {}).get("detected_name_source", "")),
                     "fcc_ip": str(row.get("fcc_ip") or data.get(key, {}).get("fcc_ip", "")),
                     "fcc_port": self._safe_port(row.get("fcc_port") or data.get(key, {}).get("fcc_port")),
@@ -300,7 +337,7 @@ class ChannelStore:
 class FccStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def load(self) -> dict[str, dict[str, Any]]:
         with self._lock:
@@ -373,7 +410,7 @@ class FccStore:
 class DiscoveryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def load(self) -> dict[str, dict[str, Any]]:
         with self._lock:
@@ -411,7 +448,7 @@ class DiscoveryStore:
 class StbTokenStore:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def load(self) -> dict[str, Any]:
         with self._lock:
@@ -477,7 +514,7 @@ class ChannelSnapshotStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def list_meta(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -530,7 +567,7 @@ class SubscriptionStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
 
     def load(self) -> dict[str, Any]:
         with self._lock:
@@ -565,7 +602,7 @@ class OperatorChannelStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = threading.RLock()
+        self._lock = STORAGE_LOCK
         self._cache: dict[str, dict[str, Any]] | None = None
 
     def load(self) -> dict[str, dict[str, Any]]:
@@ -573,7 +610,7 @@ class OperatorChannelStore:
             if self._cache is None:
                 data = _safe_load_json(self.path, {})
                 self._cache = data if isinstance(data, dict) else {}
-            return dict(self._cache)
+            return copy.deepcopy(self._cache)
 
     def get(self, key: str) -> dict[str, Any] | None:
         return self.load().get(key)
@@ -614,11 +651,18 @@ class OperatorChannelStore:
                     "channel_id": str(ch.get("channel_id", "")).strip(),
                     "backtv_url": str(ch.get("backtv_url", "")).strip(),
                     "source": "operator_channel_list",
+                    "provenance": ch.get("provenance") or {},
                 }
                 saved += 1
             self._cache = data
             _atomic_dump_json(self.path, data)
         return saved
+
+    def save_if_unchanged(self, expected, updated):
+        with self._lock:
+            if self.load() != expected:
+                raise RuntimeError("刷新期间频道表已被导入或恢复，请重新刷新，避免覆盖新数据")
+            self.save_dict(updated)
 
     def save_dict(self, data: dict[str, dict[str, Any]]) -> None:
         """Overwrite the store with a pre-formatted dict (same shape as load() returns)."""

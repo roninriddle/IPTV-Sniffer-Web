@@ -12,7 +12,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener
+from services.io_limits import HttpOnlyRedirects, validate_http_url, read_bounded, gunzip_bounded, MAX_HTTP_BYTES
 from xml.etree import ElementTree
 
 from services.log_service import AppLogger
@@ -73,6 +74,10 @@ class EpgService:
         self._lock = threading.RLock()
         self._refresh_thread: threading.Thread | None = None
         self._boot_thread_started = False
+        self._stop_event = threading.Event()
+        self._auto_thread = None
+        self._refresh_mutex = threading.Lock()
+        self._last_attempt = {}
         self._cache: dict[str, Any] = {
             "url": "",
             "logo_url": "",
@@ -185,47 +190,71 @@ class EpgService:
                         logo_index[normalized] = logo
         self._logo_index = logo_index
 
+    def select_primary(self, url: str, logo_url: str = "") -> None:
+        """The selected settings URL wins; other cached sources remain fallbacks."""
+        with self._lock:
+            if self._primary_url == url:
+                return
+            self._primary_url = url
+            self._cache.update(url=url, logo_url=logo_url,
+                channels=self._source_channels.get(url, []),
+                logos=self._source_logos.get(url, []),
+                last_refresh=self._source_refresh_times.get(url), last_error="")
+            self._rebuild_index_locked()
+            self._save_cache_locked()
+
+    def auto_refresh_tick(self, settings):
+        url = str(settings.get("epg_url") or "").strip()
+        logo = str(settings.get("logo_url") or "").strip() if settings.get("use_logo", True) else ""
+        self.select_primary(url, logo)
+        if not url or not settings.get("auto_epg", True) or not settings.get("use_epg", True):
+            return
+        with self._lock:
+            previous = max(self._source_refresh_times.get(url, 0), self._last_attempt.get(url, 0))
+        if not previous or time.time() - previous >= EPG_REFRESH_INTERVAL:
+            self.refresh_async(url, logo)
+
     def start_auto_refresh(self, settings_store: Any) -> None:
         with self._lock:
             if self._boot_thread_started:
                 return
             self._boot_thread_started = True
+        def worker():
+            while not self._stop_event.is_set():
+                try:
+                    self.auto_refresh_tick(settings_store.load())
+                except Exception as exc:
+                    self.logger.warning(f"EPG 定时检查失败：{exc}")
+                self._stop_event.wait(60)
+        self._auto_thread = threading.Thread(target=worker, daemon=True, name="epg-refresh")
+        self._auto_thread.start()
 
-        def worker() -> None:
-            settings = settings_store.load()
-            if not settings.get("auto_epg", True):
-                return
-            url = str(settings.get("epg_url", "")).strip()
-            if not url:
-                return
-            logo_url = str(settings.get("logo_url", "")).strip()
-            with self._lock:
-                last_refresh = self._cache.get("last_refresh")
-                fresh = isinstance(last_refresh, (int, float)) and time.time() - float(last_refresh) < EPG_REFRESH_INTERVAL
-            if fresh and self.count() > 0:
-                return
-            self.refresh(url, logo_url)
-
-        threading.Thread(target=worker, daemon=True).start()
+    def shutdown(self):
+        self._stop_event.set()
+        if self._auto_thread and self._auto_thread is not threading.current_thread():
+            self._auto_thread.join(timeout=2)
 
     def refresh_async(self, url: str, logo_url: str = "") -> dict[str, Any]:
-        url = str(url or "").strip()
-        logo_url = str(logo_url or "").strip()
+        url, logo_url = str(url or "").strip(), str(logo_url or "").strip()
         if not url:
             raise ValueError("EPG 地址不能为空")
+        validate_http_url(url)
+        if logo_url:
+            validate_http_url(logo_url)
         with self._lock:
             if self._refresh_thread and self._refresh_thread.is_alive():
                 return self.status()
             self._cache["last_error"] = ""
-
-        def worker() -> None:
-            self.refresh(url, logo_url)
-
-        self._refresh_thread = threading.Thread(target=worker, daemon=True)
-        self._refresh_thread.start()
-        return self.status()
+            self._last_attempt[url] = time.time()
+            self._refresh_thread = threading.Thread(target=self.refresh, args=(url, logo_url), daemon=True)
+            self._refresh_thread.start()
+            return self.status()
 
     def refresh(self, url: str, logo_url: str = "") -> dict[str, Any]:
+        with self._refresh_mutex:
+            return self._refresh(url, logo_url)
+
+    def _refresh(self, url: str, logo_url: str = "") -> dict[str, Any]:
         url = str(url or "").strip()
         logo_url = str(logo_url or "").strip()
         if not url:
@@ -281,11 +310,13 @@ class EpgService:
         return len(logos)
 
     def _fetch(self, url: str) -> bytes:
+        validate_http_url(url)
         request = Request(url, headers={"User-Agent": "IPTV-Sniffer-Web/EPG"})
-        with urlopen(request, timeout=EPG_FETCH_TIMEOUT) as response:
-            data = response.read()
+        with build_opener(HttpOnlyRedirects()).open(request, timeout=EPG_FETCH_TIMEOUT) as response:
+            validate_http_url(response.geturl())
+            data = read_bounded(response, MAX_HTTP_BYTES)
         if url.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
-            data = gzip.decompress(data)
+            data = gunzip_bounded(data)
         return data
 
     @staticmethod

@@ -938,7 +938,7 @@ def test_stb_full_capture_keeps_all_stb_traffic_and_dhcp(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(stb_discovery_module.shutil, "which", lambda name: "/usr/sbin/tcpdump")
-    monkeypatch.setattr(stb_discovery_module.tempfile, "mktemp", lambda **kwargs: str(tmp_path / "capture.pcap"))
+    monkeypatch.setattr(stb_discovery_module.tempfile, "mkstemp", lambda **kwargs: (os.open(tmp_path / "capture.pcap", os.O_RDWR | os.O_CREAT, 0o600), str(tmp_path / "capture.pcap")))
     monkeypatch.setattr(stb_discovery_module.subprocess, "Popen", lambda command, **kwargs: commands.append(command) or _FakeProc())
     monkeypatch.setattr(stb_discovery_module.threading, "Thread", _FakeThread)
 
@@ -963,7 +963,7 @@ def test_stb_full_capture_avoids_stale_ip_filter(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(stb_discovery_module.shutil, "which", lambda name: "/usr/sbin/tcpdump")
-    monkeypatch.setattr(stb_discovery_module.tempfile, "mktemp", lambda **kwargs: str(tmp_path / "capture.pcap"))
+    monkeypatch.setattr(stb_discovery_module.tempfile, "mkstemp", lambda **kwargs: (os.open(tmp_path / "capture.pcap", os.O_RDWR | os.O_CREAT, 0o600), str(tmp_path / "capture.pcap")))
     monkeypatch.setattr(stb_discovery_module.subprocess, "Popen", lambda command, **kwargs: commands.append(command) or _FakeProc())
     monkeypatch.setattr(stb_discovery_module.threading, "Thread", _FakeThread)
 

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.5-test"
 APP_DESCRIPTION = "IPTV 频道发现、订阅管理、回看与 rtp2httpd 播放统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600
@@ -72,6 +72,7 @@ CATEGORY_ORDER = {name: index for index, name in enumerate(CATEGORY_OPTIONS, sta
 
 DEFAULT_SETTINGS = {
     "interface": "",
+    "media_interface": "",
     "http_host": DEFAULT_RTP2HTTP_HOST,
     "http_port": DEFAULT_RTP2HTTP_PORT,
     "rtp2httpd_path_prefix": "",

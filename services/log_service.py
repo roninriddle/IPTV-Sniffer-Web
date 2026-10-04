@@ -3,6 +3,8 @@
 """Thread-safe in-memory + file logger for the Web UI."""
 from __future__ import annotations
 
+import os
+from utils import redact_sensitive_text
 import threading
 import time
 from collections import deque
@@ -11,7 +13,8 @@ from typing import Any
 
 
 class AppLogger:
-    def __init__(self, log_file: Path, memory_limit: int = 600) -> None:
+    def __init__(self, log_file: Path, memory_limit: int = 600, max_bytes: int = 5 * 1024 * 1024, backups: int = 3) -> None:
+        self.max_bytes, self.backups = max_bytes, backups
         self.log_file = log_file
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -25,14 +28,22 @@ class AppLogger:
             "timestamp": now,
             "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
             "level": level.upper(),
-            "message": str(message),
+            "message": redact_sensitive_text(str(message), 8192),
         }
         with self._lock:
             self._seq += 1
             entry["id"] = self._seq
             self._entries.append(entry)
+            line = f"[{entry['time']}] [{entry['level']}] {entry['message']}\n"
+            if self.log_file.exists() and self.log_file.stat().st_size + len(line.encode()) > self.max_bytes:
+                for index in range(self.backups, 0, -1):
+                    target = self.log_file.with_name(f"{self.log_file.name}.{index}")
+                    source = self.log_file if index == 1 else self.log_file.with_name(f"{self.log_file.name}.{index-1}")
+                    if source.exists():
+                        source.replace(target)
             with self.log_file.open("a", encoding="utf-8") as handle:
-                handle.write(f"[{entry['time']}] [{entry['level']}] {entry['message']}\n")
+                os.chmod(self.log_file, 0o600)
+                handle.write(line)
         return entry
 
     def info(self, message: str) -> dict[str, Any]:

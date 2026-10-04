@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from utils import valid_ipv4_multicast
+from services.media_task_service import MediaTaskManager, MediaCapacityError, reap_process
 
 HLS_BASE_DIR = Path("/tmp/iptv-hls")
 HLS_IDLE_TIMEOUT = 60       # seconds before auto-stop
@@ -18,10 +20,13 @@ HLS_START_TIMEOUT = 10      # seconds to wait for first playlist
 
 
 class HlsService:
-    def __init__(self, logger: Any) -> None:
+    def __init__(self, logger: Any, tasks=None) -> None:
         self.logger = logger
+        self.tasks = tasks or MediaTaskManager()
+        self._stop_event = threading.Event()
         self._lock = threading.RLock()
         self._streams: dict[str, dict[str, Any]] = {}
+        self._waiters = set()
         threading.Thread(target=self._watchdog, daemon=True, name="hls-watchdog").start()
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -38,13 +43,17 @@ class HlsService:
         if idx < 1:
             return None
         try:
-            return hls_key[:idx], int(hls_key[idx + 1:])
+            host, port = hls_key[:idx], int(hls_key[idx + 1:])
+            if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
+                return None
+            if HlsService.make_key(host, port) != hls_key:
+                return None
+            return host, port
         except ValueError:
             return None
 
     def _watchdog(self) -> None:
-        while True:
-            time.sleep(15)
+        while not self._stop_event.wait(15):
             now = time.time()
             to_stop: list[str] = []
             with self._lock:
@@ -54,19 +63,18 @@ class HlsService:
                     if dead or idle:
                         to_stop.append(k)
             for k in to_stop:
-                self._stop(k)
+                with self._lock:
+                    current = self._streams.get(k)
+                    if current and (current["proc"].poll() is not None or time.time()-current["last_access"] > HLS_IDLE_TIMEOUT):
+                        self._stop_locked(k)
 
     def _stop_locked(self, key: str) -> None:
         s = self._streams.pop(key, None)
         if not s:
             return
-        p = s["proc"]
-        if p.poll() is None:
-            p.terminate()
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.kill()
+        reap_process(s["proc"])
+        if s.get("lease"):
+            s["lease"].close()
         shutil.rmtree(s["dir"], ignore_errors=True)
         self.logger.info(f"HLS 转流已停止：{s['host']}:{s['port']}")
 
@@ -79,16 +87,17 @@ class HlsService:
     def ensure(self, host: str, port: int, path_mode: str = "rtp", localaddr: str = "") -> tuple[str, Path]:
         """Start HLS stream if not already running. Returns (hls_key, hls_dir)."""
         key = self.make_key(host, port)
+        if self.parse_key(key) is None:
+            raise ValueError("HLS 仅支持有效的 IPv4 组播地址与端口")
         with self._lock:
             s = self._streams.get(key)
-            if s and s["proc"].poll() is None:
+            if s and s["proc"].poll() is None and s.get("path_mode", "rtp") == path_mode and s.get("localaddr", "") == localaddr:
                 s["last_access"] = time.time()
                 return key, s["dir"]
             if s:
                 self._stop_locked(key)
 
             hls_dir = HLS_BASE_DIR / key
-            hls_dir.mkdir(parents=True, exist_ok=True)
 
             scheme = "rtp" if path_mode == "rtp" else "udp"
             iurl = f"{scheme}://{host}:{port}"
@@ -106,18 +115,50 @@ class HlsService:
                 "-hls_segment_filename", str(hls_dir / "%05d.ts"),
                 str(hls_dir / "stream.m3u8"),
             ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            lease = self.tasks.acquire("hls", key)
+            try:
+                hls_dir.mkdir(parents=True, exist_ok=True)
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                lease.close()
+                shutil.rmtree(hls_dir, ignore_errors=True)
+                raise
             self._streams[key] = {
                 "proc": proc,
+                "path_mode": path_mode,
+                "localaddr": localaddr,
+                "lease": lease,
                 "dir": hls_dir,
                 "last_access": time.time(),
                 "host": host,
                 "port": port,
             }
+            lease.attach(lambda: self._stop(key))
             self.logger.info(
                 f"HLS 转流已启动：{host}:{port}" + (f"，localaddr={localaddr}" if localaddr else "")
             )
             return key, hls_dir
+
+    def claim_waiter(self, key):
+        with self._lock:
+            if key in self._waiters:
+                raise MediaCapacityError("该频道正在起播，请稍后重试")
+            self._waiters.add(key)
+
+    def release_waiter(self, key):
+        with self._lock:
+            self._waiters.discard(key)
+
+    def existing_directory(self, key: str) -> Path | None:
+        """A segment read may touch an active stream, but must never create one."""
+        if self.parse_key(key) is None:
+            return None
+        with self._lock:
+            stream = self._streams.get(key)
+            if not stream or stream["proc"].poll() is not None:
+                return None
+            stream["last_access"] = time.time()
+            return stream["dir"]
 
     def touch(self, key: str) -> None:
         with self._lock:
@@ -126,6 +167,10 @@ class HlsService:
 
     def stop(self, key: str) -> None:
         self._stop(key)
+
+    def shutdown(self) -> None:
+        self._stop_event.set()
+        self.stop_all()
 
     def stop_all(self) -> None:
         with self._lock:

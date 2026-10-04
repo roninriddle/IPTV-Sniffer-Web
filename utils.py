@@ -260,3 +260,26 @@ def channel_primary_score(ch: dict) -> tuple:
     speed = int(ch.get("export_health_speed", 0) or 0)
     pkts = int(ch.get("packets", 0) or 0)
     return (health, manual, ps, fcc, speed, pkts)
+
+
+def with_playseek(url: str, playseek: str) -> str:
+    """Replace a playback window without rewriting unrelated signed query bytes."""
+    from urllib.parse import urlsplit, urlunsplit, unquote_plus
+    parts = urlsplit(url)
+    query = [item for item in parts.query.split("&")
+             if item and unquote_plus(item.split("=", 1)[0]).lower() != "playseek"]
+    query.append("playseek=" + playseek)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "&".join(query), parts.fragment))
+
+
+def valid_playseek(value: str) -> bool:
+    """The API accepts ordered UTC wall-clock strings; it never uses host TZ."""
+    from datetime import datetime
+    import re
+    if not re.fullmatch(r"[0-9]{14}-[0-9]{14}", value):
+        return False
+    try:
+        start, end = (datetime.strptime(item, "%Y%m%d%H%M%S") for item in value.split("-"))
+        return start < end
+    except ValueError:
+        return False

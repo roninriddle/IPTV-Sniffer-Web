@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from config import APP_VERSION
+from services.backup_service import STORAGE_LOCK
 from services.log_service import AppLogger
 
 
@@ -127,6 +128,7 @@ class IptvAuthService:
         self.backup_path = backup_path
         self.data_dir = data_dir
         self.logger = logger
+        self._backup_lock = STORAGE_LOCK
         self.bpf_watch_path = data_dir / "egress_bpf_watch.json"
         self._watch_lock = threading.RLock()
         self._watch_stop = threading.Event()
@@ -235,14 +237,15 @@ class IptvAuthService:
     def _ensure_backup(self, interface: str) -> dict[str, Any]:
         iface = _valid_iface(interface)
         snap = self.snapshot(iface)
-        data = self._backup_data()
-        entry = data["interfaces"].setdefault(iface, {"history": []})
-        if "initial" not in entry:
-            entry["initial"] = snap
-        entry.setdefault("history", []).append({"kind": "pre_apply", **snap})
-        entry["latest_pre_apply"] = snap
-        self._write_backup_data(data)
-        return entry
+        with self._backup_lock:
+            data = self._backup_data()
+            entry = data["interfaces"].setdefault(iface, {"history": []})
+            if "initial" not in entry:
+                entry["initial"] = snap
+            entry.setdefault("history", []).append({"kind": "pre_apply", **snap})
+            entry["latest_pre_apply"] = snap
+            self._write_backup_data(data)
+            return entry
 
     def backup_summary(self, interface: str) -> dict[str, Any]:
         iface = _valid_iface(interface)
@@ -369,11 +372,13 @@ exit 0
             "net_admin_hint": self._capability_enabled(12),
             "net_raw_hint": self._capability_enabled(13),
         }
-        # Update initial backup snapshot on every status refresh
-        bk_data = self._backup_data()
-        iface_entry = bk_data["interfaces"].setdefault(iface, {"history": []})
-        iface_entry["initial"] = snap
-        self._write_backup_data(bk_data)
+        # Create once; status refreshes must preserve the pre-auth/imported point.
+        with self._backup_lock:
+            bk_data = self._backup_data()
+            iface_entry = bk_data["interfaces"].setdefault(iface, {"history": []})
+            if "initial" not in iface_entry:
+                iface_entry["initial"] = snap
+                self._write_backup_data(bk_data)
         auth = auth_info or {}
         has_auth = bool(auth.get("mac") and auth.get("hostname") and auth.get("vendor_class"))
         ipv4 = snap.get("ipv4") or []
@@ -508,10 +513,11 @@ exit 0
                 ], check=False)
 
         snap = self.snapshot(iface)
-        data_store = self._backup_data()
-        entry = data_store["interfaces"].setdefault(iface, {"history": []})
-        entry["last_apply"] = {"created_at": time.time(), "payload": p, "snapshot": snap}
-        self._write_backup_data(data_store)
+        with self._backup_lock:
+            data_store = self._backup_data()
+            entry = data_store["interfaces"].setdefault(iface, {"history": []})
+            entry["last_apply"] = {"created_at": time.time(), "payload": p, "snapshot": snap}
+            self._write_backup_data(data_store)
         self.logger.warning(f"实验性 IPTV 认证已执行：接口={iface}，MAC={p['mac']}，route_mode={p['route_mode']}")
         return {"interface": iface, "payload": p, "snapshot": snap, "steps": steps, "backup": self.backup_summary(iface)}
 
@@ -604,10 +610,11 @@ exit 0
         initial = data.get("initial")
         if not iface or not isinstance(initial, dict):
             raise ValueError("备份文件格式无效，需包含 interface 和 initial 字段。")
-        raw = self._backup_data()
-        entry = raw["interfaces"].setdefault(iface, {"history": []})
-        entry["initial"] = initial
-        self._write_backup_data(raw)
+        with self._backup_lock:
+            raw = self._backup_data()
+            entry = raw["interfaces"].setdefault(iface, {"history": []})
+            entry["initial"] = initial
+            self._write_backup_data(raw)
         self.logger.info(f"IPTV 认证备份已导入：接口={iface}")
         no_ipv4 = not list(initial.get("ipv4") or [])
         return {"interface": iface, "saved": True, "warn_no_ipv4": no_ipv4}

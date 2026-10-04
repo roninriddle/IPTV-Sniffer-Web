@@ -1,4 +1,4 @@
-FROM python:3.12-alpine
+FROM python:3.12-alpine@sha256:0687a6bc9716edc2a6ee0fbfb0f87e7ee358b262b67c9215de91bc9b2d38ba71
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -25,8 +25,8 @@ RUN apk add --no-cache \
     && mkdir -p /app/data /app/output /app/services /app/templates /app/static
 
 WORKDIR /app
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY requirements.txt requirements.lock /app/
+RUN pip install --no-cache-dir --require-hashes -r /app/requirements.lock
 
 COPY app.py config.py models.py utils.py /app/
 COPY services /app/services

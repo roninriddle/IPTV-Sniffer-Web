@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Live tcpdump capture service with thread-safe runtime state."""
 from __future__ import annotations
+from services.diagnostic_service import is_transport_stream
 
 import os
 import re
@@ -626,6 +627,8 @@ class CaptureService:
         interface: str = "",
         passive_secs: float = 2.0,
         active_secs: float = 3.0,
+        cancel_event=None,
+        capture_interface=None,
     ) -> dict[str, Any]:
         """Active + passive check of one multicast group's playback path.
 
@@ -639,12 +642,17 @@ class CaptureService:
         delivered. tcpdump runs alongside to confirm IGMP egress and to catch
         traffic the socket can't see.
         """
+        cancel_event = cancel_event or threading.Event()
+        capture_interface = interface if capture_interface is None else capture_interface
         result: dict[str, Any] = {
             "host": host,
             "port": port,
             "interface": interface or "any",
             "tcpdump_available": shutil.which("tcpdump") is not None,
             "igmp_sent": False,
+            "join_requested": False,
+            "igmp_observed": None,
+            "media_ts_packets": 0,
             "socket_active_packets": 0,
             "wire_active_packets": 0,
             "wire_passive_packets": 0,
@@ -668,12 +676,16 @@ class CaptureService:
         # Phase 1 — passive wire sniff (mirror-port detection).
         if result["tcpdump_available"]:
             try:
-                proc = self._start_diag_tcpdump(host, port, interface, include_igmp=False)
-                time.sleep(max(0.1, passive_secs))
+                proc = self._start_diag_tcpdump(host, port, capture_interface, include_igmp=False)
+                cancel_event.wait(max(0.1, passive_secs))
                 passive = self._stop_diag_tcpdump(proc, host, port)
                 result["wire_passive_packets"] = passive["udp"]
             except Exception as exc:  # pragma: no cover - environment dependent
                 result["errors"].append(f"被动嗅探失败：{exc}")
+
+        if cancel_event.is_set():
+            result["verdict"] = "cancelled"
+            return result
 
         # Phase 2 — active IGMP join + observe.
         cap = None
@@ -690,6 +702,10 @@ class CaptureService:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Linux otherwise also delivers groups joined by other sockets on
+            # this port. Limit this socket to its own group membership.
+            if hasattr(socket, "IP_MULTICAST_ALL") or os.sys.platform.startswith("linux"):
+                sock.setsockopt(socket.IPPROTO_IP, getattr(socket, "IP_MULTICAST_ALL", 49), 0)
             try:
                 sock.bind(("", port))
             except OSError as exc:
@@ -701,21 +717,25 @@ class CaptureService:
                     mreq = struct.pack("4sl", socket.inet_aton(host), socket.INADDR_ANY)
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
                 joined = True
+                result["join_requested"] = True
                 result["igmp_sent"] = True  # join issued → kernel sends IGMP report
             except OSError as exc:
                 result["errors"].append(f"加入组播组失败：{exc}")
             deadline = time.time() + max(0.1, active_secs)
             sock.setblocking(False)
-            while time.time() < deadline:
+            while time.time() < deadline and not cancel_event.is_set():
                 ready, _, _ = select.select([sock], [], [], min(0.5, max(0.0, deadline - time.time())))
                 if not ready:
                     continue
                 try:
-                    _payload, addr = sock.recvfrom(4096)
+                    payload, _sender = sock.recvfrom(4096)
                 except OSError:
                     continue
-                if addr and addr[0] == host:
+                # recvfrom returns the sender, not the multicast destination.
+                if joined and payload:
                     result["socket_active_packets"] += 1
+                    if is_transport_stream(payload):
+                        result["media_ts_packets"] += 1
         except Exception as exc:  # pragma: no cover - environment dependent
             result["errors"].append(f"组播套接字检测失败：{exc}")
         finally:
@@ -730,15 +750,16 @@ class CaptureService:
         if cap is not None:
             active = self._stop_diag_tcpdump(cap, host, port)
             result["wire_active_packets"] = active["udp"]
+            result["igmp_observed"] = active["igmp"] > 0
             if active["igmp"] > 0:
                 result["igmp_sent"] = True
 
-        got_active = result["socket_active_packets"] > 0 or result["wire_active_packets"] > 0
+        got_active = result["socket_active_packets"] > 0
         result["mirror_suspected"] = (not got_active) and result["wire_passive_packets"] > 0
         if got_active:
             result["verdict"] = "ok"
-        elif result["mirror_suspected"]:
-            result["verdict"] = "mirror"
+        elif result["wire_active_packets"] or result["wire_passive_packets"]:
+            result["verdict"] = "wire_only"
         else:
             result["verdict"] = "none"
         return result

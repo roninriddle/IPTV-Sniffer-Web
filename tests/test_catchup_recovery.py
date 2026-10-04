@@ -153,6 +153,9 @@ def test_catchup_returns_gateway_timeout_and_stops_ffmpeg(tmp_path, monkeypatch)
     proc = FakeProc()
     commands = []
     class FailedCombinedSession:
+        def close(self):
+            pass
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -209,6 +212,9 @@ def test_catchup_reuses_configured_stb_user_agent(tmp_path, monkeypatch):
 
     commands = []
     class FailedCombinedSession:
+        def close(self):
+            pass
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -247,6 +253,9 @@ def test_catchup_prefers_combined_rtsp_media_without_ffmpeg(tmp_path, monkeypatc
     })
 
     class SuccessfulCombinedSession:
+        def close(self):
+            pass
+
         def __init__(self, url, user_agent):
             self.url = url
             self.user_agent = user_agent

@@ -1,19 +1,15 @@
 """Tests for the owner-local, offline HWCU numeric key recovery helper."""
 
-import importlib.util
-from pathlib import Path
+import multiprocessing
 
 from Crypto.Cipher import DES
-
-
-_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "recover_hwcu_key.py"
-_SPEC = importlib.util.spec_from_file_location("recover_hwcu_key", _SCRIPT)
-recovery = importlib.util.module_from_spec(_SPEC)
-assert _SPEC and _SPEC.loader
-_SPEC.loader.exec_module(recovery)
+from tools import recover_hwcu_key as recovery
 
 
 def test_offline_numeric_recovery_saves_match_without_printing_key(tmp_path, monkeypatch):
+    context = multiprocessing.get_context("spawn")
+    for name in ("Event", "Queue", "Process"):
+        monkeypatch.setattr(recovery.mp, name, getattr(context, name))
     key = b"00000042"
     plaintext = b"12345678$challenge$userid$stbid$ip$mac$$CTC".ljust(48, b"\x00")
     ciphertext = DES.new(key, DES.MODE_ECB).encrypt(plaintext)

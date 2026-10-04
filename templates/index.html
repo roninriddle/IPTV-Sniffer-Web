@@ -419,6 +419,10 @@
                 rtp2httpd 地址
                 <input id="httpHost" type="text" placeholder="例如 192.168.10.2">
               </label>
+              <label>媒体接收网口（可选）
+                <input id="mediaInterface" type="text" placeholder="例如 eth1；留空沿用 IPTV 网口">
+                <span class="muted small">用于本应用直播、截图与主动组播诊断；抓包网口和外部 rtp2httpd 上游可分别配置。</span>
+              </label>
               <label>
                 rtp2httpd 端口
                 <input id="httpPort" type="number" min="1" max="65535" value="5140">
@@ -580,7 +584,7 @@
             </div><!-- /catchupSettingsBlock -->
             <div class="button-row" style="margin-bottom: 8px">
               <button id="refreshBacktvBtn" class="secondary" type="button" style="display:none">刷新回看地址</button>
-              <span id="exportSettingsSaveStatus" class="muted small"></span>
+              <span id="exportSettingsSaveStatus" class="muted small"></span><button id="exportSettingsRetry" type="button" class="secondary" hidden>重试保存</button>
             </div>
             <div class="section-subtitle"><h3>最佳来源（每频道组只导出主源）</h3></div>
             <div class="form-grid compact-grid" style="margin-bottom: 8px">
@@ -631,7 +635,7 @@
                 <button id="clClearSelBtn" class="secondary" type="button">取消选择</button>
                 <details class="bulk-more">
                   <summary>更多</summary>
-                  <button id="clDeleteSelectedBtn" class="danger" type="button">删除频道</button>
+                  <button id="clDeleteSelectedBtn" class="danger" type="button">清理频道库记录</button>
                 </details>
               </div>
             </div>
@@ -672,11 +676,16 @@
 
         <div id="diagnoseTab" class="tab-panel" hidden>
           <section class="card">
+            <div class="section-title"><h2>媒体任务</h2><button id="mediaRefreshBtn" class="secondary" type="button">刷新任务</button></div>
+            <p class="muted small">显示直播、回看、截图和诊断的并发占用。取消后会释放进程或连接；诊断会在当前检查退出后释放名额。</p>
+            <div id="mediaTasks" class="result-box muted" aria-live="polite">点击“刷新任务”查看。</div>
+          </section>
+          <section class="card">
             <div class="section-title">
               <h2>播放链路诊断</h2>
               <span class="muted small">按 rtp2httpd、认证、FCC、组播、M3U 分层定位播放失败点</span>
             </div>
-            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，并判断是否为镜像口（SPAN，仅能被动看到流量、无法主动播放）。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
+            <p class="task-description">点击「运行诊断」检查 rtp2httpd 是否可访问、FCC 是否响应、认证信息与频道列表是否就绪，给出排查结论。填写「检测频道」后，还会主动发起 IGMP 加入并检测是否收到 239.x UDP 组播流，分开显示线上数据、实际 IGMP、应用接收和媒体证据；镜像口仅作为排查线索。组播链路检测需要宿主机 tcpdump 及 NET_ADMIN、NET_RAW 权限。</p>
             <div class="notice">
               <strong>镜像口说明：</strong>
               <span class="muted">交换机镜像口只适合捕获机顶盒流量，不能代表本机能主动播放。若诊断显示“未加入也能看到流量、主动加入收不到”，请到「IPTV 认证」页按选定网口生成脚本或执行实验性认证，再让 rtp2httpd 使用完成认证的上游网口。</span>
@@ -797,6 +806,7 @@
     <span>适用：飞牛 NAS / Linux Docker / 交换机镜像口运营商频道发现</span>
   </footer>
 
+  <script src="{{ url_for('static', filename='settings-queue.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

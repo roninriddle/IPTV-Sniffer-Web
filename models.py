@@ -3,7 +3,7 @@
 """Data models used by IPTV Sniffer Web."""
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any
 
 
@@ -50,6 +50,8 @@ class ChannelRecord:
     epg_source: str = ""
     is_hd: bool = False
     is_primary: bool = False
+    stable_id: str = ""
+    provenance: dict[str, Any] = field(default_factory=dict)
     export_health_status: str = ""
     export_health_http_code: int | None = None
     export_health_bytes: int = 0

@@ -28,16 +28,26 @@ const state = {
   ignoredKeys: _loadIgnoredKeys(),
 };
 
-async function requestJson(url, options = {}) {
+async function requestJsonRaw(url, options = {}) {
   const response = await fetch(url, {
     headers: {"Content-Type": "application/json"},
     ...options,
   });
-  const payload = await response.json();
+  let payload;
+  try { payload = JSON.parse(await response.text()); }
+  catch { throw new Error(`服务器返回了非 JSON 响应（HTTP ${response.status}），请稍后重试`); }
   if (!response.ok || payload.success === false) {
     throw new Error(payload.error || "请求失败");
   }
   return payload.data;
+}
+
+const queueSettingsRequest = createSettingsQueue(options => requestJsonRaw("/api/settings", options));
+function requestJson(url, options = {}) {
+  if (url === "/api/settings" && (options.method || "GET").toUpperCase() === "POST") {
+    return queueSettingsRequest(options);
+  }
+  return requestJsonRaw(url, options);
 }
 
 function escapeHtml(value) {
@@ -62,6 +72,7 @@ function formSettings() {
   const selectedInterface = $("stbDiscoveryIface")?.value || $("iptvAuthIface")?.value || state.settings?.interface || "";
   return {
     interface: selectedInterface,
+    media_interface: $("mediaInterface")?.value.trim() || "",
     http_host: $("httpHost").value.trim(),
     http_port: Number($("httpPort").value || 5140),
     rtp2httpd_path_prefix: $("rtp2httpdPathPrefix")?.value.trim() || "",
@@ -302,6 +313,7 @@ async function loadSettings() {
   state.settings = data;
   if ($("iptvAuthIface") && data.interface) $("iptvAuthIface").value = data.interface;
   $("httpHost").value = data.http_host || "";
+  $("mediaInterface").value = data.media_interface || "";
   $("httpPort").value = data.http_port ?? 5140;
   if ($("rtp2httpdPathPrefix")) $("rtp2httpdPathPrefix").value = data.rtp2httpd_path_prefix || "";
   if ($("diagConfigPath")) $("diagConfigPath").value = data.rtp2httpd_config_path || "";
@@ -417,7 +429,7 @@ async function doExportDownload(filename, btn, requireHost = false) {
       : (health?.message || "");
     $("clExportResult").textContent = `共 ${data.count} 条来源，分组后主源 ${data.best_count ?? data.count} 个。${healthText ? `\n${healthText}` : ""}`;
     const a = document.createElement("a");
-    a.href = `/api/download/${filename}`;
+    a.href = data.bundle ? `/api/download/bundles/${data.bundle}/${filename}` : `/api/download/${filename}`;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
@@ -624,6 +636,9 @@ function renderChannelList(channels) {
     const epg = ch.tvg_id || "-";
     const checked = state.selectedChannelKeys.has(ch.key) ? "checked" : "";
     const quality = channelQuality(ch);
+    const provenance = ch.provenance?.sources || [];
+    const sourceLabel = ch.source_state === "historical" ? "历史来源（不用于当前订阅）" : "当前来源";
+    const sourceDetails = provenance.map(source => `${source.pcap || ""} · ${source.parser || ""} v${source.parser_version || ""}`).join("\n");
     const capabilities = [
       ch.has_fcc ? '<span class="capability-badge">FCC</span>' : "",
       ch.has_catchup ? '<span class="capability-badge">回看</span>' : "",
@@ -632,7 +647,7 @@ function renderChannelList(channels) {
     return `
     <tr data-key="${escapeHtml(ch.key || "")}">
       <td><input type="checkbox" class="cl-check" data-key="${escapeHtml(ch.key || "")}" ${checked}></td>
-      <td><div class="channel-title">${escapeHtml(ch.name || "")}</div><div class="line-sub">${escapeHtml(ch.category || "其它频道")}</div></td>
+      <td><div class="channel-title">${escapeHtml(ch.name || "")}</div><div class="line-sub">${escapeHtml(ch.category || "其它频道")} · <span title="${escapeHtml(sourceDetails)}">${sourceLabel}</span></div></td>
       <td class="mono small">${escapeHtml(addr)}</td>
       <td class="mono small">${escapeHtml(epg)}</td>
       <td>${quality ? `<span class="quality-badge ${quality === "4K" ? "uhd" : ""}">${quality}</span>` : '<span class="muted small">—</span>'}</td>
@@ -756,6 +771,7 @@ $("useLogo").addEventListener("change", () => { $("logoSourceRow").hidden = !$("
 $("refreshInterfacesBtn").addEventListener("click", () => loadInterfaces().catch((err) => alert(err.message)));
 function collectExportSettings() {
   return {
+    media_interface: $("mediaInterface")?.value.trim() || "",
     http_host: $("httpHost").value.trim(),
     http_port: Number($("httpPort").value || 5140),
     rtp2httpd_path_prefix: $("rtp2httpdPathPrefix")?.value.trim() || "",
@@ -786,27 +802,35 @@ function collectExportSettings() {
 }
 
 let exportSettingsSaveTimer = null;
-async function autoSaveExportSettings() {
+let exportSettingsEditSerial = 0;
+function savingStatus(text, failed = false) {
   const status = $("exportSettingsSaveStatus");
+  if (status) { status.textContent = text; status.className = failed ? "danger-text small" : "muted small"; }
+  const retry = $("exportSettingsRetry");
+  if (retry) retry.hidden = !failed;
+}
+async function autoSaveExportSettings() {
+  clearTimeout(exportSettingsSaveTimer);
+  const serial = ++exportSettingsEditSerial;
+  savingStatus("正在保存…");
   try {
     await requestJson("/api/settings", {method: "POST", body: JSON.stringify(collectExportSettings())});
+    if (serial === exportSettingsEditSerial) savingStatus("已保存");
     await loadCatchupAutoRefreshStatus();
-    if (status) {
-      status.textContent = "已自动保存";
-      status.className = "muted small";
-      clearTimeout(status._clearTimer);
-      status._clearTimer = setTimeout(() => { status.textContent = ""; }, 2000);
-    }
   } catch (err) {
-    if (status) { status.textContent = `自动保存失败：${err.message}`; status.className = "danger-text small"; }
+    if (serial === exportSettingsEditSerial) savingStatus(`保存失败：${err.message}`, true);
   }
 }
 function scheduleExportSettingsSave() {
+  ++exportSettingsEditSerial;
+  savingStatus("有未保存的修改…");
   clearTimeout(exportSettingsSaveTimer);
   exportSettingsSaveTimer = setTimeout(autoSaveExportSettings, 600);
 }
+$("exportSettingsRetry")?.addEventListener("click", autoSaveExportSettings);
+
 const EXPORT_SETTINGS_TEXT_INPUT_IDS = [
-  "httpHost", "httpPort", "rtp2httpdPathPrefix", "catchupDays", "timeshiftHost", "catchupSourceTemplate",
+  "mediaInterface", "httpHost", "httpPort", "rtp2httpdPathPrefix", "catchupDays", "timeshiftHost", "catchupSourceTemplate",
   "iptvPassword", "epgUserId", "epgStbId", "epgDes3Key", "epgAuthHost",
   "epgStbType", "epgStbVersion", "epgSoftwareVersion", "epgUserAgent", "epgAccessUserName", "catchupAutoRefreshHours",
 ];
@@ -961,7 +985,7 @@ $("clRemoveSelectedCandidateBtn").addEventListener("click", async () => {
 $("clDeleteSelectedBtn").addEventListener("click", async () => {
   const selectedKeys = [...state.selectedChannelKeys];
   if (!selectedKeys.length) { alert("请先勾选要删除的频道"); return; }
-  if (!confirm(`确定删除选中的 ${selectedKeys.length} 个频道？`)) return;
+  if (!confirm(`清理选中的 ${selectedKeys.length} 条频道库记录？此操作仅清理本地记录和编辑，不删除运营商映射，也不会移出订阅。如需停止订阅，请使用“移出订阅”。`)) return;
   try {
     await requestJson("/api/channels/delete", {method: "POST", body: JSON.stringify({keys: selectedKeys})});
     state.selectedChannelKeys.clear();
@@ -2040,7 +2064,7 @@ async function runDiagnose() {
     };
     const d = await requestJson("/api/diagnose", {method: "POST", body: JSON.stringify(body)});
     $("diagResult").textContent = d.verdict || "诊断完成。";
-    const allOk = d.checks.every(c => c.ok !== false);
+    const allOk = d.checks.length > 0 && d.checks.every(c => c.ok === true);
     $("diagResult").className = "result-box " + (allOk ? "ok" : "warning");
     const checkIcon = ok => ok === true ? "✓" : ok === false ? "✗" : "–";
     const checkCls  = ok => ok === true ? "diag-ok" : ok === false ? "diag-fail" : "diag-skip";
@@ -2110,4 +2134,27 @@ document.querySelectorAll(".cl-table th.sortable").forEach(th => {
     _updateSortHeaders();
     filterAndRenderChannelList();
   });
+});
+
+
+async function refreshMediaTasks() {
+  const box = $("mediaTasks");
+  if (!box) return;
+  try {
+    const data = await requestJson("/api/media/tasks");
+    const tasks = data.active || [];
+    const names = {hls: "直播", catchup: "回看", snapshot: "截图", diagnose: "诊断"};
+    box.innerHTML = `<div>正在运行 ${tasks.length} / ${data.limit}</div>` + tasks.map(task =>
+      `<div class="button-row"><span>${escapeHtml(names[task.kind] || task.kind)} · ${escapeHtml(task.key || "")} · ${Number(task.elapsed_seconds)} 秒</span><button type="button" class="secondary xs-btn" data-cancel-media="${escapeHtml(task.id)}" ${task.cancel_requested ? "disabled" : ""}>${task.cancel_requested ? "正在取消" : "取消任务"}</button></div>`).join("");
+  } catch (error) { box.textContent = `获取任务失败：${error.message}`; }
+}
+$("mediaRefreshBtn")?.addEventListener("click", refreshMediaTasks);
+$("mediaTasks")?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-cancel-media]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await requestJson(`/api/media/tasks/${encodeURIComponent(button.dataset.cancelMedia)}`, {method: "DELETE"});
+    await refreshMediaTasks();
+  } catch (error) { $("mediaTasks").textContent = `取消失败：${error.message}`; }
 });

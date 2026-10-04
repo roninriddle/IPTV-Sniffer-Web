@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """Playlist export logic for M3U, TXT and CSV."""
 from __future__ import annotations
+from utils import with_playseek
 
 import csv
 import io
@@ -124,6 +125,8 @@ class ExportService:
                 epg_source=str(row.get("epg_source", "") or "").strip(),
                 is_hd=bool(row.get("is_hd", False)),
                 is_primary=bool(row.get("is_primary", False)),
+                stable_id=str(row.get("stable_id") or ""),
+                provenance=row.get("provenance") if isinstance(row.get("provenance"), dict) else {},
                 export_health_status=str(row.get("export_health_status", "") or "").strip(),
                 export_health_http_code=self._safe_int(row.get("export_health_http_code")),
                 export_health_bytes=self._safe_int(row.get("export_health_bytes")) or 0,
@@ -162,6 +165,31 @@ class ExportService:
             ip_sort_key(item.host),
             item.port,
         )
+
+    def export_bundle(self, *args, **kwargs):
+        import uuid
+        import shutil
+        import time
+        from services.backup_service import STORAGE_LOCK
+        base = self.output_dir / "bundles"
+        with STORAGE_LOCK:
+            base.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for old in base.iterdir():
+                if old.is_dir() and time.time() - old.stat().st_mtime > 86400:
+                    shutil.rmtree(old)
+            # Refuse new exports rather than evict another user's live download.
+            if len(list(base.iterdir())) >= 100:
+                raise ValueError("导出批次已达 100 个，请清理或等待 24 小时后重试")
+            bundle = uuid.uuid4().hex
+            target = base / bundle
+            target.mkdir(mode=0o700)
+        try:
+            result = ExportService(target).export(*args, **kwargs)
+            result["bundle"] = bundle
+            return result
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
 
     def export(self, rows: list[dict[str, Any]], settings: dict[str, Any], operator_channels: dict[str, Any] | None = None, flask_base_url: str = "") -> dict[str, Any]:
         channels = self._normalize_channels(rows)
@@ -367,8 +395,7 @@ class ExportService:
                             )
                         else:
                             # Fallback: embed raw RTSP URL (tokens may expire)
-                            sep = "&" if "?" in backtv else "?"
-                            safe_cu = (backtv + f"{sep}playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}").replace('"', "%22")
+                            safe_cu = with_playseek(backtv, "${(b)yyyyMMddHHmmss:utc}-${(e)yyyyMMddHHmmss:utc}").replace('"', "%22")
                         catchup_source_attr = f' catchup-source="{safe_cu}"'
                 if catchup_source_attr:
                     catchup_attr = f' catchup="default" catchup-days="{eff_days}"{catchup_source_attr}'
@@ -475,10 +502,11 @@ class ExportService:
         ])
 
     def _write_playlist_json(self, channels: list[ChannelRecord], target: Path, path_mode: str, fcc_type: str = "") -> None:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = {"_format": "iptv-sniffer-channels", "schema_version": 2, "items": []}
         for index, channel in enumerate(channels, start=1):
             source = self.make_source_url(path_mode, channel.host, channel.port, channel.fcc_ip, channel.fcc_port, channel.fec_port, fcc_type)
-            payload[channel.name] = {
+            payload["items"].append({
+                "name": channel.name,
                 "chno": index,
                 "tvg_id": channel.tvg_id or channel.name,
                 "tvg_name": channel.tvg_name or channel.name,
@@ -496,6 +524,8 @@ class ExportService:
                 "timeshift": {},
                 "sniffer": {
                     "key": channel.key,
+                    "stable_id": channel.stable_id,
+                    "provenance": channel.provenance,
                     "packets": channel.packets,
                     "codec": channel.codec_name,
                     "width": channel.width,
@@ -512,7 +542,7 @@ class ExportService:
                         "message": channel.export_health_message,
                     },
                 },
-            }
+            })
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")

@@ -10,6 +10,9 @@ returns the MPEG-TS payload carried by the selected RTP/UDP transport.
 from __future__ import annotations
 
 import socket
+import threading
+import time
+import re
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
@@ -36,6 +39,12 @@ class CombinedRtspUdpSession:
         self.play_url = self.url
         self._buffer = b""
         self._cseq = 0
+        self._resource_lock = threading.RLock()
+        self._closed = False
+        self._keepalive_at = float("inf")
+        self._keepalive_interval = 30
+        self._last_sequence = None
+        self.rtp_stats = {"packets": 0, "sequence_gaps": 0, "late_or_duplicate": 0}
 
     @staticmethod
     def _clean_header(value: str) -> str:
@@ -198,12 +207,23 @@ class CombinedRtspUdpSession:
                 rtcp.close()
         raise RtspCatchupError("rtsp_udp_bind_failed")
 
+    def _adopt_sockets(self, **sockets):
+        with self._resource_lock:
+            if self._closed:
+                for sock in sockets.values():
+                    sock.close()
+                raise RtspCatchupError("rtsp_cancelled")
+            for name, sock in sockets.items():
+                setattr(self, name, sock)
+
     def open(self) -> bytes:
         """Complete DESCRIBE/SETUP/PLAY and return the first MPEG-TS chunk."""
+        if self._closed:
+            raise RtspCatchupError("rtsp_cancelled")
         current_url = self.url
         try:
             for redirects in range(4):
-                self.control = self._connect(current_url)
+                self._adopt_sockets(control=self._connect(current_url))
                 self._buffer = b""
                 self._cseq = 0
                 self._send("DESCRIBE", current_url, {
@@ -226,7 +246,8 @@ class CombinedRtspUdpSession:
 
             self.play_url = current_url
             local_ip, local_control_port = self.control.getsockname()[:2]
-            self.rtp, self.rtcp, client_port = self._bind_udp_pair(str(local_ip))
+            rtp, rtcp, client_port = self._bind_udp_pair(str(local_ip))
+            self._adopt_sockets(rtp=rtp, rtcp=rtcp)
             self.rtp.settimeout(self.timeout_seconds)
             setup_url = self._setup_url(current_url, headers.get("content-base", ""), sdp)
             self._send("SETUP", setup_url, {
@@ -240,7 +261,10 @@ class CombinedRtspUdpSession:
             selected_transport = headers.get("transport", "").lower()
             if "client_port=" not in selected_transport:
                 raise RtspCatchupError("rtsp_transport_unsupported")
-            self.session_id = headers.get("session", "").split(";", 1)[0].strip()
+            session_header = headers.get("session", "")
+            self.session_id = session_header.split(";", 1)[0].strip()
+            timeout = re.search(r"(?:^|;)\s*timeout=(\d+)", session_header, re.I)
+            self._keepalive_interval = max(1, min(1800, int(timeout.group(1)) / 2)) if timeout else 30
             if not self.session_id:
                 raise RtspCatchupError("rtsp_response_invalid")
             self._send("PLAY", current_url, {
@@ -251,7 +275,11 @@ class CombinedRtspUdpSession:
             status, _, _ = self._read_response()
             if status != 200:
                 raise RtspCatchupError(self._status_category(status))
+            self._keepalive_at = time.monotonic() + self._keepalive_interval
             return self.read_payload()
+        except AttributeError as exc:
+            self.close()
+            raise RtspCatchupError("rtsp_connection_closed") from exc
         except RtspCatchupError:
             self.close()
             raise
@@ -262,16 +290,47 @@ class CombinedRtspUdpSession:
             self.close()
             raise RtspCatchupError("rtsp_connection_failed") from exc
 
+    def _keepalive(self):
+        if time.monotonic() < self._keepalive_at:
+            return
+        for method in ("GET_PARAMETER", "OPTIONS"):
+            self._send(method, self.play_url, {"Session": self.session_id, "User-Agent": self.user_agent})
+            status, _, _ = self._read_response()
+            if status == 200:
+                self._keepalive_at = time.monotonic() + self._keepalive_interval
+                return
+            if status not in (405, 501):
+                break
+        raise RtspCatchupError("rtsp_keepalive_failed")
+
+    def _record_rtp_sequence(self, packet):
+        if len(packet) < 12 or packet[0] >> 6 != 2:
+            return
+        sequence = int.from_bytes(packet[2:4], "big")
+        self.rtp_stats["packets"] += 1
+        if self._last_sequence is not None:
+            delta = (sequence - self._last_sequence) & 0xffff
+            if delta == 0 or delta > 32768:
+                self.rtp_stats["late_or_duplicate"] += 1
+                return
+            self.rtp_stats["sequence_gaps"] += delta - 1
+        self._last_sequence = sequence
+
     def read_payload(self) -> bytes:
         if self.rtp is None:
             raise RtspCatchupError("rtsp_connection_failed")
+        self._keepalive()
+        rtp = self.rtp
         for _ in range(100):
             try:
-                packet, _ = self.rtp.recvfrom(65536)
+                packet, _ = rtp.recvfrom(65536)
             except socket.timeout as exc:
                 raise RtspCatchupError("rtsp_timeout") from exc
+            except OSError as exc:
+                raise RtspCatchupError("rtsp_connection_closed") from exc
             if packet and packet[0] == 0x47:
                 return packet
+            self._record_rtp_sequence(packet)
             payload = self._rtp_payload(packet)
             if payload:
                 return payload
@@ -288,17 +347,23 @@ class CombinedRtspUdpSession:
             self.close()
 
     def close(self) -> None:
-        if self.control is not None and self.session_id:
-            try:
-                self._send("TEARDOWN", self.play_url, {
-                    "Session": self.session_id, "User-Agent": self.user_agent,
-                })
-            except Exception:
-                pass
-        for sock in (self.rtp, self.rtcp, self.control):
-            if sock is not None:
+        with self._resource_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self.control is not None and self.session_id:
                 try:
-                    sock.close()
-                except OSError:
+                    self.control.settimeout(1)
+                    self._send("TEARDOWN", self.play_url, {
+                        "Session": self.session_id, "User-Agent": self.user_agent,
+                    })
+                except Exception:
                     pass
-        self.rtp = self.rtcp = self.control = None
+            for sock in (self.rtp, self.rtcp, self.control):
+                if sock is not None:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    sock.close()
+            self.rtp = self.rtcp = self.control = None

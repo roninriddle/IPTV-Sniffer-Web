@@ -601,9 +601,9 @@ def _refresh_cu_hwctc(
         if m2:
             jsessionid = m2.group(1)
     if jsessionid:
-        logger.info(f"EPG 获得 JSESSIONID：{jsessionid[:16]}…")
+        logger.info("EPG 已获得会话 Cookie")
     else:
-        logger.warning(f"EPG 认证未返回 JSESSIONID，尝试继续。响应片段：{redact_sensitive_text(auth_body[:200])}")
+        logger.warning("EPG 认证未返回会话 Cookie，尝试继续")
 
     # Step 3: validate with password
     validate_url = f"{base_url}/EPG/jsp/ValidAuthenticationHWCTC.jsp"

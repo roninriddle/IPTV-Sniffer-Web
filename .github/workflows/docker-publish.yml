@@ -10,11 +10,20 @@ permissions:
   packages: write
 
 jobs:
+  quality:
+    uses: ./.github/workflows/docker-ci.yml
   publish:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate tag against tested commit
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 tools/check_release.py --tag "$RELEASE_TAG"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -47,4 +56,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          sbom: true
+          provenance: mode=max

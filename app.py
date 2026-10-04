@@ -67,6 +67,16 @@ from services.export_service import ExportService
 from services.iptv_auth_service import IptvAuthService
 from services.log_service import AppLogger
 from services.hls_service import HlsService
+from services.media_task_service import MediaTaskManager, MediaCapacityError
+from services.snapshot_service import SnapshotService
+from services.diagnostic_service import playback_evidence, diagnostic_verdict
+from services import subscription_service
+from services.catchup_scheduler import CatchupScheduler
+from services.io_limits import validate_http_url, HttpOnlyRedirects, read_bounded, gunzip_bounded, MAX_HTTP_BYTES
+from urllib.request import build_opener
+from services.media_task_service import ProcessTail
+from utils import with_playseek, valid_playseek
+from services.backup_service import RestoreTransaction, STORAGE_LOCK, validate_modules, restore_modules
 from services.rtsp_catchup_service import CombinedRtspUdpSession, RtspCatchupError
 from services.stb_discovery_service import StbDiscoveryService
 from services.storage_service import ChannelSnapshotStore, ChannelStore, DiscoveryStore, FccStore, LocalSecretStore, OperatorChannelStore, SettingsStore, StbTokenStore, SubscriptionStore
@@ -86,7 +96,9 @@ stb_discovery_service = StbDiscoveryService(logger, token_store)
 discovery_store = DiscoveryStore(DISCOVERY_FILE)
 capture_service = CaptureService(logger, fcc_store, token_store, discovery_store)
 export_service = ExportService(OUTPUT_DIR)
-hls_service = HlsService(logger)
+media_tasks = MediaTaskManager(limit=max(1, min(4, WAITRESS_THREADS - 2)))
+hls_service = HlsService(logger, media_tasks)
+snapshot_service = SnapshotService(media_tasks)
 epg_service = EpgService(logger, EPG_CACHE_FILE)
 iptv_auth_service = IptvAuthService(IPTV_AUTH_BACKUP_FILE, DATA_DIR, logger)
 
@@ -178,6 +190,7 @@ _catchup_auto_state: dict[str, Any] = {
     "token_expiry_note": "尚未刷新",
 }
 _catchup_auto_thread_started = False
+catchup_scheduler = CatchupScheduler(_catchup_auto_state, _catchup_refresh_lock, DATA_DIR / "catchup_schedule.json")
 _CATCHUP_FFMPEG_START_TIMEOUT_SECONDS = 15
 _CATCHUP_FFMPEG_READ_TIMEOUT_MICROSECONDS = 15_000_000
 _STABLE_CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
@@ -196,9 +209,15 @@ def _stop_catchup_ffmpeg(proc: subprocess.Popen[Any]) -> str:
     except Exception:
         pass
     try:
-        return redact_sensitive_text(proc.stderr.read().decode(errors="replace").strip(), 400)
+        tail = getattr(proc, "_iptv_stderr", None)
+        content = tail.text() if tail else proc.stderr.read().decode(errors="replace")
+        return redact_sensitive_text(content.strip(), 400)
     except Exception:
         return ""
+    finally:
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe:
+                pipe.close()
 
 
 def _wait_for_catchup_first_chunk(
@@ -229,8 +248,7 @@ def _catchup_rtsp_candidates(backtv_url: str, playseek: str) -> list[tuple[str, 
     backtv = str(backtv_url or "").strip()
     if not backtv:
         return []
-    separator = "&" if "?" in backtv else "?"
-    candidates = [("captured", f"{backtv}{separator}playseek={playseek}")]
+    candidates = [("captured", with_playseek(backtv, playseek))]
     # Some Huawei/CU channel tables include stale query parameters after the
     # ``.smil`` resource.  The compatible player flow starts from the bare
     # resource and sends only the requested playback window.
@@ -267,10 +285,11 @@ def _catchup_failure_category(stderr_text: str, start_error: str) -> str:
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
-    try:
-        return tuple(int(x) for x in str(v).strip().lstrip("v").split("."))
-    except (ValueError, AttributeError):
+    # Project tags use x.y.z and x.y.z-test; stable follows its test build.
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(-test)?", str(v).strip())
+    if not match:
         return (0,)
+    return tuple(int(match.group(i)) for i in (1, 2, 3)) + (int(match.group(4) is None),)
 
 
 def _do_version_check() -> None:
@@ -435,10 +454,10 @@ def display_channel_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [fill_channel_name_from_metadata(dict(row), allow_epg_name=False) for row in rows]
 
 
-def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | None = None, operator_channels=None) -> list[dict[str, Any]]:
     settings = settings or settings_store.load()
     discovered = discovery_store.load()
-    operator_channels = operator_channel_store.load()
+    operator_channels = operator_channel_store.load() if operator_channels is None else operator_channels
     enriched: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -489,7 +508,7 @@ def enrich_channel_rows(rows: list[dict[str, Any]], settings: dict[str, Any] | N
 
 def _iptv_local_ip(settings: dict[str, Any]) -> str:
     """Return the primary IPv4 of the configured IPTV interface for multicast localaddr binding."""
-    iface = str(settings.get("interface") or "").strip()
+    iface = str(settings.get("media_interface") or settings.get("interface") or "").strip()
     if not iface:
         return ""
     try:
@@ -722,11 +741,13 @@ def fetch_text_resource(url: str, timeout: int = 30) -> str:
     source = str(url or "").strip()
     if not source:
         raise ValueError("M3U 地址不能为空")
+    validate_http_url(source)
     req = Request(source, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-    with urlopen(req, timeout=timeout) as response:
-        data = response.read()
+    with build_opener(HttpOnlyRedirects()).open(req, timeout=timeout) as response:
+        validate_http_url(response.geturl())
+        data = read_bounded(response, MAX_HTTP_BYTES)
     if source.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
-        data = gzip.decompress(data)
+        data = gunzip_bounded(data)
     return data.decode("utf-8-sig", errors="ignore")
 
 
@@ -828,6 +849,18 @@ def parse_exported_m3u_channels(text: str) -> tuple[list[dict[str, Any]], int]:
 
 def parse_exported_channels_json(data: Any) -> tuple[list[dict[str, Any]], int]:
     """Parse the channels.json format written by ExportService."""
+    if isinstance(data, dict) and data.get("_format") == "iptv-sniffer-channels":
+        if data.get("schema_version") != 2 or not isinstance(data.get("items"), list):
+            raise ValueError("不支持的频道导出格式版本")
+        rows, skipped = [], 0
+        for item in data["items"]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+                skipped += 1
+                continue
+            parsed, ignored = parse_exported_channels_json({item["name"]: item})
+            rows.extend(parsed)
+            skipped += ignored
+        return rows, skipped
     if isinstance(data, list):
         rows = [dict(item) for item in data if isinstance(item, dict)]
         return rows, len(data) - len(rows)
@@ -854,7 +887,9 @@ def parse_exported_channels_json(data: Any) -> tuple[list[dict[str, Any]], int]:
         fcc_host, separator, fcc_port_text = fcc.rpartition(":")
         fcc_port = _safe_import_port(fcc_port_text) if separator else None
         rows.append({
-            "key": str(sniffer.get("key") or f"{host}:{port}"),
+            "key": f"{host}:{port}",
+            "stable_id": _valid_stable_channel_id(sniffer.get("stable_id")),
+            "provenance": sniffer.get("provenance") if isinstance(sniffer.get("provenance"), dict) else {},
             "host": host,
             "port": port,
             "name": str(name or item.get("tvg_name") or item.get("tvg_id") or "").strip(),
@@ -968,6 +1003,12 @@ def api_settings_save():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return api_error("请求体格式不正确")
+    try:
+        data = SettingsStore.validate_update(data)
+        if "rtp2httpd_path_prefix" in data:
+            data["rtp2httpd_path_prefix"] = ExportService.normalize_path_prefix(data["rtp2httpd_path_prefix"])
+    except ValueError as exc:
+        return api_error(str(exc), 400)
     epg_key = str(data.pop("epg_des3_key", "") or "").strip()
     clear_epg_key = bool(data.pop("clear_epg_des3_key", False))
     data.pop("epg_des3_key_configured", None)
@@ -975,16 +1016,10 @@ def api_settings_save():
         epg_key_store.set_epg_key(epg_key)
     elif clear_epg_key:
         epg_key_store.clear_epg_key()
-    if "fcc_type" in data and str(data.get("fcc_type") or "").strip() not in {"", "telecom", "huawei"}:
-        data["fcc_type"] = ""
-    if "rtp2httpd_path_prefix" in data:
-        try:
-            data["rtp2httpd_path_prefix"] = ExportService.normalize_path_prefix(data.get("rtp2httpd_path_prefix"))
-        except ValueError as exc:
-            return api_error(str(exc), 400)
     saved = settings_store.save(data)
     epg_url = str(saved.get("epg_url", "")).strip()
     logo_url = str(saved.get("logo_url", "")).strip()
+    epg_service.select_primary(epg_url, logo_url)
     if saved.get("use_epg", True) and saved.get("auto_epg", True) and epg_url:
         epg_status = epg_service.status(summary=True)
         if (
@@ -1027,83 +1062,16 @@ def api_streams():
     return api_error("UDP 流发现功能已移除，请使用运营商频道发现导入频道", 410)
 
 
-def _valid_stable_channel_id(value: str) -> str:
-    text = str(value or "").strip()
-    return text if _STABLE_CHANNEL_ID_RE.fullmatch(text) else ""
+def _valid_stable_channel_id(value):
+    return subscription_service._valid_stable_channel_id(value)
 
 
-def _stable_channel_id(row: dict[str, Any], operator: dict[str, Any] | None = None) -> str:
-    """Choose a durable, URL-safe identity without exposing source addresses.
-
-    An operator ChannelID survives multicast/FCC changes, so it takes priority.
-    Locally saved IDs preserve the fallback identity for non-operator imports.
-    """
-    operator = operator or {}
-    channel_id = str(operator.get("channel_id") or row.get("channel_id") or "").strip()
-    if channel_id:
-        normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", channel_id).strip(".-")
-        candidate = _valid_stable_channel_id(f"c-{normalized}")
-        if candidate:
-            return candidate
-    saved = _valid_stable_channel_id(row.get("stable_id", ""))
-    if saved:
-        return saved
-    # A saved source keeps its generated identity when metadata is later edited.
-    fingerprint = "|".join([
-        str(row.get("tvg_id") or "").strip(),
-        normalize_channel_name(str(row.get("name") or "").strip()),
-        str(row.get("key") or "").strip(),
-    ])
-    digest = hashlib.sha1(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return f"m-{digest}"
+def _stable_channel_id(row, operator=None):
+    return subscription_service._stable_channel_id(row, operator)
 
 
-def _stable_channel_catalog() -> dict[str, dict[str, Any]]:
-    """Return current channel mappings keyed by durable public IDs.
-
-    When an operator table is available it is authoritative for the active
-    multicast endpoint.  Old channel-store entries are intentionally excluded,
-    so a re-import cannot leave a stable URL pointing at a stale source.
-    """
-    stored = channel_store.load()
-    operator_channels = operator_channel_store.load()
-    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    if operator_channels:
-        for key, operator in operator_channels.items():
-            if not isinstance(operator, dict):
-                continue
-            host = str(operator.get("host") or "").strip()
-            try:
-                port = int(operator.get("port"))
-            except (TypeError, ValueError):
-                continue
-            if not valid_ipv4_multicast(host) or not 1 <= port <= 65535:
-                continue
-            row = dict(stored.get(key) or {})
-            row.update({"key": key, "host": host, "port": port})
-            for field in ("fcc_ip", "fcc_port", "fec_port", "operator_group", "is_hd"):
-                if operator.get(field) not in (None, "", 0, False):
-                    row[field] = operator.get(field)
-            if not str(row.get("name") or "").strip():
-                row["name"] = str(operator.get("name") or "").strip()
-            if not str(row.get("category") or "").strip():
-                row["category"] = str(operator.get("category") or "").strip() or "其它频道"
-            candidates.append((row, operator))
-    else:
-        candidates = [(dict(row), {}) for row in stored.values() if isinstance(row, dict)]
-
-    catalog: dict[str, dict[str, Any]] = {}
-    for row, operator in candidates:
-        row = fill_channel_name_from_metadata(row, allow_epg_name=False)
-        if not str(row.get("name") or "").strip():
-            continue
-        stable_id = _stable_channel_id(row, operator)
-        if stable_id in catalog:
-            suffix = hashlib.sha1(str(row.get("key") or "").encode("utf-8")).hexdigest()[:8]
-            stable_id = f"{stable_id}-{suffix}"
-        row["stable_id"] = stable_id
-        catalog[stable_id] = {"row": row, "operator": operator}
-    return catalog
+def _stable_channel_catalog():
+    return subscription_service._stable_channel_catalog(channel_store.load(), operator_channel_store.load(), fill_channel_name_from_metadata)
 
 
 def _default_subscription_ids(catalog: dict[str, dict[str, Any]]) -> list[str]:
@@ -1140,56 +1108,14 @@ def _subscription_entry(stable_id: str, item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _operator_time_shift_minutes(operator: dict[str, Any]) -> int:
-    """Read the canonical minutes field, accepting pre-1.3.1 data."""
-    raw = operator.get("time_shift_minutes", operator.get("time_shift_days", 0))
-    try:
-        return max(0, int(raw or 0))
-    except (TypeError, ValueError):
-        return 0
+def _operator_time_shift_minutes(operator):
+    return subscription_service._operator_time_shift_minutes(operator)
 
 
-def _subscription_m3u(hls_compat: bool = False) -> str:
-    """Build a fast, state-only subscription; never run health checks here."""
-    settings = settings_store.load()
+def _subscription_m3u(hls_compat=False):
     catalog = _stable_channel_catalog()
-    candidate_ids = _subscription_candidate_ids(catalog)
-    records = [catalog[stable_id] for stable_id in candidate_ids]
-    # The active catalog already keeps one current source per durable channel
-    # ID.  "全部" is retained as a stable public endpoint for clients that
-    # need it; it contains every selected logical channel rather than bypassing
-    # the owner's candidate list.
-    records.sort(key=lambda item: natural_key(str(item["row"].get("name") or "")))
-
-    base_url = request.url_root.rstrip("/")
-    epg_url = str(settings.get("epg_url") or "").strip() if settings.get("use_epg", True) else ""
-    catchup_enabled = bool(settings.get("catchup_enabled")) and int(settings.get("catchup_days") or 0) > 0
-    lines = [f'#EXTM3U x-tvg-url="{base_url}/epg.xml"' if epg_url else "#EXTM3U"]
-    if catchup_enabled:
-        lines[0] += ' catchup-correction="8"'
-    for item in records:
-        row = item["row"]
-        operator = item["operator"]
-        stable_id = row["stable_id"]
-        tvg_id = str(row.get("tvg_id") or row.get("tvg_name") or row.get("name") or "").replace('"', "'")
-        tvg_name = str(row.get("tvg_name") or row.get("name") or "").replace('"', "'")
-        group = str(row.get("category") or "其它频道").replace('"', "'")
-        logo = str(row.get("tvg_logo") or "").replace('"', "%22")
-        logo_attr = f' tvg-logo="{logo}"' if logo else ""
-        catchup_attr = ""
-        backtv = str(operator.get("backtv_url") or "").strip()
-        if catchup_enabled and backtv:
-            raw_minutes = _operator_time_shift_minutes(operator)
-            try:
-                days = max(1, raw_minutes // 1440) if raw_minutes else int(settings.get("catchup_days") or 7)
-            except (TypeError, ValueError):
-                days = int(settings.get("catchup_days") or 7)
-            catchup_source = f"{base_url}/catchup/{stable_id}?playseek=${{(b)yyyyMMddHHmmss:utc}}-${{(e)yyyyMMddHHmmss:utc}}"
-            catchup_attr = f' catchup="default" catchup-days="{days}" catchup-source="{catchup_source}"'
-        lines.append(f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}"{logo_attr} group-title="{group}"{catchup_attr},{row["name"]}')
-        suffix = "?format=hls" if hls_compat else ""
-        lines.append(f"{base_url}/live/{stable_id}{suffix}")
-    return "\n".join(lines) + "\n"
+    return subscription_service._subscription_m3u(settings_store.load(), catalog,
+        _subscription_candidate_ids(catalog), request.url_root.rstrip("/"), hls_compat)
 
 
 def _subscription_response(hls_compat: bool = False) -> Response:
@@ -1226,11 +1152,16 @@ def _rtp2httpd_source_rows() -> list[dict[str, Any]]:
     if not selected_groups:
         return []
     operator_channels = operator_channel_store.load()
-    return [
-        _row_with_operator_stream_params(row, operator_channels)
-        for row in display_channel_rows(channel_store.list())
-        if channel_group_key(row) in selected_groups
-    ]
+    # The catalog supplies current operator endpoints, including mappings
+    # rebuilt by EPG refresh. Historical c-* records are not alternate lines.
+    rows = {str(item["row"]["key"]): item["row"] for item in catalog.values()}
+    for row in display_channel_rows(channel_store.list()):
+        key = str(row.get("key") or "")
+        if operator_channels and str(row.get("stable_id") or "").startswith("c-") and key not in operator_channels:
+            continue
+        rows.setdefault(key, row)
+    return [_row_with_operator_stream_params(row, operator_channels)
+            for row in rows.values() if channel_group_key(row) in selected_groups]
 
 
 def _rtp2httpd_subscription_response(*, best_only: bool) -> Response:
@@ -1374,7 +1305,8 @@ def api_channels():
     for row in rows:
         stable_id = stable_by_key.get(str(row.get("key") or "")) or _stable_channel_id(row)
         row["stable_id"] = stable_id
-        row["subscription_candidate"] = stable_id in candidate_ids
+        row["subscription_candidate"] = stable_by_key.get(str(row.get("key") or "")) in candidate_ids
+        row["source_state"] = "current" if str(row.get("key") or "") in stable_by_key else "historical"
         operator = catalog.get(stable_id, {}).get("operator", {})
         row["has_catchup"] = bool(operator.get("backtv_url"))
         row["has_timeshift"] = bool(operator.get("time_shift") or _operator_time_shift_minutes(operator))
@@ -1471,6 +1403,26 @@ def api_operator_channels_get():
 
 
 def _do_operator_import(channels: list[dict]) -> dict:
+    with STORAGE_LOCK:
+        tx = RestoreTransaction(DATA_DIR)
+        try:
+            stores = []
+            for store in (operator_channel_store, fcc_store, channel_store):
+                shadow = type(store)(tx.directory / store.path.name)
+                shadow.path.write_text(json.dumps(store.load(), ensure_ascii=False))
+                stores.append(shadow)
+            result = _build_operator_import(channels, *stores)
+            for target, staged in zip((operator_channel_store, fcc_store, channel_store), stores):
+                tx.stage_json(target.path, staged.load())
+            tx.commit()
+            operator_channel_store.invalidate()
+            return result
+        finally:
+            if not (tx.directory / "journal.json").exists():
+                tx.abort()
+
+
+def _build_operator_import(channels, operator_channel_store, fcc_store, channel_store) -> dict:
     """Import operator channels: store lookup table, bulk-write FCC, bulk-save channel records with EPG."""
     count = operator_channel_store.import_channels(channels)
 
@@ -1496,6 +1448,7 @@ def _do_operator_import(channels: list[dict]) -> dict:
         rows.append({
             "key": key,
             "stable_id": f"c-{str(ch.get('channel_id') or '').strip()}" if str(ch.get("channel_id") or "").strip() else "",
+            "provenance": ch.get("provenance") or {},
             "host": ch["ip"],
             "port": ch["port"],
             "name": ch.get("name", ""),
@@ -1512,7 +1465,7 @@ def _do_operator_import(channels: list[dict]) -> dict:
             "height": stored.get("height"),
             "quality_group": stored.get("quality_group", ""),
         })
-    enriched = enrich_channel_rows(rows, settings)
+    enriched = enrich_channel_rows(rows, settings, operator_channels=operator_channel_store.load())
     # Refresh automatic values, but keep explicit user edits available and active.
     to_save = []
     for row in enriched:
@@ -1571,7 +1524,7 @@ def api_operator_channels_clear():
 
 _BACKUP_VERSION = 2
 _DISASTER_BACKUP_VERSION = 1
-_DISASTER_MAX_FILES = 256
+_DISASTER_MAX_FILES = 10_000
 _DISASTER_MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 _DISASTER_PCAP_RE = re.compile(r"^pcaps/(stb-boot-[A-Za-z0-9._-]+\.pcap)$")
 _DISASTER_MANIFEST_RE = re.compile(r"^metadata/(stb-boot-[A-Za-z0-9._-]+)\.manifest\.json$")
@@ -1588,6 +1541,16 @@ _BACKUP_FILES: list[tuple[str, Path]] = [
 ]
 
 
+def serialized_storage(function):
+    from functools import wraps
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with STORAGE_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+@serialized_storage
 def _global_backup_payload(selected: list[str] | None = None) -> dict[str, Any]:
     selected_keys = set(selected if selected is not None else [key for key, _ in _BACKUP_FILES])
     payload: dict[str, Any] = {
@@ -1608,6 +1571,7 @@ def _global_backup_payload(selected: list[str] | None = None) -> dict[str, Any]:
             payload[key] = None
     if _CREDENTIAL_BACKUP_KEY in selected_keys:
         payload[_CREDENTIAL_BACKUP_KEY] = _backup_credentials()
+    validate_modules(payload, [key for key, _ in _BACKUP_FILES])
     return payload
 
 
@@ -1629,6 +1593,8 @@ def _normalize_global_backup_payload(data: dict[str, Any]) -> dict[str, Any]:
     payload = data.get("backup") if isinstance(data.get("backup"), dict) else data
     if not isinstance(payload, dict):
         raise ValueError("格式错误：备份内容必须是 JSON 对象")
+    if payload.get("_format") == "iptv-sniffer-channels":
+        raise ValueError("这是频道列表，请使用频道导入")
     legacy_iface = str(payload.get("interface") or "").strip()
     legacy_initial = payload.get("initial")
     if legacy_iface and isinstance(legacy_initial, dict) and "iptv_auth_backups" not in payload:
@@ -1661,6 +1627,11 @@ def _normalize_global_backup_payload(data: dict[str, Any]) -> dict[str, Any]:
             normalized[_CREDENTIAL_BACKUP_KEY] = credentials
         if legacy_credentials_migrated:
             normalized["_legacy_credentials_migrated"] = True
+    if "settings" in normalized and normalized["settings"] is not None:
+        SettingsStore.validate_update(normalized["settings"])
+        prefix = normalized["settings"].get("rtp2httpd_path_prefix", "")
+        ExportService.normalize_path_prefix(prefix)
+    validate_modules(normalized, [key for key, _ in _BACKUP_FILES])
     return normalized
 
 
@@ -1678,11 +1649,13 @@ def _auth_backup_conflicts(payload: dict[str, Any]) -> list[str]:
     )
 
 
+@serialized_storage
 def _restore_global_backup_payload(
     payload: dict[str, Any],
     selected_keys: list[str],
     *,
     overwrite_auth_backups: bool = False,
+    transaction=None,
 ) -> dict[str, Any]:
     """Restore validated backup modules without ever echoing credential values."""
     auth_conflicts = _auth_backup_conflicts(payload)
@@ -1690,55 +1663,12 @@ def _restore_global_backup_payload(
         raise FileExistsError(
             f"认证备份与本机接口快照冲突：{', '.join(auth_conflicts)}。请明确确认覆盖后再恢复。"
         )
-    restored: list[str] = []
-    skipped: list[str] = []
-    if _CREDENTIAL_BACKUP_KEY in selected_keys:
-        credentials = payload.get(_CREDENTIAL_BACKUP_KEY)
-        if not isinstance(credentials, dict):
-            skipped.append(_CREDENTIAL_BACKUP_KEY)
-        else:
-            try:
-                if "iptv_password" in credentials:
-                    settings_store.save({"iptv_password": str(credentials.get("iptv_password") or "")})
-                if "epg_des3_key" in credentials:
-                    key = str(credentials.get("epg_des3_key") or "").strip()
-                    if key:
-                        epg_key_store.set_epg_key(key)
-                    else:
-                        epg_key_store.clear_epg_key()
-                restored.append(_CREDENTIAL_BACKUP_KEY)
-            except Exception as exc:
-                logger.warning(f"backup import: failed to write credentials ({type(exc).__name__})")
-                skipped.append(_CREDENTIAL_BACKUP_KEY)
-    for key, path in _BACKUP_FILES:
-        if key not in selected_keys:
-            continue
-        value = payload.get(key)
-        if value is None:
-            skipped.append(key)
-            continue
-        try:
-            if key == "settings" and isinstance(value, dict):
-                value = dict(value)
-                value.pop("epg_des3_key", None)
-                value.pop("epg_des3_key_configured", None)
-                for secret_key in _CREDENTIAL_SETTING_KEYS:
-                    value.pop(secret_key, None)
-                settings_store.save(value)
-            else:
-                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                temp_path = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
-                try:
-                    temp_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-                    os.chmod(temp_path, 0o600)
-                    os.replace(temp_path, path)
-                finally:
-                    if temp_path.exists():
-                        temp_path.unlink()
-            restored.append(key)
-        except Exception as exc:
-            logger.warning(f"backup import: failed to write {key}: {type(exc).__name__}")
-            skipped.append(key)
+    restored, skipped = restore_modules(
+        payload, selected_keys, files=_BACKUP_FILES, root=DATA_DIR,
+        settings_store=settings_store, epg_key_store=epg_key_store,
+        credential_keys=_CREDENTIAL_SETTING_KEYS, validate_settings=SettingsStore.validate_update,
+        transaction=transaction,
+    )
     if "operator_channels" in restored:
         operator_channel_store.invalidate()
     restore_warnings: list[str] = []
@@ -1863,17 +1793,20 @@ def _disaster_archive_targets(zf: zipfile.ZipFile) -> dict[str, Path]:
     return targets
 
 
+def _check_disaster_limits(infos: list[zipfile.ZipInfo]) -> None:
+    if not infos or len(infos) > _DISASTER_MAX_FILES:
+        raise ValueError(f"灾备包文件数量超过限制（最多 {_DISASTER_MAX_FILES} 项），请减少归档后重试")
+    if sum(info.file_size for info in infos) > _DISASTER_MAX_UNCOMPRESSED_BYTES:
+        raise ValueError("灾备包解压后超过 2 GiB 安全限制，请减少归档后重试")
+
+
 def _validate_disaster_zip(zf: zipfile.ZipFile) -> tuple[dict[str, Any], dict[str, Path], dict[str, str]]:
     infos = zf.infolist()
-    if not infos or len(infos) > _DISASTER_MAX_FILES:
-        raise ValueError("灾备包文件数量不合法")
+    _check_disaster_limits(infos)
     if len({info.filename for info in infos}) != len(infos):
         raise ValueError("灾备包中存在重名文件")
     if any(info.is_dir() for info in infos):
         raise ValueError("灾备包不应包含独立目录项")
-    total_size = sum(info.file_size for info in infos)
-    if total_size > _DISASTER_MAX_UNCOMPRESSED_BYTES:
-        raise ValueError("灾备包解压后超过 2 GiB 安全限制")
     required = {"backup.json", "deployment.json", "README.txt", "CHECKSUMS.sha256"}
     names = {info.filename for info in infos}
     if not required.issubset(names):
@@ -2043,28 +1976,37 @@ def api_disaster_backup_export():
             _deployment_recovery_manifest(), ensure_ascii=False, indent=2,
         ).encode("utf-8")
         checksums: dict[str, str] = {}
+        archive_files = []
+        archive_dir = stb_discovery_service.archive_dir
+        if include_pcaps and archive_dir:
+            for path in sorted(Path(archive_dir).glob("stb-boot-*.pcap")):
+                if path.is_file():
+                    archive_files.append((f"pcaps/{path.name}", path))
+                    manifest = Path(archive_dir) / f"{path.stem}.artifacts" / "manifest.json"
+                    if manifest.is_file():
+                        archive_files.append((f"metadata/{path.stem}.manifest.json", manifest))
+        # Use the same limits before doing expensive compression and after writing.
+        sizes = [("backup.json", len(backup_bytes)), ("deployment.json", len(deployment_bytes)),
+                 ("README.txt", len(_disaster_readme()))] + [(n, p.stat().st_size) for n,p in archive_files]
+        sizes.append(("CHECKSUMS.sha256", sum(67 + len(n.encode()) for n, _ in sizes)))
+        infos = []
+        for name, size in sizes:
+            info = zipfile.ZipInfo(name)
+            info.file_size = size
+            infos.append(info)
+        _check_disaster_limits(infos)
         with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             _zip_write_bytes(zf, "backup.json", backup_bytes, checksums)
             _zip_write_bytes(zf, "deployment.json", deployment_bytes, checksums)
             _zip_write_bytes(zf, "README.txt", _disaster_readme(), checksums)
-            archive_dir = stb_discovery_service.archive_dir
-            if include_pcaps and archive_dir:
-                for pcap_path in sorted(Path(archive_dir).glob("stb-boot-*.pcap")):
-                    if not pcap_path.is_file():
-                        continue
-                    _zip_write_file(zf, f"pcaps/{pcap_path.name}", pcap_path, checksums)
-                    manifest_path = Path(archive_dir) / f"{pcap_path.stem}.artifacts" / "manifest.json"
-                    if manifest_path.is_file():
-                        _zip_write_file(
-                            zf,
-                            f"metadata/{pcap_path.stem}.manifest.json",
-                            manifest_path,
-                            checksums,
-                        )
+            for name, path in archive_files:
+                _zip_write_file(zf, name, path, checksums)
             checksum_body = "".join(
                 f"{digest}  {name}\n" for name, digest in sorted(checksums.items())
             ).encode("utf-8")
             zf.writestr("CHECKSUMS.sha256", checksum_body)
+            # Never hand out a package that this version cannot read back.
+            _check_disaster_limits(zf.infolist())
         os.chmod(temp_path, 0o600)
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
         size = temp_path.stat().st_size
@@ -2084,6 +2026,9 @@ def api_disaster_backup_export():
             f"原始 PCAP={'是' if include_pcaps else '否'}"
         )
         return response
+    except ValueError as exc:
+        temp_path.unlink(missing_ok=True)
+        return api_error(str(exc), 400)
     except Exception as exc:
         temp_path.unlink(missing_ok=True)
         logger.warning(f"完整灾备包导出失败：{type(exc).__name__}")
@@ -2099,6 +2044,7 @@ def api_disaster_backup_import():
         return api_error("请选择完整灾备 ZIP 文件", 400)
     if not str(upload.filename).lower().endswith(".zip"):
         return api_error("完整灾备文件必须是 ZIP 格式", 400)
+    transaction = None
     try:
         upload.stream.seek(0)
         with zipfile.ZipFile(upload.stream, "r") as zf:
@@ -2124,20 +2070,16 @@ def api_disaster_backup_import():
             if payload.get(_CREDENTIAL_BACKUP_KEY) is not None:
                 selected.append(_CREDENTIAL_BACKUP_KEY)
             imported_archives: list[str] = []
+            transaction = RestoreTransaction(DATA_DIR)
             for member, target in targets.items():
                 if member in archive_skipped:
                     continue
-                _write_zip_member_private(zf, member, target)
+                with zf.open(member) as content:
+                    transaction.stage(target, content)
                 imported_archives.append(member)
             result = _restore_global_backup_payload(
-                payload, selected, overwrite_auth_backups=True,
-            ) if selected else {
-                "restored": [],
-                "skipped": [],
-                "selected": [],
-                "warnings": [],
-                "catchup_refresh_required": False,
-            }
+                payload, selected, overwrite_auth_backups=True, transaction=transaction,
+            )
         result.update({
             "pcap_archives_restored": sum(name.startswith("pcaps/") for name in imported_archives),
             "protocol_manifests_restored": sum(name.startswith("metadata/") for name in imported_archives),
@@ -2162,6 +2104,10 @@ def api_disaster_backup_import():
     except Exception as exc:
         logger.warning(f"完整灾备包恢复失败：{type(exc).__name__}")
         return api_error("完整灾备包恢复失败，请检查数据目录空间与文件权限", 500)
+
+    finally:
+        if transaction and not (transaction.directory / "journal.json").exists():
+            transaction.abort()
 
 
 @app.post("/api/backup/clear-all")
@@ -2553,7 +2499,7 @@ def api_export():
         operator_channels = operator_channel_store.load()
         rows, health_summary = apply_pre_export_health_check(rows, settings, operator_channels)
         flask_base_url = request.url_root.rstrip("/")
-        result = export_service.export(rows, settings, operator_channels=operator_channels, flask_base_url=flask_base_url)
+        result = export_service.export_bundle(rows, settings, operator_channels=operator_channels, flask_base_url=flask_base_url)
         result["health_check"] = health_summary
         channel_store.save_rows(rows)
         logger.info(
@@ -2581,6 +2527,13 @@ def api_download(filename: str):
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
+@app.get("/api/download/bundles/<bundle>/<filename>")
+def api_download_bundle(bundle, filename):
+    if not re.fullmatch(r"[a-f0-9]{32}", bundle) or filename not in ALLOWED_DOWNLOADS:
+        return api_error("不允许下载该文件", 404)
+    return send_from_directory(OUTPUT_DIR / "bundles" / bundle, filename, as_attachment=True)
+
+
 
 
 @app.get("/hls/<hls_key>/stream.m3u8")
@@ -2596,13 +2549,18 @@ def hls_playlist(hls_key: str):
     localaddr = _iptv_local_ip(settings)
     _, hls_dir = hls_service.ensure(host, port, path_mode, localaddr)
     m3u8 = hls_dir / "stream.m3u8"
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        if m3u8.exists() and m3u8.stat().st_size > 0:
-            break
-        time.sleep(0.25)
-    if not m3u8.exists() or m3u8.stat().st_size == 0:
-        return api_error("HLS 流启动超时，请检查组播路由和 rtp2httpd 上游接口", 504)
+    hls_service.claim_waiter(hls_key)
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if m3u8.exists() and m3u8.stat().st_size > 0:
+                break
+            time.sleep(0.25)
+        if not m3u8.exists() or m3u8.stat().st_size == 0:
+            hls_service.stop(hls_key)
+            return api_error("HLS 流启动超时，请检查组播路由和 rtp2httpd 上游接口", 504)
+    finally:
+        hls_service.release_waiter(hls_key)
     hls_service.touch(hls_key)
     content = HlsService.read_playlist(m3u8)
     resp = Response(content, mimetype="application/vnd.apple.mpegurl")
@@ -2616,11 +2574,9 @@ def hls_segment(hls_key: str, segment: str):
     parsed = HlsService.parse_key(hls_key)
     if not parsed or not segment.endswith(".ts") or "/" in segment or ".." in segment:
         return ("", 404)
-    host, port = parsed
-    settings = settings_store.load()
-    path_mode = str(settings.get("path_mode", "rtp"))
-    localaddr = _iptv_local_ip(settings)
-    _, hls_dir = hls_service.ensure(host, port, path_mode, localaddr)
+    hls_dir = hls_service.existing_directory(hls_key)
+    if hls_dir is None:
+        return ("", 404)
     seg_path = hls_dir / segment
     if not seg_path.is_file():
         return ("", 404)
@@ -2633,6 +2589,19 @@ def hls_segment(hls_key: str, segment: str):
 
 @app.get("/hls/<hls_key>/catchup")
 def hls_catchup(hls_key: str):
+    lease = media_tasks.acquire("catchup", hls_key)
+    try:
+        response = app.make_response(_hls_catchup_response(hls_key, lease))
+        if response.status_code >= 400:
+            lease.close()
+        response.call_on_close(lease.close)
+        return response
+    except BaseException:
+        lease.close()
+        raise
+
+
+def _hls_catchup_response(hls_key: str, lease):
     parsed = HlsService.parse_key(hls_key)
     if not parsed:
         return ("", 404)
@@ -2640,13 +2609,21 @@ def hls_catchup(hls_key: str):
     if not valid_ipv4_multicast(host):
         return ("", 404)
     playseek = request.args.get("playseek", "").strip()
-    if not re.match(r'^\d{14}-\d{14}$', playseek):
-        return api_error("playseek 参数格式无效，需为 YYYYMMDDHHmmss-YYYYMMDDHHmmss", 400)
+    if not valid_playseek(playseek):
+        return api_error("playseek 需为有效且结束晚于开始的 UTC 时间段：YYYYMMDDHHmmss-YYYYMMDDHHmmss", 400)
     op_channels = operator_channel_store.load()
     ch_info = op_channels.get(f"{host}:{port}") or {}
     backtv = str(ch_info.get("backtv_url", "") or "").strip()
     if not backtv:
         return api_error("该频道无回看地址", 404)
+    try:
+        parts = urlsplit(backtv)
+        if parts.scheme.lower() not in {"rtsp", "http", "https"} or not parts.hostname or any(c in backtv for c in "\r\n\x00"):
+            raise ValueError()
+        if parts.port is not None and not 1 <= parts.port <= 65535:
+            raise ValueError()
+    except ValueError:
+        return api_error("回看地址仅支持有效的 RTSP／HTTP(S) 网络地址", 400)
     settings = settings_store.load()
     user_agent = str(settings.get("epg_user_agent") or "").strip()
     last_start_error = "回看上游未返回媒体数据"
@@ -2656,7 +2633,10 @@ def hls_catchup(hls_key: str):
     # SETUP requests even for ``udp+tcp`` and receives 461. Try the compatible
     # control flow first, while retaining FFmpeg for other operator profiles.
     for url_mode, rtsp_url in _catchup_rtsp_candidates(backtv, playseek):
+        if lease.cancel_requested:
+            return api_error("回看任务已取消", 409)
         session = CombinedRtspUdpSession(rtsp_url, user_agent)
+        lease.attach(session.close)
         try:
             first_chunk = session.open()
         except RtspCatchupError as exc:
@@ -2673,13 +2653,18 @@ def hls_catchup(hls_key: str):
     if shutil.which("ffmpeg") is None:
         return api_error("缺少 ffmpeg 命令，无法转换回看流", 503, catchup_diagnostic=last_diagnostic)
     for url_mode, rtsp_url in _catchup_rtsp_candidates(backtv, playseek):
+        if lease.cancel_requested:
+            return api_error("回看任务已取消", 409)
         # The captured STB SETUP advertises both UDP client ports and TCP
         # interleaving.  Offer the same combination first; forcing either
         # transport alone makes this platform return 461.  Keep FFmpeg's
         # default and single-transport modes as compatibility fallbacks.
         for transport in ("udp+tcp", "auto", "tcp", "udp"):
+            if lease.cancel_requested:
+                return api_error("回看任务已取消", 409)
             ffmpeg_command = [
-                "ffmpeg", "-rw_timeout", str(_CATCHUP_FFMPEG_READ_TIMEOUT_MICROSECONDS),
+                "ffmpeg", "-protocol_whitelist", "rtsp,rtp,udp,tcp,http,https,tls",
+                "-rw_timeout", str(_CATCHUP_FFMPEG_READ_TIMEOUT_MICROSECONDS),
             ]
             # EPG authentication already uses the STB's captured User-Agent. Reuse
             # it for the subsequent RTSP request as some media servers apply the
@@ -2694,6 +2679,8 @@ def hls_catchup(hls_key: str):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
+            proc._iptv_stderr = ProcessTail(proc.stderr)
+            lease.attach(lambda proc=proc: _stop_catchup_ffmpeg(proc))
             first_chunk, start_error = _wait_for_catchup_first_chunk(proc)
             if not start_error:
                 def generate():
@@ -2768,19 +2755,19 @@ def _catchup_auto_enabled(settings: dict[str, Any]) -> bool:
     return bool(settings.get("catchup_enabled")) and bool(settings.get("catchup_auto_refresh_enabled"))
 
 
+def _next_catchup_run_locked(settings: dict[str, Any], now: int) -> int | None:
+    catchup_scheduler.state = _catchup_auto_state
+    return catchup_scheduler.next_run(settings, now)
+
+
 def _catchup_refresh_status(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = settings or settings_store.load()
     interval_hours = _catchup_refresh_interval_hours(settings)
     auto_enabled = _catchup_auto_enabled(settings)
     now = int(time.time())
     with _catchup_refresh_lock:
+        next_run_at = _next_catchup_run_locked(settings, now)
         state = dict(_catchup_auto_state)
-    next_run_at = state.get("next_run_at")
-    if auto_enabled and not next_run_at:
-        base = state.get("last_success_at") or state.get("last_run_at") or now
-        next_run_at = int(base) + interval_hours * 3600
-    if not auto_enabled:
-        next_run_at = None
     return {
         "enabled": auto_enabled,
         "interval_hours": interval_hours,
@@ -2797,93 +2784,25 @@ def _catchup_refresh_status(settings: dict[str, Any] | None = None) -> dict[str,
 
 def _refresh_backtv_with_state(settings: dict[str, Any], source: str) -> dict[str, Any]:
     settings = _with_local_epg_key(settings)
-    interface = str(settings.get("interface") or "").strip()
-    epg_host = str(settings.get("epg_auth_host") or "").strip()
-    if interface and epg_host.startswith("10."):
-        snapshot = iptv_auth_service.snapshot(interface)
-        has_iptv_ip = any(
-            str(item.get("local") or "").startswith("10.")
-            for item in (snapshot.get("ipv4") or [])
-        )
-        if not has_iptv_ip:
-            raise ValueError(
-                f"IPTV 接口 {interface} 尚未取得 IPTV 地址，请先在认证页执行一键认证"
-            )
-    now = int(time.time())
-    with _catchup_refresh_lock:
-        if _catchup_auto_state.get("running"):
-            raise RuntimeError("回看地址刷新正在执行，请稍后再试")
-        _catchup_auto_state.update({
-            "running": True,
-            "last_run_at": now,
-            "last_error": "",
-        })
-
-    try:
+    catchup_scheduler.state = _catchup_auto_state
+    def refresh():
+        interface = str(settings.get("interface") or "").strip()
+        if interface and str(settings.get("epg_auth_host") or "").startswith("10."):
+            snapshot = iptv_auth_service.snapshot(interface)
+            if not any(str(item.get("local") or "").startswith("10.") for item in snapshot.get("ipv4") or []):
+                raise ValueError(f"IPTV 接口 {interface} 尚未取得 IPTV 地址，请先在认证页执行一键认证")
+        import copy
         op_channels = operator_channel_store.load()
+        expected = copy.deepcopy(op_channels)
         result = refresh_backtv_urls(settings, op_channels, _effective_stb_auth_info(), logger)
-        operator_channel_store.save_dict(op_channels)
-        finished_at = int(time.time())
-        result = dict(result)
-        result["source"] = source
-        result["refreshed_at"] = finished_at
-        next_run_at = finished_at + _catchup_refresh_interval_hours(settings) * 3600
-        with _catchup_refresh_lock:
-            _catchup_auto_state.update({
-                "running": False,
-                "last_success_at": finished_at,
-                "next_run_at": next_run_at if _catchup_auto_enabled(settings) else None,
-                "last_error": "",
-                "last_result": result,
-                "token_expires_at": result.get("token_expires_at"),
-                "token_expiry_note": result.get("token_expiry_note") or "未暴露明确有效期",
-            })
+        operator_channel_store.save_if_unchanged(expected, op_channels)
         return result
-    except Exception as exc:
-        safe_error = redact_sensitive_text(str(exc))
-        with _catchup_refresh_lock:
-            _catchup_auto_state.update({
-                "running": False,
-                "last_error": safe_error,
-                "next_run_at": int(time.time()) + _catchup_refresh_interval_hours(settings) * 3600
-                if _catchup_auto_enabled(settings) else None,
-            })
-        raise
+    return catchup_scheduler.run(settings, source, refresh, redact_sensitive_text)
 
 
 def _start_catchup_auto_refresh_loop() -> None:
-    global _catchup_auto_thread_started
-    with _catchup_refresh_lock:
-        if _catchup_auto_thread_started:
-            return
-        _catchup_auto_thread_started = True
-
-    def worker() -> None:
-        while True:
-            settings = settings_store.load()
-            interval_seconds = _catchup_refresh_interval_hours(settings) * 3600
-            now = int(time.time())
-            auto_enabled = _catchup_auto_enabled(settings)
-            with _catchup_refresh_lock:
-                running = bool(_catchup_auto_state.get("running"))
-                last_success = _catchup_auto_state.get("last_success_at")
-                last_run = _catchup_auto_state.get("last_run_at")
-                base = int(last_success or last_run or now)
-                next_run = base + interval_seconds if auto_enabled else None
-                _catchup_auto_state["next_run_at"] = next_run
-            if auto_enabled and not running and next_run is not None and now >= next_run:
-                try:
-                    result = _refresh_backtv_with_state(settings, source="auto")
-                    logger.info(
-                        f"定时刷新回看地址完成：更新 {result.get('updated', 0)} / "
-                        f"{result.get('total', 0)} 个频道，下一次约 "
-                        f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(time.time()) + interval_seconds))}"
-                    )
-                except Exception as exc:
-                    logger.warning(f"定时刷新回看地址失败：{redact_sensitive_text(str(exc))}")
-            time.sleep(60)
-
-    threading.Thread(target=worker, daemon=True).start()
+    catchup_scheduler.state = _catchup_auto_state
+    catchup_scheduler.start(settings_store.load, _refresh_backtv_with_state, logger)
 
 
 @app.post("/api/catchup/refresh")
@@ -2970,6 +2889,23 @@ def api_hls_m3u():
         return api_error(str(exc))
 
 
+@app.errorhandler(MediaCapacityError)
+def media_capacity_error(exc):
+    response = app.make_response(api_error(str(exc), 429))
+    response.headers["Retry-After"] = "2"
+    return response
+
+
+@app.get("/api/media/tasks")
+def api_media_tasks():
+    return api_success(media_tasks.status())
+
+
+@app.delete("/api/media/tasks/<task_id>")
+def api_media_cancel(task_id):
+    return api_success({"cancelled": media_tasks.cancel(task_id)})
+
+
 @app.get("/api/snapshot/<host>/<int:port>")
 def api_snapshot(host: str, port: int):
     if not valid_ipv4_multicast(host):
@@ -2978,38 +2914,14 @@ def api_snapshot(host: str, port: int):
         return api_error("预览端口必须位于 1-65535", 400)
     if shutil.which("ffmpeg") is None:
         return api_error("缺少 ffmpeg 命令", 503)
-    key = f"{host}:{port}"
-    now = time.time()
-    cached = _snapshot_cache.get(key)
-    if cached and now - cached[0] < _snapshot_cache_ttl:
-        return Response(cached[1], mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
-    path_mode = str(settings_store.load().get("path_mode", "rtp")).strip().lower()
-    scheme = "rtp" if path_mode == "rtp" else "udp"
-    source = f"{scheme}://{host}:{port}?timeout=12000000"
-    cmd = [
-        "ffmpeg", "-y",
-        "-analyzeduration", "8000000",
-        "-probesize", "12000000",
-        "-i", source,
-        "-frames:v", "1",
-        "-f", "image2",
-        "-vcodec", "mjpeg",
-        "-q:v", "4",
-        "pipe:1",
-    ]
+    settings = settings_store.load()
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=22)
+        data = snapshot_service.get(host, port, str(settings.get("path_mode") or "rtp"), _iptv_local_ip(settings))
+        return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "max-age=30"})
     except subprocess.TimeoutExpired:
         return api_error("截图超时", 504)
-    except OSError as exc:
-        return api_error(f"ffmpeg 执行失败：{exc}", 500)
-    if proc.returncode != 0 or not proc.stdout:
-        stderr_tail = (proc.stderr or b"").decode(errors="replace").strip().splitlines()
-        msg = stderr_tail[-1] if stderr_tail else "ffmpeg 无输出"
-        logger.warning(f"截图失败：{key}，{msg}")
-        return api_error(f"无法从流中截图：{msg}", 502)
-    _snapshot_cache[key] = (now, proc.stdout)
-    return Response(proc.stdout, mimetype="image/jpeg", headers={"Cache-Control": f"max-age={_snapshot_cache_ttl}"})
+    except ValueError as exc:
+        return api_error(str(exc), 502)
 
 
 @app.get("/api/logs")
@@ -3297,8 +3209,10 @@ def _load_rtp2httpd_config(path_hint: str) -> dict[str, Any]:
 
 
 def _diagnose_sections(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    order = ["rtp2httpd", "network", "auth", "fcc", "multicast", "playlist"]
+    order = ["rtp2httpd", "network", "auth", "wire", "igmp", "multicast", "media", "fcc", "rtsp", "player", "playlist"]
     names = {
+        "wire": "线缆观测", "igmp": "IGMP 请求与发包", "media": "应用媒体接收",
+        "rtsp": "回看链路", "player": "播放器验证",
         "rtp2httpd": "rtp2httpd 服务",
         "network": "网络接口",
         "auth": "接入认证",
@@ -3318,6 +3232,16 @@ def _diagnose_sections(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 @app.post("/api/diagnose")
 def api_diagnose():
+    lease = media_tasks.acquire("diagnose")
+    cancel_event = threading.Event()
+    lease.cancel_callback = cancel_event.set
+    try:
+        return _run_diagnose(cancel_event)
+    finally:
+        lease.close()
+
+
+def _run_diagnose(cancel_event=None):
     """Playback chain diagnostic: rtp2httpd reachability + FCC + config review."""
     data = request.get_json(silent=True) or {}
     settings = settings_store.load()
@@ -3327,6 +3251,8 @@ def api_diagnose():
     config_path = str(data.get("config_path") or settings.get("rtp2httpd_config_path", "")).strip()
     iface = str(settings.get("interface", "")).strip()
 
+    link = {}
+    fcc_reachable = None
     checks: list[dict] = []
     conclusions: list[str] = []
 
@@ -3380,9 +3306,9 @@ def api_diagnose():
             )
             add_check("rtp2httpd", "rtp2httpd 配置文件", True, detail)
             if cfg.get("upstream_interface") and iface and cfg.get("upstream_interface") == iface:
-                add_check("network", "上游接口与抓包接口一致", True, f"rtp2httpd upstream-interface={cfg.get('upstream_interface')}，抓包接口={iface}")
+                add_check("network", "播放上游与抓包接口", None, f"rtp2httpd upstream-interface={cfg.get('upstream_interface')}，抓包接口={iface}")
             elif cfg.get("upstream_interface") and iface:
-                add_check("network", "上游接口与抓包接口一致", None, f"rtp2httpd upstream-interface={cfg.get('upstream_interface')}，抓包接口={iface}；如前者不是 IPTV 上游口会无法主动播放")
+                add_check("network", "播放上游与抓包接口", None, f"rtp2httpd upstream-interface={cfg.get('upstream_interface')}，抓包接口={iface}；抓包口与播放上游口可以不同，应分别验证可见流量和主动接收能力")
         elif cfg.get("ok") is False:
             add_check("rtp2httpd", "rtp2httpd 配置文件", False, f"{cfg.get('path')} → {cfg.get('error')}")
         else:
@@ -3440,10 +3366,12 @@ def api_diagnose():
             try:
                 with _socket.create_connection((fcc_ip, int(fcc_port)), timeout=3):
                     pass
+                fcc_reachable = True
                 add_check("fcc", f"FCC 服务器端口可达 ({channel_addr})", True, f"TCP connect {fcc_ip}:{fcc_port} → 成功（注：仅验证端口可达，非 FCC 协议握手）")
             except Exception as exc:
+                fcc_reachable = False
                 add_check("fcc", f"FCC 服务器端口可达 ({channel_addr})", False, f"TCP connect {fcc_ip}:{fcc_port} → {exc}")
-                conclusions.append(f"FCC 服务器 {fcc_ip}:{fcc_port} 端口不可达，rtp2httpd FCC 快速换台将超时。")
+                conclusions.append("FCC TCP 端口连接失败；未验证 UDP／专有 FCC 协议，不能据此判断快速换台是否可用。")
         else:
             add_check("fcc", f"FCC 记录查询 ({channel_addr})", None, "此频道无 FCC 记录（不影响正常播放，仅影响快速换台）")
 
@@ -3461,12 +3389,14 @@ def api_diagnose():
                 add_check("multicast", f"组播链路检测 ({channel_addr})", None, "缺少 tcpdump/抓包权限，跳过 IGMP/UDP 链路检测（需 NET_ADMIN, NET_RAW）")
                 conclusions.append("无法进行 IGMP/组播回流检测：宿主机需安装 tcpdump 并授予 NET_ADMIN、NET_RAW 权限。")
             else:
-                link = capture_service.diagnose_multicast(mc_host, mc_port, iface)
-                igmp_detail = "已发出 IGMP 加入请求" if link.get("igmp_sent") else "未确认 IGMP 加入"
+                if cancel_event and cancel_event.is_set():
+                    return api_error("诊断已取消", 409)
+                link = capture_service.diagnose_multicast(mc_host, mc_port, str(settings.get("media_interface") or iface), cancel_event=cancel_event, capture_interface=iface)
+                igmp_detail = "已向内核请求加入组播" if link.get("join_requested") else "未完成加入组播请求"
                 add_check(
                     "multicast",
                     f"IGMP 组播加入 ({channel_addr})",
-                    bool(link.get("igmp_sent")),
+                    bool(link.get("join_requested")),
                     f"接口 {link.get('interface')}（{link.get('interface_ip') or '自动'}）→ {igmp_detail}",
                 )
                 verdict_code = link.get("verdict")
@@ -3475,10 +3405,9 @@ def api_diagnose():
                               f"未加入时线缆收到={link.get('wire_passive_packets')}")
                 if verdict_code == "ok":
                     add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", True, udp_detail)
-                elif verdict_code == "mirror":
+                elif verdict_code in {"wire_only", "mirror"}:
                     add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", False, udp_detail + " → 疑似镜像口（SPAN）")
-                    conclusions.append("疑似镜像/SPAN 抓包口：未加入组播即可收到流量，但主动 IGMP 加入收不到。"
-                                       "镜像口只能被动看到流量，播放器无法主动播放；请改用真实的 IPTV 接入口。")
+                    conclusions.append("线缆可见流量但应用 socket 未收到；镜像口、选路、接口或过滤规则均可能导致，请分别核查。")
                 else:
                     add_check("multicast", f"收到 239.x UDP 组播流 ({channel_addr})", False, udp_detail)
                     conclusions.append("未收到该组播流：可能不在 IPTV 组播 VLAN、抓包接口选择错误，或该频道已停播。")
@@ -3491,16 +3420,8 @@ def api_diagnose():
     if ch_count == 0:
         conclusions.append("频道列表为空，请先运行运营商频道发现并导入。")
 
-    # --- Verdict ---
-    failed = [c for c in checks if c["ok"] is False]
-    if not failed and rtp2httpd_ok:
-        verdict = "✓ 播放链路基本正常，可尝试播放。"
-    elif not http_host:
-        verdict = "直连 rtp:// 模式，无需 rtp2httpd。如需代理播放请配置 rtp2httpd 地址。"
-    elif failed:
-        verdict = f"⚠ 发现 {len(failed)} 项问题，详见诊断项和结论。"
-    else:
-        verdict = "诊断完成。"
+    checks.extend(playback_evidence(link, fcc_reachable))
+    verdict = diagnostic_verdict(checks)
 
     return api_success({
         "verdict": verdict,
@@ -3532,11 +3453,29 @@ def boot() -> None:
     epg_service.start_auto_refresh(settings_store)
     iptv_auth_service.start_egress_bpf_watchdog()
     _start_catchup_auto_refresh_loop()
-    threading.Thread(target=_startup_epg_refresh, daemon=True).start()
     _start_version_check_loop()
     logger.info(f"数据目录：{DATA_DIR}")
     logger.info(f"输出目录：{OUTPUT_DIR}")
-    serve(app, host=WEB_HOST, port=WEB_PORT, threads=WAITRESS_THREADS)
+    import signal
+    def shutdown(*_args):
+        iptv_auth_service.stop_egress_bpf_watchdog()
+        stb_discovery_service.reset()
+        epg_service.shutdown()
+        catchup_scheduler.shutdown()
+        hls_service.shutdown()
+        media_tasks.shutdown()
+        raise SystemExit(0)
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, shutdown)
+    try:
+        serve(app, host=WEB_HOST, port=WEB_PORT, threads=WAITRESS_THREADS)
+    finally:
+        iptv_auth_service.stop_egress_bpf_watchdog()
+        stb_discovery_service.reset()
+        epg_service.shutdown()
+        catchup_scheduler.shutdown()
+        hls_service.shutdown()
+        media_tasks.shutdown()
 
 
 if __name__ == "__main__":
