@@ -2195,21 +2195,24 @@ def api_stb_discovery_start():
     stb_ip = str(data.get("stb_ip", "")).strip()
     interface = str(data.get("interface", "any")).strip() or "any"
     full_capture = bool(data.get("full_capture"))
-    if not stb_ip:
-        return api_error("请填写机顶盒 IP 地址")
-    if not valid_ip_or_host(stb_ip):
+    stb_mac = str(data.get("stb_mac", "")).strip()
+    if not stb_ip and not stb_mac:
+        return api_error("请填写机顶盒 IP 或 MAC 地址")
+    if stb_ip and not valid_ip_or_host(stb_ip):
         return api_error("IP 地址格式不正确")
-    rt = stb_discovery_service.runtime_check()
-    if not rt["ok"]:
-        return api_error("；".join(rt["errors"]), 500)
     try:
-        stb_discovery_service.start(stb_ip, interface, full_capture=full_capture)
-        return api_success(stb_discovery_service.status())
+        stb_discovery_service.start(
+            stb_ip, interface, full_capture=full_capture, stb_mac=stb_mac
+        )
+    except ValueError as exc:
+        # MAC 格式非法属于调用方错误，不需要堆栈。
+        return api_error(str(exc))
     except RuntimeError as exc:
         return api_error(str(exc))
     except Exception as exc:
         logger.error(f"启动 STB 捕获失败：{exc}")
         return api_error(str(exc), 500)
+    return api_success(stb_discovery_service.status())
 
 
 @app.post("/api/stb_discovery/stop")

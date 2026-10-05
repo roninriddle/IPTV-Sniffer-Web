@@ -203,7 +203,7 @@ class TestAnalyzeReportsMissingData:
             "services.stb_discovery_service._reassemble_tcp_streams", lambda *a, **kw: {("a", 1, "b", 2): b"x"}
         )
         monkeypatch.setattr(
-            "services.stb_discovery_service._extract_dhcp_from_pcap", lambda *a, **kw: {"mac": "aa:bb"}
+            "services.stb_discovery_service._extract_dhcp_from_pcap", lambda *a, **kw: {"mac": "02:00:00:00:00:20"}
         )
         monkeypatch.setattr(service, "_archive_pcap", lambda *a, **kw: None)
         service._pcap_path = str(pcap)

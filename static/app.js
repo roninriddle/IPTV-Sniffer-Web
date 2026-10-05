@@ -1420,6 +1420,14 @@ function renderStbDiscoveryStatus(state) {
   badge.textContent = STB_STATUS_LABELS[status] || status;
   badge.className = `chip ${STB_STATUS_CHIP[status] || "neutral"}`;
 
+  // DHCP chaddr already gives us the STB MAC, so prefill it instead of making
+  // the user read it off the device label or a DHCP lease.  Only fills an empty
+  // field so it never overrides a value the user typed deliberately.
+  const macInput = $("stbDiscoveryMac");
+  if (macInput && !macInput.value.trim() && state.detected_mac) {
+    macInput.value = state.detected_mac;
+  }
+
   const box = $("stbDiscoveryStatus");
   const isCapturing = status === "capturing";
   const isAnalyzing = status === "analyzing";
@@ -1454,15 +1462,30 @@ function renderStbDiscoveryStatus(state) {
     if (state.live_has_auth) liveParts.push("已捕获认证信息");
     if (state.live_last_error) liveParts.push(`实时分析提示：${state.live_last_error}`);
     const liveHint = liveParts.length ? `\n${liveParts.join("\n")}。` : "";
-    box.textContent = `正在捕获 ${escapeHtml(state.stb_ip || "")} 的流量（${elapsed} 秒）…请立即重启机顶盒。\n一般约 30 秒可捕获到认证信息，约 60 秒可捕获到频道信息。${liveHint}`;
+    const target = state.stb_mac
+      ? `${escapeHtml(state.stb_mac)}`
+      : escapeHtml(state.stb_ip || "");
+    box.textContent = `正在捕获 ${target} 的流量（${elapsed} 秒）…请立即重启机顶盒。\n一般约 30 秒可捕获到认证信息，约 60 秒可捕获到频道信息。${liveHint}`;
     box.className = "result-box ok";
   } else if (isAnalyzing) {
     box.textContent = "正在分析 pcap 数据，提取频道信息…";
     box.className = "result-box warning";
   } else if (isDone) {
     const n = state.channel_count || 0;
-    box.textContent = n > 0 ? `捕获完成，共发现 ${n} 个频道。` : "捕获完成，未发现频道。请确认机顶盒已完成开机流程。";
-    box.className = n > 0 ? "result-box ok" : "result-box warning";
+    const diag = state.diagnostics || {};
+    let text = n > 0
+      ? `捕获完成，共发现 ${n} 个频道。`
+      : "捕获完成，未发现频道。请确认机顶盒已完成开机流程。";
+    // A wrong MAC still yields a valid filter, so tcpdump records nothing and
+    // the user is left with a bare "0 channels".  Say what actually happened.
+    if (diag.mac_not_seen && n === 0) {
+      text = `抓包中未出现 MAC ${diag.mac_requested || ""}，其他设备或 DHCP 的数据仍可能被捕获。\n`
+        + "请确认填写的是机顶盒的 MAC（不是光猫的），且抓包点能看到机顶盒与 IPTV 网关之间的流量。";
+      box.className = "result-box error";
+    } else {
+      box.className = n > 0 ? "result-box ok" : "result-box warning";
+    }
+    box.textContent = text;
     renderStbDiscoveryChannels(state.channels || []);
     loadIptvAuthSummary().catch(() => {});
   } else if (isError) {
@@ -1493,7 +1516,9 @@ function stbDiagnosticsConclusions(diag) {
   if (pcapSize <= 0 || diag.packet_count === 0) {
     notes.push("没有捕获到完整数据包：检查抓包点和过滤条件，并查看 tcpdump 错误；"
       + "容器抓包还需检查网络模式及 NET_RAW/NET_ADMIN 权限。");
-  } else if (diag.mac_not_seen) {
+  } else if (diag.identity_source === "unresolved") {
+    notes.push("已抓到数据，但尚未确认机顶盒 IP：请在捕获期间重启机顶盒以获得 DHCP ACK，或填写当前 IP 后重试。");
+  } else if (diag.mac_not_seen && channels <= 0) {
     notes.push(`可统计的数据包中没有出现 MAC ${diag.mac_requested || ""}：确认填的是机顶盒的 MAC，`
       + "且抓包点能看到机顶盒与 IPTV 网关之间的流量。");
   } else if (streams <= 0) {
@@ -1526,6 +1551,7 @@ function renderStbDiscoveryDiagnostics(state) {
   if (diag.pcap_size !== undefined) addRow("抓包大小", formatBytes(diag.pcap_size));
   if (diag.packet_count !== undefined) addRow("完整数据包", Number(diag.packet_count).toLocaleString("zh-CN"), true);
   if (diag.effective_stb_ip) addRow("实际解析 IP", diag.effective_stb_ip, true);
+  if (diag.identity_source) addRow("IP 依据", ({dhcp_ack: "目标 MAC 对应的 DHCP ACK", provided_ip: "用户填写的 IP", unresolved: "尚未确认"})[diag.identity_source] || "未知");
   if (diag.mac_requested) addRow("过滤 MAC", diag.mac_requested, true);
   if (diag.mac_supported === false) addRow("MAC 统计", "当前链路不支持，无法判断是否出现");
   else if (diag.mac_seen_count !== undefined) addRow("该 MAC 出现次数", Number(diag.mac_seen_count).toLocaleString("zh-CN"), true);
@@ -1634,10 +1660,11 @@ function stopStbDiscoveryPoll() {
 
 $("stbDiscoveryStartBtn").addEventListener("click", async () => {
   const ip = ($("stbDiscoveryIp").value || "").trim();
+  const mac = ($("stbDiscoveryMac").value || "").trim();
   const iface = ($("stbDiscoveryIface").value || "").trim() || "any";
-  if (!ip) { alert("请填写机顶盒 IP 地址"); return; }
+  if (!ip && !mac) { alert("请填写机顶盒 IP 或 MAC 地址"); return; }
   try {
-    const data = await requestJson("/api/stb_discovery/start", {method: "POST", body: JSON.stringify({stb_ip: ip, interface: iface})});
+    const data = await requestJson("/api/stb_discovery/start", {method: "POST", body: JSON.stringify({stb_ip: ip, stb_mac: mac, interface: iface})});
     renderStbDiscoveryStatus(data);
     startStbDiscoveryPoll();
   } catch (err) { alert(err.message); }

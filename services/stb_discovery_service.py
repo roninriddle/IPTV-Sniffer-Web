@@ -30,16 +30,77 @@ def _probe_tcpdump_interfaces():
     return result.stdout
 
 
-def _capture_diagnostics(path, stb_ip, streams, channels):
-    count = sum(1 for _ in iter_pcap_packets(path)) if path and Path(path).exists() else 0
-    return {"pcap_size": Path(path).stat().st_size if path and Path(path).exists() else 0,
+def _capture_diagnostics(path, stb_ip, streams, channels, mac=""):
+    count, seen, supported = 0, 0, None
+    target = bytes.fromhex(mac.replace(":", "")) if mac else b""
+    if path and Path(path).exists():
+        for linktype, packet in iter_pcap_packets(path):
+            count += 1
+            supported = linktype == 1
+            if target and supported and len(packet) >= 14 and target in (packet[:6], packet[6:12]):
+                seen += 1
+    result = {"pcap_size": Path(path).stat().st_size if path and Path(path).exists() else 0,
             "packet_count": count, "stream_count": len(streams),
             "matched_response_streams": sum(1 for key in streams if key[2] == stb_ip and key[0] != stb_ip),
             "channels": len(channels), "effective_stb_ip": stb_ip}
+    if mac:
+        result.update(mac_requested=mac, mac_supported=supported is True,
+                      mac_not_seen=supported is True and seen == 0)
+        if supported:
+            result["mac_seen_count"] = seen
+    return result
+
+
+def _validate_mac_filter(interface, expression):
+    if interface.lower() == "any":
+        raise ValueError("按 MAC 过滤需要以太网接口，请选择实际接口；any 可用于按 IP 或全量捕获")
+    # Compiles for the interface's actual DLT without starting a capture.
+    result = subprocess.run(["tcpdump", "-i", interface, "-d", expression],
+                            capture_output=True, text=True, timeout=5, check=False)
+    if result.returncode:
+        raise ValueError(f"该接口无法使用 MAC 过滤：{result.stderr.strip()[-2048:]}")
+
+
+def _capture_identity(path, requested_ip, mac):
+    auth = _extract_dhcp_from_pcap(path, requested_ip, mac)
+    # A matched ACK proves assignment; a request or offer alone does not.
+    effective_ip = auth.get("assigned_ip") if mac and auth.get("lease_confirmed") else requested_ip
+    return effective_ip or "", auth
 
 
 def _parse_ip(data: bytes, off: int) -> str:
     return ".".join(str(b) for b in data[off : off + 4])
+
+
+_MAC_PLAIN = re.compile(r"^[0-9a-fA-F]{12}$")
+_MAC_COLON = re.compile(r"^[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}$")
+_MAC_DASH = re.compile(r"^[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5}$")
+_MAC_CISCO = re.compile(r"^[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}$")
+
+
+def normalize_mac(value: str | None) -> str:
+    """把常见 MAC 写法统一成小写冒号分隔；空值返回空串。
+
+    接受 `aa:bb:cc:dd:ee:ff`、`aa-bb-cc-dd-ee-ff` 与 Cisco 风格 `aabb.ccdd.eeff`。
+    格式非法时抛 ValueError，避免把 tcpdump 语法错误的表达式交给它——
+    那会让 tcpdump 启动即退出，而旧实现不会报告任何原因。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if _MAC_COLON.match(lowered):
+        return lowered
+    if _MAC_DASH.match(lowered):
+        return lowered.replace("-", ":")
+    if _MAC_CISCO.match(lowered):
+        compact = lowered.replace(".", "")
+        return ":".join(compact[i : i + 2] for i in range(0, 12, 2))
+    if _MAC_PLAIN.match(lowered):
+        return ":".join(lowered[i : i + 2] for i in range(0, 12, 2))
+    raise ValueError(
+        f"MAC 地址格式无效：{value!r}（示例：48:57:02:25:bb:e3、48-57-02-25-bb-e3 或 4857.0225.bbe3）"
+    )
 
 
 # ── DHCP helpers ─────────────────────────────────────────────────────────────
@@ -118,14 +179,14 @@ def _parse_dhcp_packet(payload: bytes) -> dict[str, Any] | None:
             "ciaddr": _parse_ip(payload, 12), "msg_type": msg_type, "options": options}
 
 
-def _extract_dhcp_from_pcap(pcap_path: str, stb_ip: str = "") -> dict[str, Any]:
+def _extract_dhcp_from_pcap(pcap_path: str, stb_ip: str = "", stb_mac: str = "") -> dict[str, Any]:
     """Extract STB DHCP auth info from a pcap file."""
     _VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
     _DLT_LINUX_SLL = 113
     _DLT_LINUX_SLL2 = 276
     requests: dict[tuple[int, str], dict] = {}
     responses: dict[tuple[int, str], dict] = {}
-    for linktype, pkt in iter_pcap_packets(pcap_path):
+    for packet_index, (linktype, pkt) in enumerate(iter_pcap_packets(pcap_path)):
         if linktype == _DLT_LINUX_SLL:
             if len(pkt) < 16:
                 continue
@@ -168,6 +229,9 @@ def _extract_dhcp_from_pcap(pcap_path: str, stb_ip: str = "") -> dict[str, Any]:
         parsed = _parse_dhcp_packet(pkt[udp_off + 8:])
         if not parsed:
             continue
+        if stb_mac and parsed["mac"] != stb_mac:
+            continue
+        parsed["observed_order"] = packet_index
         # Transaction IDs alone can collide across different clients.
         xid = (parsed["xid"], parsed["mac"])
         if parsed["op"] == 1:
@@ -188,13 +252,14 @@ def _extract_dhcp_from_pcap(pcap_path: str, stb_ip: str = "") -> dict[str, Any]:
         requested_ip = ".".join(str(b) for b in requested) if len(requested) == 4 else ""
         assigned = resp["yiaddr"] if resp else ""
         known_ip = assigned if assigned and assigned != "0.0.0.0" else requested_ip or req["ciaddr"]
-        if stb_ip and known_ip != stb_ip:
+        if not stb_mac and stb_ip and known_ip != stb_ip:
             continue
         candidates.append((req, resp))
     # Without a unique terminal identity, do not autofill another device's MAC.
     if not candidates or len({req["mac"] for req, _ in candidates}) != 1:
         return {}
-    best_req, best_resp = max(candidates, key=lambda pair: int(bool(pair[1] and pair[1]["msg_type"] == 5)))
+    best_req, best_resp = max(candidates, key=lambda pair: (
+        int(bool(pair[1] and pair[1]["msg_type"] == 5)), (pair[1] or pair[0])["observed_order"]))
 
     opts_req = best_req["options"]
     opts_resp = best_resp["options"] if best_resp else {}
@@ -237,6 +302,7 @@ def _extract_dhcp_from_pcap(pcap_path: str, stb_ip: str = "") -> dict[str, Any]:
     return {
         "mac": best_req.get("mac", ""),
         "assigned_ip": assigned_ip,
+        "lease_confirmed": bool(best_resp and best_resp["msg_type"] == 5 and assigned_ip),
         "gateway": _ip(opts_resp, 3),
         "netmask": _ip(opts_resp, 1),
         "dns": _ips(opts_resp, 6),
@@ -803,7 +869,7 @@ class StbDiscoveryService:
         self._pcap_path: str | None = None
         self._worker_thread: threading.Thread | None = None
         self._stderr_tail = deque(maxlen=8)
-        self._state.update(diagnostics={}, live_watcher_errors=0, live_last_error=None)
+        self._state.update(diagnostics={}, live_watcher_errors=0, live_last_error=None, stb_mac="", detected_mac="")
 
     def _pcap_meta_locked(self) -> dict[str, Any]:
         path = self._pcap_path
@@ -1089,6 +1155,7 @@ class StbDiscoveryService:
                 if self._state["status"] != self.STATUS_CAPTURING or generation != self._generation:
                     break
                 proc = self._proc
+                mac = self._state.get("stb_mac", "")
             if proc is not None and proc.poll() is not None:
                 self._capture_failed(proc, generation, f"tcpdump 意外退出（退出码 {proc.returncode}）")
                 return
@@ -1101,13 +1168,15 @@ class StbDiscoveryService:
                 if size == last_size or size > 16 * 1024 * 1024:
                     continue  # Large captures are parsed once after stopping.
                 last_size = size
-                channels = analyze_pcap_for_channels(pcap_path, stb_ip)
-                auth_info = _extract_dhcp_from_pcap(pcap_path, stb_ip)
+                effective_ip, auth_info = _capture_identity(pcap_path, stb_ip, mac)
+                channels = analyze_pcap_for_channels(pcap_path, effective_ip)
                 has_auth = bool(auth_info.get("mac") or auth_info.get("assigned_ip"))
                 with self._lock:
                     if self._state["status"] == self.STATUS_CAPTURING and generation == self._generation:
                         self._state["live_channel_count"] = len(channels)
                         self._state["live_has_auth"] = has_auth
+                        self._state["detected_mac"] = normalize_mac(auth_info.get("mac", ""))
+                        self._state["stb_ip"] = effective_ip
                         self._state["live_last_error"] = None
             except Exception as exc:
                 with self._lock:
@@ -1168,7 +1237,13 @@ class StbDiscoveryService:
         state["latest_archive"] = archives[0] if archives else None
         return state
 
-    def start(self, stb_ip: str, interface: str = "any", full_capture: bool = False) -> None:
+    def start(self, stb_ip: str, interface: str = "any", full_capture: bool = False, stb_mac: str = "") -> None:
+        mac = normalize_mac(stb_mac)
+        expression = f"{'ether host ' + mac if mac else 'host ' + stb_ip} or (udp and (port 67 or port 68))"
+        if not stb_ip and not mac:
+            raise ValueError("请填写机顶盒 IP 或 MAC 地址")
+        if mac and not full_capture:
+            _validate_mac_filter(interface, expression)
         if self.archive_dir and sum(p.stat().st_size for p in self.archive_dir.glob("stb-boot-*.pcap")) >= 1024*1024*1024:
             raise RuntimeError("PCAP 归档达到 1 GiB，请先导出或清理旧归档再开始捕获")
         rt = self.runtime_check()
@@ -1191,6 +1266,9 @@ class StbDiscoveryService:
             self._state = {
                 "status": self.STATUS_CAPTURING,
                 "stb_ip": stb_ip,
+                "requested_stb_ip": stb_ip,
+                "stb_mac": mac,
+                "detected_mac": "",
                 "interface": interface,
                 "full_capture": bool(full_capture),
                 "started_at": time.time(),
@@ -1218,7 +1296,7 @@ class StbDiscoveryService:
             # Keep the complete STB session for later offline analysis: RTSP
             # control is TCP, while the negotiated media path can be UDP/RTP.
             # DHCP is included before the STB address is assigned.
-            cmd.append(f"host {stb_ip} or (udp and (port 67 or port 68))")
+            cmd.append(expression)
         self.logger.info(f"开始捕获 STB 开机流量：STB={stb_ip}，接口={interface}，文件={self._pcap_path}")
         try:
             with self._lock:
@@ -1262,6 +1340,7 @@ class StbDiscoveryService:
             proc = self._proc
             pcap_path = self._pcap_path
             stb_ip = self._state["stb_ip"]
+            mac = self._state.get("stb_mac", "")
             self._state["status"] = self.STATUS_ANALYZING
             self._state["stopped_at"] = time.time()
 
@@ -1276,6 +1355,7 @@ class StbDiscoveryService:
                 self._state["archived_pcap"] = archived_pcap
 
         def _analyze() -> None:
+            nonlocal stb_ip
             try:
                 time.sleep(0.5)  # let pcap flush
                 channels: list[dict[str, Any]] = []
@@ -1286,6 +1366,7 @@ class StbDiscoveryService:
                 protocol_artifacts: dict[str, Any] = {"saved": False}
                 streams = {}
                 if pcap_path and os.path.exists(pcap_path):
+                    stb_ip, auth_info = _capture_identity(pcap_path, stb_ip or "", mac)
                     streams = _reassemble_tcp_streams(pcap_path)
                     protocol_artifacts = self._persist_protocol_artifacts(
                         pcap_path,
@@ -1298,7 +1379,6 @@ class StbDiscoveryService:
                             for source in channel.get("provenance", {}).get("sources", []):
                                 source["pcap"] = archived_pcap
                     timeshift_host = _detect_timeshift_host(streams, channels)
-                    auth_info = _extract_dhcp_from_pcap(pcap_path, stb_ip or "")
                     epg_creds = _extract_epg_credentials(streams, stb_ip or "")
                     portal_auth = _extract_ctc_portal_auth(streams, stb_ip or "")
                     if portal_auth.get("epg_user_id") and not epg_creds.get("epg_user_id"):
@@ -1332,13 +1412,16 @@ class StbDiscoveryService:
                 safe_portal_auth["has_ctc_auth_info"] = bool(portal_auth.get("ctc_auth_info"))
                 safe_portal_auth["has_upload_user_token"] = bool(portal_auth.get("user_token"))
                 safe_portal_auth["has_x_frame_session_id"] = bool(portal_auth.get("x_frame_session_id"))
-                diagnostics = _capture_diagnostics(pcap_path, stb_ip or "", streams, channels)
+                diagnostics = _capture_diagnostics(pcap_path, stb_ip or "", streams, channels, mac)
+                diagnostics["identity_source"] = "dhcp_ack" if mac and auth_info.get("lease_confirmed") else "provided_ip" if stb_ip else "unresolved"
                 with self._lock:
                     if generation != self._generation:
                         return
                     self._state["status"] = self.STATUS_DONE if diagnostics["packet_count"] else self.STATUS_ERROR
                     self._state["error"] = None if diagnostics["packet_count"] else "未捕获到任何完整数据包，请检查抓包点和过滤条件"
                     self._state["diagnostics"] = diagnostics
+                    self._state["stb_ip"] = stb_ip
+                    self._state["detected_mac"] = normalize_mac(auth_info.get("mac", ""))
                     self._state["channels"] = channels
                     self._state["channel_count"] = len(channels)
                     self._state["auth_info"] = auth_info
@@ -1387,6 +1470,8 @@ class StbDiscoveryService:
             self._state = {
                 "status": self.STATUS_IDLE,
                 "stb_ip": None,
+                "stb_mac": "",
+                "detected_mac": "",
                 "interface": None,
                 "started_at": None,
                 "stopped_at": None,

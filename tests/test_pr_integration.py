@@ -122,3 +122,90 @@ option upstream_interface_fcc 'eth1'
 """))
     assert 'upstream-interface' not in parsed['values']
     assert parsed['values']['upstream-interface-fcc'] == 'eth1'
+
+
+def channel_frame(mac='02:00:00:00:00:20', linktype=1):
+    addr = bytes.fromhex(mac.replace(':', ''))
+    body = b"CUSetConfig('Channel','ChannelName=\"Test\" UserChannelID=\"1\" ChannelURL=\"igmp://239.1.1.1:8000\" ChannelID=\"1\"')"
+    http = b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body
+    tcp = struct.pack('>HHIIHHHH', 80, 50000, 1, 0, 0x5018, 65535, 0, 0) + http
+    ip = struct.pack('>BBHHHBBH4s4s', 0x45, 0, 20+len(tcp), 0, 0, 64, 6, 0,
+                     bytes([192,0,2,1]), bytes([192,0,2,20])) + tcp
+    if linktype == 113:
+        return struct.pack('>HHH8sH', 0, 1, 6, addr+b'\x00\x00', 0x800)+ip
+    if linktype == 276:
+        return struct.pack('>HHIHBB8s', 0x800, 0, 1, 1, 0, 6, addr+b'\x00\x00')+ip
+    return addr + bytes.fromhex('020000000001') + b'\x08\x00' + ip
+
+
+def dhcp_frames(mac, ip, message_type=5):
+    # Reuse the existing independent synthetic DHCP generator (xid collision intentional).
+    from test_regression_v134 import dhcp_packet
+    return [dhcp_packet(123, mac, ip, 3)[16:], dhcp_packet(123, mac, ip, message_type)[16:]]
+
+
+@pytest.mark.parametrize('requested_ip', ['192.0.2.19', ''])
+def test_mac_dhcp_new_ip_extracts_channel_end_to_end(capture, tmp_path, requested_ip):
+    mac = '02:00:00:00:00:20'
+    frames = dhcp_frames('02:00:00:00:00:99', '192.0.2.99')
+    frames += dhcp_frames(mac, '192.0.2.20') + [channel_frame()]
+    path = tmp_path / 'new-ip.pcap'
+    path.write_bytes(pcap_bytes(frames))
+    capture._pcap_path = str(path)
+    capture._state.update(status='capturing', stb_ip=requested_ip, stb_mac=mac)
+    capture.stop()
+    state = wait_status(capture, 'done')
+    assert state['stb_ip'] == '192.0.2.20'
+    assert state['channel_count'] == 1
+    assert state['auth_info']['mac'] == mac
+    assert state['diagnostics']['identity_source'] == 'dhcp_ack'
+    assert state['diagnostics']['matched_response_streams'] == 1
+
+
+def test_mac_identity_needs_ack_not_offer_or_other_client(tmp_path):
+    mac = '02:00:00:00:00:20'
+    path = tmp_path / 'offer.pcap'
+    path.write_bytes(pcap_bytes(dhcp_frames(mac, '192.0.2.20', 2) + dhcp_frames('02:00:00:00:00:99', '192.0.2.99')))
+    actual, auth = stb._capture_identity(str(path), '192.0.2.19', mac)
+    assert actual == '192.0.2.19' and not auth['lease_confirmed']
+
+
+@pytest.mark.parametrize('endian,magic', [('>',0xa1b2c3d4), ('<',0xa1b23c4d), ('>',0xa1b23c4d)])
+def test_mac_statistics_use_bounded_multiformat_reader(tmp_path, endian, magic):
+    path = tmp_path / 'format.pcap'
+    path.write_bytes(pcap_bytes([channel_frame()], endian=endian, magic=magic))
+    diag = stb._capture_diagnostics(str(path), '192.0.2.20', {}, [], '02:00:00:00:00:20')
+    assert diag['packet_count'] == 1 and diag['mac_seen_count'] == 1
+    assert diag['mac_supported'] and not diag['mac_not_seen']
+
+
+@pytest.mark.parametrize('linktype', [113,276])
+def test_cooked_capture_can_parse_without_false_mac_warning(capture, tmp_path, linktype):
+    path = tmp_path / 'cooked.pcap'
+    path.write_bytes(pcap_bytes([channel_frame(linktype=linktype)], linktype=linktype))
+    capture._pcap_path = str(path)
+    capture._state.update(status='capturing', stb_ip='192.0.2.20', stb_mac='02:00:00:00:00:20')
+    capture.stop()
+    state = wait_status(capture, 'done')
+    assert state['channel_count'] == 1
+    assert state['diagnostics']['mac_supported'] is False
+    assert state['diagnostics']['mac_not_seen'] is False
+
+
+def test_any_mac_filter_rejected_before_process_start(capture, monkeypatch):
+    monkeypatch.setattr(stb.subprocess, 'Popen', lambda *a, **k: pytest.fail('must reject before spawn'))
+    with pytest.raises(ValueError, match='实际接口'):
+        capture.start('', 'any', stb_mac='02:00:00:00:00:20')
+    assert capture.status()['status'] == 'idle'
+
+
+def test_api_accepts_mac_only_and_returns_diagnostics(capture, monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, 'stb_discovery_service', capture)
+    calls = []
+    monkeypatch.setattr(capture, 'start', lambda *a, **k: calls.append((a,k)))
+    response = app_module.app.test_client().post('/api/stb_discovery/start', json={
+        'stb_mac':'02:00:00:00:00:20', 'interface':'eth0'})
+    assert response.status_code == 200
+    assert calls[0][1]['stb_mac'] == '02:00:00:00:00:20'
+    assert 'diagnostics' in response.get_json()['data']

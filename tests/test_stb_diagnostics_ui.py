@@ -103,6 +103,23 @@ class TestDiagnosticsConclusions:
     """结论必须随断点变化，且落到可执行的下一步。"""
 
     @requires_node
+    def test_header_only_is_not_treated_as_captured_packets(self):
+        notes = _run_conclusions({"pcap_size": 24, "packet_count": 0})
+        assert "没有捕获到完整数据包" in notes[0]
+
+    @requires_node
+    def test_mac_only_waits_for_proven_ip(self):
+        notes = _run_conclusions({"pcap_size": 400, "packet_count": 1, "identity_source": "unresolved"})
+        assert "DHCP ACK" in notes[0]
+
+    @requires_node
+    def test_unknown_mac_statistics_do_not_claim_missing_mac(self):
+        html = "".join(_run_render_rows({"pcap_size": 1024, "mac_requested": "02:00:00:00:00:20",
+                                        "mac_supported": False, "mac_not_seen": False}))
+        assert "无法判断" in html
+        assert "该 MAC 出现次数" not in html
+
+    @requires_node
     def test_empty_capture_blames_the_capture_setup(self):
         notes = _run_conclusions({"pcap_size": 0, "stream_count": 0, "matched_response_streams": 0, "channels": 0})
 
