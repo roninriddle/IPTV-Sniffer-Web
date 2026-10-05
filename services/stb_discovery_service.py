@@ -20,6 +20,22 @@ from typing import Any
 
 from services.log_service import AppLogger
 from services.media_task_service import reap_process
+from collections import deque
+
+
+def _probe_tcpdump_interfaces():
+    result = subprocess.run(["tcpdump", "-D"], capture_output=True, text=True, timeout=5, check=False)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "tcpdump 无法列出接口")
+    return result.stdout
+
+
+def _capture_diagnostics(path, stb_ip, streams, channels):
+    count = sum(1 for _ in iter_pcap_packets(path)) if path and Path(path).exists() else 0
+    return {"pcap_size": Path(path).stat().st_size if path and Path(path).exists() else 0,
+            "packet_count": count, "stream_count": len(streams),
+            "matched_response_streams": sum(1 for key in streams if key[2] == stb_ip and key[0] != stb_ip),
+            "channels": len(channels), "effective_stb_ip": stb_ip}
 
 
 def _parse_ip(data: bytes, off: int) -> str:
@@ -786,6 +802,8 @@ class StbDiscoveryService:
         self._proc: subprocess.Popen | None = None
         self._pcap_path: str | None = None
         self._worker_thread: threading.Thread | None = None
+        self._stderr_tail = deque(maxlen=8)
+        self._state.update(diagnostics={}, live_watcher_errors=0, live_last_error=None)
 
     def _pcap_meta_locked(self) -> dict[str, Any]:
         path = self._pcap_path
@@ -1007,6 +1025,7 @@ class StbDiscoveryService:
         streams = _reassemble_tcp_streams(pcap_path)
         protocol_artifacts = self._persist_protocol_artifacts(pcap_path, archive.name, streams)
         channels = analyze_pcap_for_channels(pcap_path, stb_ip)
+        diagnostics = _capture_diagnostics(pcap_path, stb_ip, streams, channels)
         timeshift_host = _detect_timeshift_host(streams, channels)
         auth_info = _extract_dhcp_from_pcap(pcap_path, stb_ip)
         epg_creds = _extract_epg_credentials(streams, stb_ip)
@@ -1045,10 +1064,11 @@ class StbDiscoveryService:
             if generation != self._generation:
                 return dict(self._state)
             self._state.update({
-                "status": self.STATUS_DONE,
+                "status": self.STATUS_DONE if diagnostics["packet_count"] else self.STATUS_ERROR,
                 "stb_ip": stb_ip,
                 "stopped_at": time.time(),
-                "error": None,
+                "error": None if diagnostics["packet_count"] else "未捕获到任何完整数据包，请检查抓包点和过滤条件",
+                "diagnostics": diagnostics,
                 "channels": channels,
                 "channel_count": len(channels),
                 "auth_info": auth_info,
@@ -1064,10 +1084,14 @@ class StbDiscoveryService:
     def _live_watcher(self, pcap_path: str, stb_ip: str, generation: int) -> None:
         last_size = -1
         while True:
-            time.sleep(3)
+            time.sleep(1)
             with self._lock:
                 if self._state["status"] != self.STATUS_CAPTURING or generation != self._generation:
                     break
+                proc = self._proc
+            if proc is not None and proc.poll() is not None:
+                self._capture_failed(proc, generation, f"tcpdump 意外退出（退出码 {proc.returncode}）")
+                return
             try:
                 size = Path(pcap_path).stat().st_size
                 if size >= MAX_PCAP_BYTES:
@@ -1084,12 +1108,56 @@ class StbDiscoveryService:
                     if self._state["status"] == self.STATUS_CAPTURING and generation == self._generation:
                         self._state["live_channel_count"] = len(channels)
                         self._state["live_has_auth"] = has_auth
-            except Exception:
-                pass
+                        self._state["live_last_error"] = None
+            except Exception as exc:
+                with self._lock:
+                    if generation != self._generation or self._state["status"] != self.STATUS_CAPTURING:
+                        return
+                    count = self._state.get("live_watcher_errors", 0) + 1
+                    self._state.update(live_watcher_errors=count, live_last_error=str(exc)[:2048])
+                if count <= 3 or count % 10 == 0:
+                    self.logger.warning(f"STB 实时分析失败（第 {count} 次）：{exc}")
+
+    def _stderr_reader(self, proc, generation):
+        stream = getattr(proc, "stderr", None)
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read1(1024) if hasattr(stream, "read1") else stream.read(1024)
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
+                with self._lock:
+                    if generation != self._generation:
+                        continue
+                    self._stderr_tail.append(text[-1024:])
+                self.logger.info(f"tcpdump: {text.strip()}")
+        except (ValueError, OSError):
+            # reset/stop closes the pipe after terminating the owned process.
+            return
+
+    def _capture_failed(self, proc, generation, reason):
+        with self._lock:
+            if generation != self._generation or self._proc is not proc or self._state["status"] != self.STATUS_CAPTURING:
+                return False
+            detail = "".join(self._stderr_tail).strip()[-4096:]
+            self._state.update(status=self.STATUS_ERROR, error=f"{reason}：{detail}" if detail else reason,
+                               stopped_at=time.time())
+            self._proc = None
+            message = self._state["error"]
+        reap_process(proc)
+        self.logger.error(message)
+        return True
 
     def runtime_check(self) -> dict[str, Any]:
-        ok = shutil.which("tcpdump") is not None
-        return {"ok": ok, "errors": [] if ok else ["缺少依赖命令：tcpdump"]}
+        if shutil.which("tcpdump") is None:
+            return {"ok": False, "errors": ["缺少依赖命令：tcpdump"]}
+        try:
+            _probe_tcpdump_interfaces()
+        except Exception as exc:
+            return {"ok": False, "errors": [f"无法枚举抓包接口：{exc}；请检查容器网络与 NET_RAW/NET_ADMIN 配置"]}
+        return {"ok": True, "errors": [], "detail": "接口枚举成功，实际抓包权限将在启动时验证"}
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -1115,6 +1183,7 @@ class StbDiscoveryService:
                 except Exception:
                     pass
             self._generation += 1
+            self._stderr_tail.clear()
             generation = self._generation
             fd, self._pcap_path = tempfile.mkstemp(suffix=".pcap", prefix="stb_discovery_")
             os.close(fd)
@@ -1135,6 +1204,9 @@ class StbDiscoveryService:
                 "pcap_available": False,
                 "pcap_size": 0,
                 "protocol_artifacts": {"saved": False},
+                "diagnostics": {},
+                "live_watcher_errors": 0,
+                "live_last_error": None,
             }
         cmd = [
             "tcpdump",
@@ -1153,8 +1225,10 @@ class StbDiscoveryService:
                 if generation != self._generation or self._state["status"] != self.STATUS_CAPTURING:
                     return
                 self._proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    env={**os.environ, "LC_ALL": "C"},
                 )
+                proc = self._proc
         except Exception as exc:
             with self._lock:
                 if generation != self._generation:
@@ -1162,6 +1236,14 @@ class StbDiscoveryService:
                 self._state["status"] = self.STATUS_ERROR
                 self._state["error"] = str(exc)
             raise
+        reader = threading.Thread(target=self._stderr_reader, args=(proc, generation), daemon=True, name="stb-stderr-reader")
+        reader.start()
+        time.sleep(0.25)
+        if proc.poll() is not None:
+            reader.join(timeout=0.2)
+            if self._capture_failed(proc, generation, f"tcpdump 启动后退出（退出码 {proc.returncode}）"):
+                raise RuntimeError(self.status()["error"])
+            return
         threading.Thread(
             target=self._live_watcher,
             args=(pcap_path, stb_ip, generation),
@@ -1202,6 +1284,7 @@ class StbDiscoveryService:
                 epg_creds: dict[str, str] = {}
                 portal_auth: dict[str, Any] = {}
                 protocol_artifacts: dict[str, Any] = {"saved": False}
+                streams = {}
                 if pcap_path and os.path.exists(pcap_path):
                     streams = _reassemble_tcp_streams(pcap_path)
                     protocol_artifacts = self._persist_protocol_artifacts(
@@ -1249,10 +1332,13 @@ class StbDiscoveryService:
                 safe_portal_auth["has_ctc_auth_info"] = bool(portal_auth.get("ctc_auth_info"))
                 safe_portal_auth["has_upload_user_token"] = bool(portal_auth.get("user_token"))
                 safe_portal_auth["has_x_frame_session_id"] = bool(portal_auth.get("x_frame_session_id"))
+                diagnostics = _capture_diagnostics(pcap_path, stb_ip or "", streams, channels)
                 with self._lock:
                     if generation != self._generation:
                         return
-                    self._state["status"] = self.STATUS_DONE
+                    self._state["status"] = self.STATUS_DONE if diagnostics["packet_count"] else self.STATUS_ERROR
+                    self._state["error"] = None if diagnostics["packet_count"] else "未捕获到任何完整数据包，请检查抓包点和过滤条件"
+                    self._state["diagnostics"] = diagnostics
                     self._state["channels"] = channels
                     self._state["channel_count"] = len(channels)
                     self._state["auth_info"] = auth_info
@@ -1285,6 +1371,7 @@ class StbDiscoveryService:
     def reset(self) -> None:
         with self._lock:
             self._generation += 1
+            self._stderr_tail.clear()
             if self._proc:
                 try:
                     reap_process(self._proc)
@@ -1311,4 +1398,7 @@ class StbDiscoveryService:
                 "protocol_artifacts": {"saved": False},
                 "pcap_available": False,
                 "pcap_size": 0,
+                "diagnostics": {},
+                "live_watcher_errors": 0,
+                "live_last_error": None,
             }
