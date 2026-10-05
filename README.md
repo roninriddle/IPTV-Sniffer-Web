@@ -175,6 +175,8 @@ config instance
 
 UCI 支持引号内的 URL 与行尾注释。诊断只读取唯一启用实例，并识别高级接口模式；多实例歧义或外部配置文件模式会要求选择实际配置文件。
 
+`1.3.5-test` 的后续集成代码还支持填写机顶盒 MAC：选择实际以太网抓包接口，捕获到目标 MAC 对应的 DHCP ACK 后会自动使用分配的 IP 解析频道；未捕获 ACK 时仍以填写的 IP 为准。MAC 与 IP 都未知时不能开始捕获。按 MAC 过滤不支持 `any`，按 IP 或 API 全量捕获仍可使用它。捕获诊断展示完整包数、实际解析 IP 和计数；SLL/SLL2 无法统计 MAC 时不会误报 MAC 填错。集成验收和发布范围见 [版本审计记录](docs/1.3.5-test-audit.md)。
+
 UCI 的下划线选项名等价于 INI 的连字符键名（`upstream_interface_fcc` 即 `upstream-interface-fcc`），`list listen` 会作为监听地址一并读出。若配置文件能被读取却解析不出任何配置项，诊断会把「rtp2httpd 配置文件」标为问题项，而不是默认按「系统路由表」判为正常。
 
 常见播放地址形态：
