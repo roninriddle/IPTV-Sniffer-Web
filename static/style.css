@@ -480,6 +480,13 @@ td code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 .result-box.warning { border-color: #f6d28f; background: #fff8e8; color: #7a4600; }
 .result-box.error { border-color: #f0b4bc; background: #fff1f2; color: #881337; }
 .compact-result { margin-top: 8px; }
+.stb-diag { margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px; }
+.stb-diag > summary { cursor: pointer; font-weight: 650; color: var(--text); }
+.stb-diag[open] > summary { color: var(--primary-dark); }
+.stb-diag-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.stb-diag .diag-table { margin-top: 8px; }
+.stb-diag .diag-table td { font-size: 13px; }
+.stb-diag-value { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; word-break: break-all; }
 .script-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .small-pre { min-height: 220px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .auth-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }

@@ -135,6 +135,14 @@
               <button id="stbDiscoveryResetBtn" class="secondary" type="button">重置</button>
             </div>
             <div id="stbDiscoveryStatus" class="result-box muted">等待开始…</div>
+            <details id="stbDiscoveryDiagnostics" class="stb-diag" hidden>
+              <summary>捕获诊断</summary>
+              <p class="stb-diag-hint">下面是本次抓包的原始计数，用于区分「没抓到包」「抓到了包但没匹配到机顶盒」和「匹配到了但解析不出频道」。</p>
+              <table class="diag-table">
+                <tbody id="stbDiscoveryDiagBody"></tbody>
+              </table>
+              <div id="stbDiscoveryDiagConclusion" class="diag-conclusions"></div>
+            </details>
             <div class="archive-panel mt-12">
               <div class="section-title compact-title">
                 <h3>历史抓包归档</h3>
