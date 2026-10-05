@@ -15,6 +15,7 @@ services:
       WEB_PORT: 8787
       RTP2HTTPD_PORT: 5140
       # 可选：挂载 rtp2httpd 配置后填写路径，播放诊断会读取 upstream-interface / external-m3u。
+      # 支持 INI 的 rtp2httpd.conf 与 OpenWrt/UCI 的 /etc/config/rtp2httpd。
       # RTP2HTTPD_CONFIG_PATH: /host/vol1/@appconf/rtp2httpd/rtp2httpd.conf
       CAPTURE_SECONDS: 30
     volumes:
@@ -22,4 +23,6 @@ services:
       - ./output:/app/output
       # 如需播放诊断读取 rtp2httpd 配置，可按实际路径挂载为只读。
       # - /vol1/@appconf/rtp2httpd/rtp2httpd.conf:/host/vol1/@appconf/rtp2httpd/rtp2httpd.conf:ro
+      # OpenWrt / ImmortalWrt 的 UCI 配置同理挂载：
+      # - /etc/config/rtp2httpd:/host/etc/config/rtp2httpd:ro
     restart: unless-stopped

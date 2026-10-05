@@ -1026,6 +1026,73 @@ app-path-prefix = /app/rtp2httpd
     assert parsed["bind"] == ["* 5140"]
 
 
+def test_parse_rtp2httpd_config_parses_openwrt_uci_syntax():
+    parsed = _parse_rtp2httpd_config_text(
+        "config instance\n"
+        "\toption verbose '3'\n"
+        "\toption mcast_rejoin_interval '5'\n"
+        "\toption upstream_interface_fcc 'eth1'\n"
+        "\toption upstream_interface_http 'eth1'\n"
+        "\toption upstream_interface_multicast 'eth1'\n"
+        "\toption upstream_interface_rtsp 'eth1'\n"
+        "\toption enabled '1'\n"
+        "\toption upstream_interface 'eth1'\n"
+        "\toption external_m3u 'file://overlay/rtt2http/utm.m3u8'\n"
+        "\tlist listen '[::]:5140'\n"
+        "\tlist listen '192.168.100.1:5140'\n"
+        "\toption maxclients '30'\n"
+        "\toption workers '4'\n"
+        "\toption external_m3u_update_interval '1800'\n"
+        "\toption udp_rcvbuf_size '1048576'\n"
+        "\toption video_snapshot '1'\n"
+        "\toption rtsp_user_agent 'HMW tr069-cwmp'\n"
+    )
+    values = parsed["values"]
+    # UCI 的下划线键名等价于 INI 的连字符键名，诊断消费的就是后者
+    assert values["upstream-interface"] == "eth1"
+    assert values["upstream-interface-multicast"] == "eth1"
+    assert values["upstream-interface-fcc"] == "eth1"
+    assert values["upstream-interface-rtsp"] == "eth1"
+    assert values["upstream-interface-http"] == "eth1"
+    # 引号被剥离，URL 形式的外链不被行内注释逻辑截断
+    assert values["external-m3u"] == "file://overlay/rtt2http/utm.m3u8"
+    assert values["external-m3u-update-interval"] == "1800"
+    assert values["rtsp-user-agent"] == "HMW tr069-cwmp"
+    assert values["udp-rcvbuf-size"] == "1048576"
+    assert values["verbose"] == "3"
+    # config instance 是裸 section 名
+    assert values["instance.upstream-interface"] == "eth1"
+    # list listen 收进 bind 并保持出现顺序；list 不污染 values
+    assert parsed["bind"] == ["[::]:5140", "192.168.100.1:5140"]
+    assert "listen" not in values
+
+
+def test_parse_rtp2httpd_config_uci_handles_quotes_empty_and_equals_in_value():
+    parsed = _parse_rtp2httpd_config_text(
+        "config instance 'Main'\n"
+        "option external_m3u \"http://host:8787/playlist-rtp2httpd.m3u?a=1&b=2\"\n"
+        "option upstream_interface_fcc=eth1\n"
+        "option player_page_path\n"
+        "list listen '0.0.0.0:5140'\n"
+    )
+    values = parsed["values"]
+    # 带引号的 section 名优先生效
+    assert values["Main.player-page-path"] == ""
+    # 双引号剥离，值中的两个等号完整保留
+    assert values["external-m3u"] == "http://host:8787/playlist-rtp2httpd.m3u?a=1&b=2"
+    # 等号分隔写法同样识别
+    assert values["upstream-interface-fcc"] == "eth1"
+    # 无值 option 落为空串而不是被丢弃
+    assert values["player-page-path"] == ""
+    assert parsed["bind"] == ["0.0.0.0:5140"]
+
+
+def test_parse_rtp2httpd_config_uci_bind_only_file_is_recognized():
+    parsed = _parse_rtp2httpd_config_text("config instance\nlist listen '[::]:5140'\n")
+    assert parsed["values"] == {}
+    assert parsed["bind"] == ["[::]:5140"]
+
+
 # ── IPTV auth helper ──────────────────────────────────────────────────────
 
 def test_iptv_auth_payload_and_hook_include_option60_and_interface(tmp_path):

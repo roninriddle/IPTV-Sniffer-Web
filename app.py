@@ -3129,29 +3129,8 @@ def api_iptv_auth_egress_bpf_watch_configure():
 
 
 def _parse_rtp2httpd_config_text(text: str) -> dict[str, Any]:
-    """Parse the small INI-like subset used by rtp2httpd configs."""
-    section = "global"
-    values: dict[str, str] = {}
-    bind_lines: list[str] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip() or "global"
-            continue
-        if section == "bind" and "=" not in line:
-            bind_lines.append(line)
-            continue
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.split("#", 1)[0].split(";", 1)[0].strip()
-        if key:
-            values[f"{section}.{key}"] = value
-            values.setdefault(key, value)
-    return {"values": values, "bind": bind_lines}
+    from services.rtp2httpd_config import parse_config
+    return parse_config(text)
 
 
 def _rtp2httpd_config_candidates(path_hint: str) -> list[Path]:
@@ -3163,9 +3142,13 @@ def _rtp2httpd_config_candidates(path_hint: str) -> list[Path]:
     candidates.extend([
         "/vol1/@appconf/rtp2httpd/rtp2httpd.conf",
         "/host/vol1/@appconf/rtp2httpd/rtp2httpd.conf",
+        "/etc/rtp2httpd.conf",
+        "/host/etc/rtp2httpd.conf",
         "/etc/rtp2httpd/rtp2httpd.conf",
         "/host/etc/rtp2httpd/rtp2httpd.conf",
         "/config/rtp2httpd.conf",
+        "/etc/config/rtp2httpd",
+        "/host/etc/config/rtp2httpd",
     ])
     seen: set[str] = set()
     result: list[Path] = []
@@ -3187,9 +3170,18 @@ def _load_rtp2httpd_config(path_hint: str) -> dict[str, Any]:
         try:
             if not path.exists() or not path.is_file():
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")[:128_000]
-            parsed = _parse_rtp2httpd_config_text(text)
+            with path.open("rb") as handle:
+                text = read_bounded(handle, 128_000).decode("utf-8", errors="replace")
+            from services.rtp2httpd_config import effective_config
+            parsed = effective_config(_parse_rtp2httpd_config_text(text))
             values = parsed["values"]
+            if not values and not parsed["bind"]:
+                return {
+                    "ok": False,
+                    "path": str(path),
+                    "checked": checked,
+                    "error": "已读取该文件但未解析出配置项，请确认它是 rtp2httpd 的 INI 或 OpenWrt UCI 配置",
+                }
             return {
                 "ok": True,
                 "path": str(path),

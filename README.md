@@ -161,6 +161,22 @@ external-m3u-update-interval = 300
 
 若需要保留每个逻辑频道的所有备选线路，将地址改为 `/playlist-rtp2httpd-all.m3u`。这两个入口禁止缓存，并且不会输出可能导致递归代理的本站 `/live/` 地址。
 
+`rtp2httpd` 也可以由 OpenWrt / ImmortalWrt 的 UCI 管理，配置文件是 `/etc/config/rtp2httpd`，没有 `.conf` 后缀。把它挂载进容器并在播放诊断中填入路径即可，解析器同时识别 INI 与 UCI 两种格式：
+
+```uci
+config instance
+	option upstream_interface 'eth1'
+	option upstream_interface_multicast 'eth1'
+	option upstream_interface_fcc 'eth1'
+	option external_m3u 'file://overlay/rtt2http/utm.m3u8'
+	list listen '[::]:5140'
+	list listen '192.168.100.1:5140'
+```
+
+UCI 支持引号内的 URL 与行尾注释。诊断只读取唯一启用实例，并识别高级接口模式；多实例歧义或外部配置文件模式会要求选择实际配置文件。
+
+UCI 的下划线选项名等价于 INI 的连字符键名（`upstream_interface_fcc` 即 `upstream-interface-fcc`），`list listen` 会作为监听地址一并读出。若配置文件能被读取却解析不出任何配置项，诊断会把「rtp2httpd 配置文件」标为问题项，而不是默认按「系统路由表」判为正常。
+
 常见播放地址形态：
 
 ```text
