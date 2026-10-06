@@ -118,22 +118,21 @@
               <span id="stbDiscoveryBadge" class="chip neutral">就绪</span>
             </div>
             <p class="task-description">填写机顶盒 IP 或 MAC，点击「开始捕获」后重启机顶盒，系统将自动捕获 STB 开机与运营商 EPG 门户的 TCP 交互，解析完整频道表（频道名称、组播地址、FCC 参数等）。需要 <code>tcpdump</code> 可用且应用容器具有 <code>NET_RAW</code> 能力。</p>
-            <div class="form-grid">
+            <div class="form-grid capture-grid">
               <label>
                 机顶盒 IP
-                <input id="stbDiscoveryIp" type="text" placeholder="填写 MAC 时可留空，等待 DHCP 确认" autocomplete="off">
+                <input id="stbDiscoveryIp" type="text" placeholder="如 192.168.1.100" autocomplete="off" aria-describedby="stbDiscoveryIdentityHint">
               </label>
               <label>
                 机顶盒 MAC
-                <input id="stbDiscoveryMac" type="text" placeholder="选填，如 02:00:00:00:00:20" autocomplete="off">
-                <small>按 MAC 过滤请选择实际以太网接口；any 可用于按 IP 捕获。</small>
+                <input id="stbDiscoveryMac" type="text" placeholder="02:00:00:00:00:20" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="stbDiscoveryIdentityHint">
               </label>
               <label>
                 抓包网卡
                 <select id="stbDiscoveryIface"></select>
               </label>
             </div>
-            <p class="task-description">MAC 选填。填写后按二层地址过滤，不受 DHCP 地址变化影响——抓包开始时机顶盒可能还没拿到 IP，或 IP 在续租时变化，仅按 IP 过滤容易漏掉全部流量。抓包时系统会从 DHCP 报文自动读出 MAC 并回填到此框，下次可直接使用。</p>
+            <p id="stbDiscoveryIdentityHint" class="task-description">IP 与 MAC 至少填写一项。填写 MAC 时，IP 可留空；请选择实际以太网网卡，系统会从匹配的 DHCP ACK 确认 IP。仅按 IP 捕获时可选择 any。</p>
             <div class="form-actions">
               <button id="stbDiscoveryStartBtn" class="primary" type="button">开始捕获</button>
               <button id="stbDiscoveryStopBtn" class="secondary" type="button" disabled>停止 &amp; 分析</button>

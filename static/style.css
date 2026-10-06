@@ -218,6 +218,9 @@ details summary {
 
 .form-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; min-width: 0; }
 .form-grid > * { min-width: 0; }
+.form-grid.capture-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+.capture-grid > label { align-content: start; }
+.capture-grid input, .capture-grid select { height: 40px; font-weight: 400; }
 .form-grid.compact-grid { grid-template-columns: minmax(220px, 1.2fr) minmax(280px, 2fr); align-items: end; }
 .copy-field { display: flex; gap: 6px; min-width: 0; }
 .copy-field input { min-width: 0; flex: 1 1 auto; }
@@ -632,7 +635,7 @@ body.logs-open .footer {
   .layout { margin-top: 10px; }
   .home-hero { padding: 18px; min-height: 0; }
   .home-hero h2 { font-size: 23px; }
-  .grid.two, .home-steps, .form-grid, .metrics-grid { grid-template-columns: 1fr; }
+  .grid.two, .home-steps, .form-grid, .form-grid.capture-grid, .metrics-grid { grid-template-columns: 1fr; }
   .channel-section-tabs { overflow-x: auto; flex-wrap: nowrap; }
   .channel-section-tabs .tab-button { white-space: nowrap; }
   .source-row-grid { grid-template-columns: 1fr; }

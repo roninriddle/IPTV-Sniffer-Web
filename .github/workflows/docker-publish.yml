@@ -2,8 +2,6 @@ name: Publish Docker image
 
 on:
   push:
-    branches:
-      - "codex/v*-test"
     tags:
       - "*"
 
@@ -27,8 +25,7 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref_name }}
         run: |
-          RELEASE_TAG="${RELEASE_REF#codex/}"
-          VERSION=$(python3 tools/check_release.py --tag "$RELEASE_TAG")
+          VERSION=$(python3 tools/check_release.py --tag "$RELEASE_REF")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
