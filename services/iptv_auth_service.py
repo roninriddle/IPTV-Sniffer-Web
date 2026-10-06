@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import shutil
@@ -106,6 +107,27 @@ def _valid_mac(value: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac):
         raise ValueError("MAC 地址格式不正确")
     return mac
+
+
+def _usable_ipv4_addresses(snapshot: dict[str, Any]) -> list[str]:
+    """Return configured unicast IPv4 addresses without assuming a 10/8 lease."""
+    addresses: list[str] = []
+    for item in snapshot.get("ipv4") or []:
+        try:
+            address = ipaddress.ip_address(str(item.get("local") or ""))
+        except ValueError:
+            continue
+        if (
+            address.version != 4
+            or address.is_unspecified
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+        ):
+            continue
+        addresses.append(str(address))
+    return addresses
 
 
 def _mask_to_prefix(mask: str) -> int | None:
@@ -252,12 +274,46 @@ class IptvAuthService:
         entry = self._backup_data().get("interfaces", {}).get(iface) or {}
         initial = entry.get("initial") or None
         latest = entry.get("latest_pre_apply") or None
+        _, legacy_repair_available = self._restore_point(entry)
         return {
             "has_initial": bool(initial),
             "initial": initial,
             "latest_pre_apply": latest,
             "history_count": len(entry.get("history") or []),
+            "legacy_repair_available": legacy_repair_available,
         }
+
+    @staticmethod
+    def _restore_point(entry: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+        """Recover a v1.3.3 initial snapshot overwritten after authentication.
+
+        v1.3.3 refreshed ``initial`` after a successful apply, but retained the
+        real pre-apply state in ``latest_pre_apply`` and ``history``.  Only use
+        that state when the overwritten MAC can be tied to ``last_apply``.
+        """
+        initial = entry.get("initial")
+        if not isinstance(initial, dict):
+            return None, False
+        last_apply = entry.get("last_apply") or {}
+        applied_macs = {
+            str((last_apply.get("payload") or {}).get("mac") or "").lower(),
+            str((last_apply.get("snapshot") or {}).get("mac") or "").lower(),
+        }
+        applied_macs.discard("")
+        initial_mac = str(initial.get("mac") or "").lower()
+        if initial_mac in applied_macs:
+            candidates = [
+                item for item in (entry.get("history") or [])
+                if isinstance(item, dict) and item.get("kind") == "pre_apply"
+            ]
+            latest = entry.get("latest_pre_apply")
+            if isinstance(latest, dict):
+                candidates.append(latest)
+            for candidate in candidates:
+                candidate_mac = str(candidate.get("mac") or "").lower()
+                if candidate_mac and candidate_mac != initial_mac:
+                    return dict(candidate), True
+        return initial, False
 
     def _payload(self, data: dict[str, Any], auth_info: dict[str, Any] | None = None) -> dict[str, Any]:
         auth = auth_info or {}
@@ -381,8 +437,7 @@ exit 0
                 self._write_backup_data(bk_data)
         auth = auth_info or {}
         has_auth = bool(auth.get("mac") and auth.get("hostname") and auth.get("vendor_class"))
-        ipv4 = snap.get("ipv4") or []
-        has_iptv_ip = any(str(item.get("local", "")).startswith("10.") for item in ipv4)
+        has_iptv_ip = bool(_usable_ipv4_addresses(snap))
         return {
             "interface": iface,
             "snapshot": snap,
@@ -481,7 +536,7 @@ exit 0
         lease_ready = False
         while time.monotonic() < deadline:
             snap = self.snapshot(iface)
-            if any(str(item.get("local") or "").startswith("10.") for item in (snap.get("ipv4") or [])):
+            if _usable_ipv4_addresses(snap):
                 lease_ready = True
                 break
             if dhcp_proc.poll() is not None:
@@ -493,7 +548,7 @@ exit 0
                     dhcp_proc.terminate()
                 except OSError:
                     pass
-            raise RuntimeError("IPTV DHCP 认证未在 35 秒内取得 IPv4 租约")
+            raise RuntimeError("IPTV DHCP 认证未在 35 秒内取得可用 IPv4 租约")
 
         # Belt-and-suspenders: explicitly set multicast route after udhcpc.
         # The udhcpc hook does this too, but runs in a subprocess and may race
@@ -526,7 +581,7 @@ exit 0
             raise ValueError("请在页面完成两次确认后再恢复")
         iface = _valid_iface(data.get("interface") or "")
         entry = self._backup_data().get("interfaces", {}).get(iface) or {}
-        initial = entry.get("initial")
+        initial, repaired_legacy_backup = self._restore_point(entry)
         if not initial:
             raise ValueError("没有可恢复的初始备份")
         if not self._interface_exists(iface):
@@ -550,10 +605,10 @@ exit 0
 
         run_step(["ip", "-4", "addr", "flush", "dev", iface], check=False)
         run_step(["ip", "-4", "route", "flush", "dev", iface], check=False)
-        run_step(["ip", "link", "set", "dev", iface, "down"], check=False)
+        run_step(["ip", "link", "set", "dev", iface, "down"])
         if initial.get("mac"):
-            run_step(["ip", "link", "set", "dev", iface, "address", str(initial["mac"])], check=False)
-        run_step(["ip", "link", "set", "dev", iface, "up"], check=False)
+            run_step(["ip", "link", "set", "dev", iface, "address", str(initial["mac"])])
+        run_step(["ip", "link", "set", "dev", iface, "up"])
 
         for item in initial.get("ipv4") or []:
             local = item.get("local")
@@ -589,9 +644,27 @@ exit 0
             dhcp_triggered = True
 
         snap = self.snapshot(iface)
+        expected_mac = str(initial.get("mac") or "").lower()
+        actual_mac = str(snap.get("mac") or "").lower()
+        if expected_mac and actual_mac != expected_mac:
+            raise RuntimeError(
+                f"MAC 恢复验证失败：期望 {expected_mac}，实际 {actual_mac or '未读取到'}"
+            )
+        if repaired_legacy_backup:
+            with self._backup_lock:
+                raw = self._backup_data()
+                saved_entry = raw["interfaces"].setdefault(iface, {"history": []})
+                previous_initial = saved_entry.get("initial")
+                saved_entry["initial"] = initial
+                saved_entry.setdefault("history", []).append({
+                    "kind": "repair_initial_from_pre_apply",
+                    "created_at": time.time(),
+                    "previous_initial": previous_initial,
+                })
+                self._write_backup_data(raw)
         self.logger.warning(f"IPTV 认证恢复已执行：接口={iface}，恢复到初始备份，DHCP补救={'是' if dhcp_triggered else '否'}")
         return {"interface": iface, "snapshot": snap, "steps": steps, "backup": self.backup_summary(iface),
-                "dhcp_triggered": dhcp_triggered}
+                "dhcp_triggered": dhcp_triggered, "legacy_backup_repaired": repaired_legacy_backup}
 
     def backup_export(self, iface: str) -> dict[str, Any]:
         entry = self._backup_data().get("interfaces", {}).get(iface) or {}

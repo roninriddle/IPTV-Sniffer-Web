@@ -1,6 +1,6 @@
 # IPTV Sniffer Web
 
-当前测试版本：`v1.3.5-test`；稳定版本：`v1.3.3`。测试版变更、旧版问题归因和验证边界见 [审计说明](docs/1.3.5-test-audit.md)。
+当前测试版本：`v1.3.6-test`；稳定版本：`v1.3.3`。本 README 已合并 `1.3.3` 之后的变更、兼容说明、审计边界与发布指南，作为当前统一文档。
 
 面向飞牛 NAS、Linux Docker 和交换机镜像口场景的 IPTV 频道发现、订阅管理与播放工作台。它捕获机顶盒开机流量，将频道加入订阅，并提供可长期固定使用的播放器订阅地址。
 
@@ -12,9 +12,18 @@ PCAP 可能包含认证报文，因此默认不会纳入轻量 JSON 备份，也
 
 > 仅在你有权使用的网络和 IPTV 服务中部署。镜像口用于被动捕获，不能替代具备 IPTV 上游访问能力的播放设备。
 
-## 1.3.5-test 优化
+## 1.3.6-test 最新变更
 
-- 保留现有管理认证语义（B01 本轮不调整）。认证恢复点与 DHCP 目标选择沿用 1.3.4-test 修复。
+- 修复 [Issue #9](https://github.com/roninriddle/IPTV-Sniffer-Web/issues/9)：IPTV DHCP 成功不再硬编码要求 `10.*` 地址；`172.*` 等运营商分配的可用 IPv4 租约也能正确完成认证流程。
+- 完整修复 [Issue #6](https://github.com/roninriddle/IPTV-Sniffer-Web/issues/6)：保护初始 MAC 恢复点；对 `1.3.3` 已覆盖的初始快照，可从经 `last_apply` 验证的 `pre_apply` 历史自动恢复并修复备份。
+- MAC 恢复命令失败会立即报错；执行后再次读取接口 MAC，不再出现“未恢复却显示成功”。
+- 测试版发布分支改为通用 `codex/v*-test` 规则；版本、Compose 和 bake 标签统一为 `1.3.6-test`。
+- 原 `1.3.5-test` 审计文档和旧 GitHub 推送指南已合并到本 README，不再维护重复文件。
+
+## 1.3.3 之后的合并更新
+
+- 保留现有管理认证语义；管理端口仍需由部署环境提供访问边界。
+- 修复认证初始恢复点、DHCP 多客户端关联、回看自动刷新、订阅旧地址、HLS 分片入口、设置校验和组播诊断。
 - 自动回看刷新保留重启前的期限，失败也按配置周期重试；仅持久化调度时间，不保存会话密钥。
 - 当前运营商地址与历史来源分开；稳定订阅 ID 和来源证据可经 JSON 往返保留。频道列表显示历史标记，来源提示可查看 PCAP／解析器版本。
 - JSON／灾备使用统一 schema 和文件数量／解压大小边界；恢复先暂存所有模块，写入故障回滚设置、凭据和 PCAP。此机制保证同步写入失败回滚，不提供断电时的跨文件原子事务；回滚本身失败时保留私有 `.restore-*/journal.json` 供人工恢复。
@@ -29,16 +38,17 @@ EPG 每分钟检查所选主源是否需要刷新，12 小时周期；切换设�
 
 日志出口统一脱敏，每份 5 MiB、保留 3 个旧文件；已有历史日志不会被自动重写。回看 FFmpeg 持续读取 stderr，仅保留 32 KiB 尾部；RTSP 按 Session timeout 发送保活，GET_PARAMETER 不支持时退回 OPTIONS。RTP 序号缺口与迟到／重复计数不等同于网络丢包率，目前不做乱序重排。运营商长期兼容性仍需实流验收。
 
-本地验证：`python -m pip install --require-hashes -r requirements-dev.lock`，然后执行 `python -m pytest -q`、`node --test tests/settings-queue.test.cjs`、`python tools/check_release.py`。运行时依赖也使用带 SHA-256 的 `requirements.lock`，基础镜像固定 digest。
+本地验证：`python -m pip install --require-hashes -r requirements-dev.lock`，然后执行 `python -m pytest -q`、`node --test tests/settings-queue.test.cjs`、`python tools/check_release.py`。运行时依赖使用带 SHA-256 的 `requirements.lock`，基础镜像固定 digest。
 
 CI 配置在 Linux/macOS 上运行回归，在 amd64/arm64 上构建镜像并生成 CycloneDX SBOM、执行 Trivy 扫描；可修复的 HIGH/CRITICAL 问题阻止发布。发布复用同一事件 SHA 的质量检查，校验标签与应用／Compose／bake 版本，再进行推送。发布状态以对应标签的 GitHub Actions 结果及 Docker Hub 镜像标签为准；测试版不更新稳定版 latest。
 
 ## 1.3.4-test 兼容说明
 
-- 修复认证初始恢复点、DHCP 多客户端关联、回看自动刷新、订阅旧地址、HLS 分片入口、设置校验和组播诊断。
 - `channels.json` 改为带 `_format`、`schema_version: 2` 和 `items` 数组的结构，以保留同名多线路。新版兼容导入旧格式；旧版本不能导入新格式，跨旧版本请使用 M3U。
 - 灾备 ZIP 导出和导入统一限制为 10,000 个文件、解压后 2 GiB；超过限制的导出返回错误。超过 256 项的包需用新版恢复，旧版仍会拒绝。
-- 管理认证行为和删除频道语义保持现状。测试版可从源码构建，尚无本次修复对应的公开镜像。
+- 经典 PCAP 支持大小端、微秒和纳秒；pcapng 仍需先转换为经典 PCAP。
+- 同步写入失败可回滚，但恢复不提供断电情况下的跨文件原子事务。
+- 合成样本和隔离测试不能替代真实运营商环境的长期运行、FCC、RTSP、组播回流及播放器兼容性验收。
 
 ## 能做什么
 
@@ -71,6 +81,8 @@ docker run -d \
 ```
 
 访问 `http://宿主机IP:8787`。
+
+当前测试镜像使用 `roninriddle/iptv-sniffer-web:1.3.6-test`；测试版不会覆盖稳定版 `latest`。
 
 本地构建与运行：
 
@@ -175,7 +187,7 @@ config instance
 
 UCI 支持引号内的 URL 与行尾注释。诊断只读取唯一启用实例，并识别高级接口模式；多实例歧义或外部配置文件模式会要求选择实际配置文件。
 
-`1.3.5-test` 的后续集成代码还支持填写机顶盒 MAC：选择实际以太网抓包接口，捕获到目标 MAC 对应的 DHCP ACK 后会自动使用分配的 IP 解析频道；未捕获 ACK 时仍以填写的 IP 为准。MAC 与 IP 都未知时不能开始捕获。按 MAC 过滤不支持 `any`，按 IP 或 API 全量捕获仍可使用它。捕获诊断展示完整包数、实际解析 IP 和计数；SLL/SLL2 无法统计 MAC 时不会误报 MAC 填错。集成验收和发布范围见 [版本审计记录](docs/1.3.5-test-audit.md)。
+当前版本支持填写机顶盒 MAC：选择实际以太网抓包接口，捕获到目标 MAC 对应的 DHCP ACK 后会自动使用分配的 IP 解析频道；未捕获 ACK 时仍以填写的 IP 为准。MAC 与 IP 都未知时不能开始捕获。按 MAC 过滤不支持 `any`，按 IP 或 API 全量捕获仍可使用它。捕获诊断展示完整包数、实际解析 IP 和计数；SLL/SLL2 无法统计 MAC 时不会误报 MAC 填错。
 
 UCI 的下划线选项名等价于 INI 的连字符键名（`upstream_interface_fcc` 即 `upstream-interface-fcc`），`list listen` 会作为监听地址一并读出。若配置文件能被读取却解析不出任何配置项，诊断会把「rtp2httpd 配置文件」标为问题项，而不是默认按「系统路由表」判为正常。
 
@@ -228,6 +240,9 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 - 测试版使用 `x.y.z-test`：发布同名 Git tag 和 Docker tag，不更新 `latest`。
 - 正式版使用 `x.y.z`：发布同名 Git tag、Docker tag 和 `latest`。
+- 发布前执行 `python tools/check_release.py --tag vX.Y.Z-test`，确认应用、Compose、bake 和 Git 标签一致。
+- 日常代码合入 `main`；测试发布也可使用 `codex/vX.Y.Z-test` 分支。工作流构建 `linux/amd64` 与 `linux/arm64`，并推送 GitHub Container Registry 和 Docker Hub。
+- 仓库 Actions 需要配置镜像仓库凭据；只使用 GitHub Secrets，禁止把用户名、密码或访问令牌写入仓库。
 
 ## 版本演进
 
@@ -235,8 +250,7 @@ http://rtp2httpd-host:5140/rtp/239.x.x.x:port
 
 | 版本 | 更新摘要 |
 | --- | --- |
-| `v1.3.5-test`（测试版） | 持久调度、来源模型、恢复回滚、媒体容量与取消、分层诊断、解析器、锁定依赖与发布约束、顺序自动保存。 |
-| `v1.3.4-test`（未发布） | 修复 11 项审计问题，增加跨平台回归验证，统一应用、Compose 和 bake 版本。 |
+| `v1.3.6-test`（测试版） | 合并 1.3.3 之后的恢复、调度、来源、媒体容量、诊断、解析器与发布改进；修复非 `10.*` DHCP 租约误判及初始 MAC 恢复点被覆盖问题。 |
 | `v1.3.3` | 增加可删除历史 PCAP 及协议清单的管理功能；完整灾备纳入原始抓包与敏感凭据的可选迁移；所有原“输入指定文本确认”改为连续两次弹窗确认；新增 rtp2httpd 最佳频道与全部线路的原始 RTP 动态订阅。 |
 | `v1.3.2` | 重构频道库为单一平铺视图：分类、订阅状态与 FCC / 回看 / 时移 / 4K 快捷筛选；直接显示 HD / 4K、能力与订阅状态；移除分组页面并收敛批量操作。 |
 | `v1.3.1` | 修正订阅别名语义：`/playlist-all.m3u` 明确为主订阅兼容别名；订阅清单纳入全局备份、恢复与清除；回看入口统一为稳定 `/catchup/<频道ID>`；时移长度统一使用分钟字段并兼容旧数据。 |

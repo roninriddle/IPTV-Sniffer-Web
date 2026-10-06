@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "IPTV Sniffer Web"
-APP_VERSION = "1.3.5-test"
+APP_VERSION = "1.3.6-test"
 APP_DESCRIPTION = "IPTV 频道发现、订阅管理、回看与 rtp2httpd 播放统一工作台"
 GITHUB_REPO = "roninriddle/IPTV-Sniffer-Web"
 VERSION_CHECK_INTERVAL = 6 * 3600

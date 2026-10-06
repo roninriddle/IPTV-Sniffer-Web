@@ -189,6 +189,7 @@ def test_status_and_pre_apply_preserve_original_restore_point(isolated, tmp_path
     monkeypatch.setattr(service, "_interface_exists", lambda iface: True)
     monkeypatch.setattr("services.iptv_auth_service._run", lambda cmd, **kw:
                         (calls.append(cmd) or {"returncode": 0, "stdout": "", "stderr": ""}))
+    monkeypatch.setattr(service, "snapshot", lambda iface: {"interface": iface, **original})
     service.restore({"interface": "audit0", "confirmed": True})
     assert ["ip", "link", "set", "dev", "audit0", "address", original["mac"]] in calls
     assert not any(current["mac"] in cmd for cmd in calls)

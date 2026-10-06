@@ -3,7 +3,7 @@ name: Publish Docker image
 on:
   push:
     branches:
-      - "codex/v1.3.5-test"
+      - "codex/v*-test"
     tags:
       - "*"
 
