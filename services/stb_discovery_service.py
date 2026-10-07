@@ -20,6 +20,8 @@ from typing import Any
 
 from services.log_service import AppLogger
 from services.media_task_service import reap_process
+from services.parsers import ADAPTERS, _parse_chanlist_html, _parse_vsp_json, _parse_channel_acquire_json
+from services.parsers.common import (_extract_json_object, _parse_pc_channel_catalog, _decode_payload_text, _safe_int, _truthy, _first_text, _first_int, _clean_group_name, _channel_category_from_group, _fallback_classify_channel_name, _parse_multicast_url, _parse_stream_params, _iter_channel_dicts, _extract_channel_objects_from_partial_json)
 from collections import deque
 
 
@@ -32,17 +34,31 @@ def _probe_tcpdump_interfaces():
 
 def _capture_diagnostics(path, stb_ip, streams, channels, mac=""):
     count, seen, supported = 0, 0, None
+    ipv4_count = tcp_packets = udp_packets = 0
+    link_layers: set[str] = set()
+    has_vlan = has_pppoe = False
     target = bytes.fromhex(mac.replace(":", "")) if mac else b""
     if path and Path(path).exists():
         for linktype, packet in iter_pcap_packets(path):
             count += 1
-            supported = linktype == 1
-            if target and supported and len(packet) >= 14 and target in (packet[:6], packet[6:12]):
+            link_layers.add(_LINK_LAYER_NAMES.get(linktype, str(linktype)))
+            supported = True if linktype == 1 else (False if supported is None else supported)
+            if target and linktype == 1 and len(packet) >= 14 and target in (packet[:6], packet[6:12]):
                 seen += 1
+        for decoded in iter_ipv4_packets(path):
+            ipv4_count += 1
+            has_vlan = has_vlan or bool(decoded["vlan_depth"])
+            has_pppoe = has_pppoe or bool(decoded["pppoe"])
+            protocol = decoded["ip"][9] if len(decoded["ip"]) >= 20 else -1
+            tcp_packets += int(protocol == 6)
+            udp_packets += int(protocol == 17)
     result = {"pcap_size": Path(path).stat().st_size if path and Path(path).exists() else 0,
             "packet_count": count, "stream_count": len(streams),
             "matched_response_streams": sum(1 for key in streams if key[2] == stb_ip and key[0] != stb_ip),
-            "channels": len(channels), "effective_stb_ip": stb_ip}
+            "channels": len(channels), "effective_stb_ip": stb_ip,
+            "ipv4_packet_count": ipv4_count, "tcp_packet_count": tcp_packets,
+            "udp_packet_count": udp_packets, "link_layers": sorted(link_layers),
+            "has_vlan": has_vlan, "has_pppoe": has_pppoe}
     if mac:
         result.update(mac_requested=mac, mac_supported=supported is True,
                       mac_not_seen=supported is True and seen == 0)
@@ -70,6 +86,106 @@ def _capture_identity(path, requested_ip, mac):
 
 def _parse_ip(data: bytes, off: int) -> str:
     return ".".join(str(b) for b in data[off : off + 4])
+
+
+_VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
+_ETHERTYPE_IPV4 = 0x0800
+_ETHERTYPE_PPPOE_SESSION = 0x8864
+_LINK_LAYER_NAMES = {1: "Ethernet", 113: "Linux SLL", 276: "Linux SLL2"}
+
+
+def _pppoe_ipv4_start(packet: bytes, payload_start: int) -> int | None:
+    """Return the IPv4 offset inside a PPPoE session frame, if present."""
+    if payload_start + 7 > len(packet):
+        return None
+    version_type, code = packet[payload_start], packet[payload_start + 1]
+    if version_type >> 4 != 1 or code != 0:  # Session data uses code zero.
+        return None
+    declared_len = struct.unpack(">H", packet[payload_start + 4:payload_start + 6])[0]
+    ppp = payload_start + 6
+    if declared_len < 1 or ppp >= len(packet):
+        return None
+    # Address/control bytes are normally compressed in PPPoE, but accepting
+    # them costs nothing and covers captures produced by a few bridge tools.
+    if packet[ppp:ppp + 2] == b"\xff\x03":
+        ppp += 2
+    if ppp >= len(packet):
+        return None
+    if packet[ppp] & 1:
+        protocol = packet[ppp]
+        ppp += 1
+    else:
+        if ppp + 2 > len(packet):
+            return None
+        protocol = struct.unpack(">H", packet[ppp:ppp + 2])[0]
+        ppp += 2
+    return ppp if protocol == 0x21 else None
+
+
+def _unwrap_ipv4_packet(linktype: int, packet: bytes) -> dict[str, Any] | None:
+    """Normalize Ethernet/SLL/SLL2, VLAN/QinQ and PPPoE to one IPv4 view."""
+    src_mac = dst_mac = ""
+    vlan_depth = 0
+    pppoe = False
+    if linktype == 1:
+        if len(packet) < 14:
+            return None
+        dst_mac = ":".join(f"{byte:02x}" for byte in packet[:6])
+        src_mac = ":".join(f"{byte:02x}" for byte in packet[6:12])
+        protocol_pos = 12
+        ether_type = struct.unpack(">H", packet[protocol_pos:protocol_pos + 2])[0]
+        while ether_type in _VLAN_ETYPES:
+            vlan_depth += 1
+            protocol_pos += 4
+            if protocol_pos + 2 > len(packet):
+                return None
+            ether_type = struct.unpack(">H", packet[protocol_pos:protocol_pos + 2])[0]
+        payload_start = protocol_pos + 2
+    elif linktype == 113:
+        if len(packet) < 16:
+            return None
+        ether_type = struct.unpack(">H", packet[14:16])[0]
+        payload_start = 16
+    elif linktype == 276:
+        if len(packet) < 20:
+            return None
+        ether_type = struct.unpack(">H", packet[:2])[0]
+        payload_start = 20
+    else:
+        return None
+    if ether_type == _ETHERTYPE_PPPOE_SESSION:
+        pppoe = True
+        ip_start = _pppoe_ipv4_start(packet, payload_start)
+        if ip_start is None:
+            return None
+    elif ether_type == _ETHERTYPE_IPV4:
+        ip_start = payload_start
+    else:
+        return None
+    if ip_start + 20 > len(packet) or packet[ip_start] >> 4 != 4:
+        return None
+    ihl = (packet[ip_start] & 0x0F) * 4
+    if ihl < 20 or ip_start + ihl > len(packet):
+        return None
+    total_len = struct.unpack(">H", packet[ip_start + 2:ip_start + 4])[0]
+    ip_end = min(len(packet), ip_start + total_len) if total_len >= ihl else len(packet)
+    return {
+        "linktype": linktype,
+        "link_layer": _LINK_LAYER_NAMES.get(linktype, str(linktype)),
+        "src_mac": src_mac,
+        "dst_mac": dst_mac,
+        "vlan_depth": vlan_depth,
+        "pppoe": pppoe,
+        "ip": packet[ip_start:ip_end],
+    }
+
+
+def iter_ipv4_packets(pcap_path: str):
+    """Yield normalized IPv4 packets plus capture encapsulation metadata."""
+    for linktype, packet in iter_pcap_packets(pcap_path):
+        decoded = _unwrap_ipv4_packet(linktype, packet)
+        if decoded is not None:
+            yield decoded
 
 
 _MAC_PLAIN = re.compile(r"^[0-9a-fA-F]{12}$")
@@ -181,52 +297,21 @@ def _parse_dhcp_packet(payload: bytes) -> dict[str, Any] | None:
 
 def _extract_dhcp_from_pcap(pcap_path: str, stb_ip: str = "", stb_mac: str = "") -> dict[str, Any]:
     """Extract STB DHCP auth info from a pcap file."""
-    _VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
-    _DLT_LINUX_SLL = 113
-    _DLT_LINUX_SLL2 = 276
     requests: dict[tuple[int, str], dict] = {}
     responses: dict[tuple[int, str], dict] = {}
-    for packet_index, (linktype, pkt) in enumerate(iter_pcap_packets(pcap_path)):
-        if linktype == _DLT_LINUX_SLL:
-            if len(pkt) < 16:
-                continue
-            if struct.unpack(">H", pkt[14:16])[0] != 0x0800:
-                continue
-            ip_start = 16
-        elif linktype == _DLT_LINUX_SLL2:
-            if len(pkt) < 20:
-                continue
-            if struct.unpack(">H", pkt[0:2])[0] != 0x0800:
-                continue
-            ip_start = 20
-        else:
-            if len(pkt) < 14:
-                continue
-            p = 12
-            if p + 2 > len(pkt):
-                continue
-            etype = struct.unpack(">H", pkt[p : p + 2])[0]
-            while etype in _VLAN_ETYPES:
-                p += 4
-                if p + 2 > len(pkt):
-                    break
-                etype = struct.unpack(">H", pkt[p : p + 2])[0]
-            if etype != 0x0800:
-                continue
-            ip_start = p + 2
-        if ip_start + 20 > len(pkt):
+    for packet_index, decoded in enumerate(iter_ipv4_packets(pcap_path)):
+        ip_packet = decoded["ip"]
+        if len(ip_packet) < 20 or ip_packet[9] != 17:  # not UDP
             continue
-        if pkt[ip_start + 9] != 17:  # not UDP
+        ip_ihl = (ip_packet[0] & 0x0F) * 4
+        udp_off = ip_ihl
+        if udp_off + 8 > len(ip_packet):
             continue
-        ip_ihl = (pkt[ip_start] & 0x0F) * 4
-        udp_off = ip_start + ip_ihl
-        if udp_off + 8 > len(pkt):
-            continue
-        src_port = struct.unpack(">H", pkt[udp_off : udp_off + 2])[0]
-        dst_port = struct.unpack(">H", pkt[udp_off + 2 : udp_off + 4])[0]
+        src_port = struct.unpack(">H", ip_packet[udp_off : udp_off + 2])[0]
+        dst_port = struct.unpack(">H", ip_packet[udp_off + 2 : udp_off + 4])[0]
         if src_port not in (67, 68) and dst_port not in (67, 68):
             continue
-        parsed = _parse_dhcp_packet(pkt[udp_off + 8:])
+        parsed = _parse_dhcp_packet(ip_packet[udp_off + 8:])
         if not parsed:
             continue
         if stb_mac and parsed["mac"] != stb_mac:
@@ -442,58 +527,26 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
     handles 802.1Q / QinQ VLAN tags on Ethernet frames.  Packets are sorted by
     TCP sequence number and retransmissions are deduplicated.
     """
-    _VLAN_ETYPES = {0x8100, 0x88A8, 0x9100}
-    _DLT_LINUX_SLL = 113
-    _DLT_LINUX_SLL2 = 276
     stream_seqs: dict[tuple[str, int, str, int], dict[int, bytes]] = {}
     total_payload = 0
     total_segments = 0
-    for linktype, pkt in iter_pcap_packets(pcap_path):
-        if linktype == _DLT_LINUX_SLL:
-            # SLL v1: 16-byte cooked header; EtherType at bytes 14-15
-            if len(pkt) < 16:
-                continue
-            if struct.unpack(">H", pkt[14:16])[0] != 0x0800:
-                continue
-            ip_start = 16
-        elif linktype == _DLT_LINUX_SLL2:
-            # SLL v2: 20-byte cooked header; EtherType at bytes 0-1
-            if len(pkt) < 20:
-                continue
-            if struct.unpack(">H", pkt[0:2])[0] != 0x0800:
-                continue
-            ip_start = 20
-        else:
-            # Ethernet (DLT=1) — walk past 802.1Q / QinQ VLAN tags
-            if len(pkt) < 14:
-                continue
-            p = 12
-            if p + 2 > len(pkt):
-                continue
-            etype = struct.unpack(">H", pkt[p : p + 2])[0]
-            while etype in _VLAN_ETYPES:
-                p += 4
-                if p + 2 > len(pkt):
-                    break
-                etype = struct.unpack(">H", pkt[p : p + 2])[0]
-            if etype != 0x0800:
-                continue
-            ip_start = p + 2
-        if ip_start + 20 > len(pkt):
-            continue
-        if pkt[ip_start + 9] != 6:
+    for decoded in iter_ipv4_packets(pcap_path):
+        ip_packet = decoded["ip"]
+        if len(ip_packet) < 20 or ip_packet[9] != 6:
             continue  # not TCP
-        ip_ihl = (pkt[ip_start] & 0x0F) * 4
-        src_ip = _parse_ip(pkt, ip_start + 12)
-        dst_ip = _parse_ip(pkt, ip_start + 16)
-        tcp_off = ip_start + ip_ihl
-        if tcp_off + 20 > len(pkt):
+        ip_ihl = (ip_packet[0] & 0x0F) * 4
+        src_ip = _parse_ip(ip_packet, 12)
+        dst_ip = _parse_ip(ip_packet, 16)
+        tcp_off = ip_ihl
+        if tcp_off + 20 > len(ip_packet):
             continue
-        src_port = struct.unpack(">H", pkt[tcp_off : tcp_off + 2])[0]
-        dst_port = struct.unpack(">H", pkt[tcp_off + 2 : tcp_off + 4])[0]
-        seq = struct.unpack(">I", pkt[tcp_off + 4 : tcp_off + 8])[0]
-        data_off = tcp_off + ((pkt[tcp_off + 12] >> 4) * 4)
-        payload = pkt[data_off:]
+        src_port = struct.unpack(">H", ip_packet[tcp_off : tcp_off + 2])[0]
+        dst_port = struct.unpack(">H", ip_packet[tcp_off + 2 : tcp_off + 4])[0]
+        seq = struct.unpack(">I", ip_packet[tcp_off + 4 : tcp_off + 8])[0]
+        data_off = tcp_off + ((ip_packet[tcp_off + 12] >> 4) * 4)
+        if data_off > len(ip_packet):
+            continue
+        payload = ip_packet[data_off:]
         if not payload:
             continue
         key = (src_ip, src_port, dst_ip, dst_port)
@@ -533,9 +586,132 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
     return streams
 
 
-from services.parsers import ADAPTERS, _parse_chanlist_html, _parse_vsp_json, _parse_channel_acquire_json
-from services.parsers.common import (_extract_json_object, _parse_pc_channel_catalog, _decode_payload_text, _safe_int, _truthy, _first_text, _first_int, _clean_group_name, _channel_category_from_group, _fallback_classify_channel_name, _parse_multicast_url, _parse_stream_params, _iter_channel_dicts, _extract_channel_objects_from_partial_json)
+_CLIENT_MARKERS = (
+    (b"/eds/jsp/authenticationurl", 8, "EPG 登录"),
+    (b"/epg/jsp/", 6, "EPG 请求"),
+    (b"validauthenticationhw", 8, "终端认证"),
+    (b"authloginhw", 8, "终端登录"),
+    (b"channelacquire", 7, "频道表请求"),
+    (b"/uploadauthinfo", 8, "门户认证"),
+    (b"stbid=", 4, "STBID"),
+    (b"stbtype=", 4, "STBType"),
+    (b"userid=", 3, "UserID"),
+)
+_CHANNEL_RESPONSE_MARKERS = (
+    b"cusetconfig('channel'", b'cusetconfig("channel"', b"channelalllist",
+    b'"channelurl"', b'"multicasturl"', b'"channelid"',
+)
 
+
+def _detect_iptv_clients(streams: dict[tuple[str, int, str, int], bytes]) -> list[dict[str, Any]]:
+    scores: dict[str, int] = {}
+    reasons: dict[str, set[str]] = {}
+
+    def add(ip: str, score: int, reason: str) -> None:
+        if not ip or ip == "0.0.0.0":
+            return
+        scores[ip] = scores.get(ip, 0) + score
+        reasons.setdefault(ip, set()).add(reason)
+
+    for (src_ip, src_port, dst_ip, dst_port), raw in streams.items():
+        lowered = raw.lower()
+        marker_hit = False
+        for marker, weight, reason in _CLIENT_MARKERS:
+            if marker in lowered:
+                add(src_ip, weight, reason)
+                marker_hit = True
+        if lowered.startswith((b"get ", b"post ", b"head ")) and src_port > 1024:
+            add(src_ip, 1, "HTTP 客户端")
+        response_has_channels = any(marker in lowered for marker in _CHANNEL_RESPONSE_MARKERS)
+        if not response_has_channels:
+            response_has_channels = any(adapter.matches(raw) for adapter in ADAPTERS)
+        if response_has_channels:
+            add(dst_ip, 12, "频道表响应")
+        if lowered.startswith(b"http/") and not response_has_channels:
+            reverse = streams.get((dst_ip, dst_port, src_ip, src_port), b"").lower()
+            if any(marker in reverse for marker, _weight, _reason in _CLIENT_MARKERS):
+                add(dst_ip, 3, "认证响应")
+        if marker_hit and dst_port in (80, 443, 8080, 8082, 33200):
+            add(src_ip, 1, "常见 IPTV 服务端口")
+    ordered = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    total = sum(score for _ip, score in ordered) or 1
+    return [{
+        "ip": ip,
+        "score": score,
+        "confidence": min(99, max(1, round(score * 100 / total))),
+        "reasons": sorted(reasons.get(ip, set())),
+    } for ip, score in ordered]
+
+
+def inspect_pcap(pcap_path: str, display_name: str = "") -> dict[str, Any]:
+    """Return a credential-safe preflight report for an imported capture."""
+    with open(pcap_path, "rb") as stream:
+        magic = stream.read(4)
+    capture_format = "PCAPNG" if magic == b"\x0a\x0d\x0d\x0a" else "PCAP"
+    packet_count = 0
+    link_layers: set[str] = set()
+    ipv4_count = tcp_count = udp_count = 0
+    has_vlan = has_pppoe = False
+    for linktype, _packet in iter_pcap_packets(pcap_path):
+        packet_count += 1
+        link_layers.add(_LINK_LAYER_NAMES.get(linktype, str(linktype)))
+    for decoded in iter_ipv4_packets(pcap_path):
+        ipv4_count += 1
+        has_vlan = has_vlan or bool(decoded["vlan_depth"])
+        has_pppoe = has_pppoe or bool(decoded["pppoe"])
+        protocol = decoded["ip"][9] if len(decoded["ip"]) >= 20 else -1
+        tcp_count += int(protocol == 6)
+        udp_count += int(protocol == 17)
+    streams = _reassemble_tcp_streams(pcap_path)
+    candidates = _detect_iptv_clients(streams)
+    has_epg_auth = has_channel_data = has_fcc = has_timeshift = False
+    servers: set[str] = set()
+    for (src_ip, src_port, _dst_ip, _dst_port), raw in streams.items():
+        lowered = raw.lower()
+        if any(marker in lowered for marker, _weight, _reason in _CLIENT_MARKERS):
+            has_epg_auth = True
+        channel_hit = any(marker in lowered for marker in _CHANNEL_RESPONSE_MARKERS)
+        if not channel_hit:
+            channel_hit = any(adapter.matches(raw) for adapter in ADAPTERS)
+        if channel_hit:
+            has_channel_data = True
+            servers.add(f"{src_ip}:{src_port}")
+        has_fcc = has_fcc or b"channelfcc" in lowered or b"fccip" in lowered
+        has_timeshift = has_timeshift or any(marker in lowered for marker in (
+            b"timeshift", b"backtv", b"backtime", b"catchup",
+        ))
+    warnings: list[str] = []
+    if not packet_count:
+        warnings.append("抓包文件中没有完整数据包")
+    elif not ipv4_count:
+        warnings.append("未发现可解析的 IPv4 数据包")
+    elif not tcp_count:
+        warnings.append("抓包中只有 UDP 等非 TCP 流量；请从重启机顶盒开始重新抓包")
+    if tcp_count and not candidates:
+        warnings.append("未识别到 IPTV 客户端；抓包可能没有覆盖 EPG 登录或频道表下发")
+    if not has_epg_auth and not has_channel_data:
+        warnings.append("未发现 EPG 登录或频道表特征；建议重启机顶盒后重新抓包")
+    return {
+        "filename": display_name or Path(pcap_path).name,
+        "size": Path(pcap_path).stat().st_size,
+        "format": capture_format,
+        "link_layers": sorted(link_layers),
+        "has_vlan": has_vlan,
+        "has_pppoe": has_pppoe,
+        "packet_count": packet_count,
+        "ipv4_packet_count": ipv4_count,
+        "tcp_packet_count": tcp_count,
+        "udp_packet_count": udp_count,
+        "stream_count": len(streams),
+        "client_candidates": candidates,
+        "operator_servers": sorted(servers),
+        "has_epg_auth": has_epg_auth,
+        "has_channel_data": has_channel_data,
+        "has_fcc": has_fcc,
+        "has_timeshift": has_timeshift,
+        "ready": bool(packet_count and ipv4_count and tcp_count and candidates),
+        "warnings": warnings,
+    }
 
 
 _TIMESHIFT_URL_RE = re.compile(
@@ -893,17 +1069,23 @@ class StbDiscoveryService:
         name = str(name or "").strip()
         if not self.archive_dir or not name or Path(name).name != name:
             return None
-        if not name.startswith("stb-boot-") or not name.endswith(".pcap"):
+        if not name.startswith("stb-boot-") or Path(name).suffix.lower() not in {".pcap", ".pcapng"}:
             return None
         path = self.archive_dir / name
         return path if path.is_file() else None
+
+    def _archive_paths(self) -> list[Path]:
+        if not self.archive_dir:
+            return []
+        return [path for path in self.archive_dir.glob("stb-boot-*")
+                if path.is_file() and path.suffix.lower() in {".pcap", ".pcapng"}]
 
     def list_archives(self) -> list[dict[str, Any]]:
         """Return only non-sensitive metadata for locally persisted captures."""
         if not self.archive_dir:
             return []
         result: list[dict[str, Any]] = []
-        for path in self.archive_dir.glob("stb-boot-*.pcap"):
+        for path in self._archive_paths():
             try:
                 stat = path.stat()
             except OSError:
@@ -962,6 +1144,58 @@ class StbDiscoveryService:
         except Exception as exc:
             self.logger.warning(f"STB 原始抓包归档失败：{exc}")
             return ""
+
+    def import_capture(self, stream, original_name: str) -> dict[str, Any]:
+        """Bound, validate and privately persist an external PCAP/PCAPNG."""
+        if not self.archive_dir:
+            raise RuntimeError("未配置 STB 抓包归档目录")
+        filename = Path(str(original_name or "")).name
+        if Path(filename).suffix.lower() not in {".pcap", ".pcapng"}:
+            raise ValueError("仅支持 .pcap 或 .pcapng 文件")
+        with self._lock:
+            if self._state["status"] in {self.STATUS_CAPTURING, self.STATUS_ANALYZING}:
+                raise RuntimeError("正在捕获或分析 STB 流量，请稍后再导入")
+        self.archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if sum(path.stat().st_size for path in self._archive_paths()) >= 1024 * 1024 * 1024:
+            raise RuntimeError("PCAP 归档达到 1 GiB，请先导出或清理旧归档再导入")
+        fd, temp_name = tempfile.mkstemp(prefix=".stb-import-", suffix=".capture", dir=str(self.archive_dir))
+        os.close(fd)
+        temp_path = Path(temp_name)
+        try:
+            total = 0
+            with temp_path.open("wb") as output:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_PCAP_BYTES:
+                        raise ValueError("抓包文件超过 128 MiB 导入上限，请拆分后重试")
+                    output.write(chunk)
+            if total < 24:
+                raise ValueError("抓包文件为空或文件头不完整")
+            os.chmod(temp_path, 0o600)
+            report = inspect_pcap(str(temp_path), filename)
+            suffix = ".pcapng" if report["format"] == "PCAPNG" else ".pcap"
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+            target = self.archive_dir / f"stb-boot-import-{stamp}-{time.time_ns() % 1_000_000_000:09d}{suffix}"
+            os.replace(temp_path, target)
+            os.chmod(target, 0o600)
+            report["archive_name"] = target.name
+            with self._lock:
+                self._state["capture_preflight"] = report
+                self._state["archived_pcap"] = target.name
+            self.logger.info(
+                f"外部抓包预检完成：格式={report['format']}，包={report['packet_count']}，"
+                f"IPv4={report['ipv4_packet_count']}，TCP流={report['stream_count']}"
+            )
+            return report
+        finally:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
 
     @staticmethod
     def _write_private_artifact(path: Path, content: bytes) -> None:
@@ -1065,10 +1299,7 @@ class StbDiscoveryService:
         """
         if not self.archive_dir:
             raise RuntimeError("未配置 STB 抓包归档目录")
-        archives = sorted(
-            self.archive_dir.glob("stb-boot-*.pcap"),
-            key=lambda path: path.stat().st_mtime,
-        )
+        archives = sorted(self._archive_paths(), key=lambda path: path.stat().st_mtime)
         if not archives:
             raise RuntimeError("暂无已归档的 STB 抓包文件")
         with self._lock:
@@ -1086,12 +1317,40 @@ class StbDiscoveryService:
                     self._state.update(status=self.STATUS_ERROR, error=str(exc))
             raise
 
+    def analyze_archive(self, archive_name: str, client_ip: str = "auto") -> dict[str, Any]:
+        """Analyze one explicitly selected local archive after preflight."""
+        archive = self.archive_path(archive_name)
+        if archive is None:
+            raise FileNotFoundError("导入的抓包不存在或名称无效")
+        with self._lock:
+            if self._state["status"] in {self.STATUS_CAPTURING, self.STATUS_ANALYZING}:
+                raise RuntimeError("正在捕获或分析 STB 流量，请稍后再试")
+            self._generation += 1
+            generation = self._generation
+            self._state.update(status=self.STATUS_ANALYZING, error=None)
+        try:
+            return self._reanalyze_archive(archive, client_ip, generation)
+        except Exception as exc:
+            with self._lock:
+                if generation == self._generation:
+                    self._state.update(status=self.STATUS_ERROR, error=str(exc))
+            raise
+
     def _reanalyze_archive(self, archive, stb_ip, generation):
         pcap_path = str(archive)
         streams = _reassemble_tcp_streams(pcap_path)
+        auto_selected = not stb_ip or stb_ip == "auto"
+        if auto_selected:
+            candidates = _detect_iptv_clients(streams)
+            if not candidates:
+                raise ValueError("未自动识别到 IPTV 客户端，请重新抓取机顶盒开机阶段流量")
+            if len(candidates) > 1 and candidates[0]["score"] < candidates[1]["score"] * 2:
+                raise ValueError("检测到多个 IPTV 客户端，请在预检结果中选择后再分析")
+            stb_ip = str(candidates[0]["ip"])
         protocol_artifacts = self._persist_protocol_artifacts(pcap_path, archive.name, streams)
         channels = analyze_pcap_for_channels(pcap_path, stb_ip)
         diagnostics = _capture_diagnostics(pcap_path, stb_ip, streams, channels)
+        diagnostics["identity_source"] = "auto_detected" if auto_selected else "provided_ip"
         timeshift_host = _detect_timeshift_host(streams, channels)
         auth_info = _extract_dhcp_from_pcap(pcap_path, stb_ip)
         epg_creds = _extract_epg_credentials(streams, stb_ip)
@@ -1143,6 +1402,7 @@ class StbDiscoveryService:
                 "portal_auth": safe_portal_auth,
                 "archived_pcap": archive.name,
                 "protocol_artifacts": protocol_artifacts,
+                "source_mode": "imported" if archive.name.startswith("stb-boot-import-") else "archive",
             })
             self._state.update(self._pcap_meta_locked())
             return dict(self._state)
@@ -1244,7 +1504,7 @@ class StbDiscoveryService:
             raise ValueError("请填写机顶盒 IP 或 MAC 地址")
         if mac and not full_capture:
             _validate_mac_filter(interface, expression)
-        if self.archive_dir and sum(p.stat().st_size for p in self.archive_dir.glob("stb-boot-*.pcap")) >= 1024*1024*1024:
+        if self.archive_dir and sum(p.stat().st_size for p in self._archive_paths()) >= 1024*1024*1024:
             raise RuntimeError("PCAP 归档达到 1 GiB，请先导出或清理旧归档再开始捕获")
         rt = self.runtime_check()
         if not rt["ok"]:

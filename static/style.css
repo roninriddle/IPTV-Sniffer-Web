@@ -219,8 +219,32 @@ details summary {
 .form-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; min-width: 0; }
 .form-grid > * { min-width: 0; }
 .form-grid.capture-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+.form-grid.capture-import-grid { grid-template-columns: minmax(180px, 320px); align-items: start; }
 .capture-grid > label { align-content: start; }
 .capture-grid input, .capture-grid select { height: 40px; font-weight: 400; }
+.capture-mode-tabs { width: fit-content; }
+.capture-guide { margin: 0 0 12px; line-height: 1.65; }
+.capture-guide ol { margin: 8px 0 0; padding-left: 22px; }
+.capture-guide li + li { margin-top: 4px; }
+.capture-dropzone {
+  min-height: 112px;
+  display: grid;
+  place-content: center;
+  gap: 7px;
+  padding: 18px;
+  border: 2px dashed #b8c5d6;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: var(--muted);
+  text-align: center;
+  cursor: pointer;
+}
+.capture-dropzone strong { color: var(--text); font-size: 16px; }
+.capture-dropzone:hover, .capture-dropzone:focus, .capture-dropzone.dragover {
+  border-color: var(--primary);
+  background: #f2f6ff;
+  outline: none;
+}
 .form-grid.compact-grid { grid-template-columns: minmax(220px, 1.2fr) minmax(280px, 2fr); align-items: end; }
 .copy-field { display: flex; gap: 6px; min-width: 0; }
 .copy-field input { min-width: 0; flex: 1 1 auto; }

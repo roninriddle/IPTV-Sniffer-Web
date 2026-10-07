@@ -114,30 +114,65 @@
         <div id="stbDiscoveryTab" class="tab-panel">
           <section class="card">
             <div class="section-title">
-              <h2>STB 开机捕获</h2>
+              <h2>运营商频道发现</h2>
               <span id="stbDiscoveryBadge" class="chip neutral">就绪</span>
             </div>
-            <p class="task-description">填写机顶盒 IP 或 MAC，点击「开始捕获」后重启机顶盒，系统将自动捕获 STB 开机与运营商 EPG 门户的 TCP 交互，解析完整频道表（频道名称、组播地址、FCC 参数等）。需要 <code>tcpdump</code> 可用且应用容器具有 <code>NET_RAW</code> 能力。</p>
-            <div class="form-grid capture-grid">
-              <label>
-                机顶盒 IP
-                <input id="stbDiscoveryIp" type="text" placeholder="如 192.168.1.100" autocomplete="off" aria-describedby="stbDiscoveryIdentityHint">
-              </label>
-              <label>
-                机顶盒 MAC
-                <input id="stbDiscoveryMac" type="text" placeholder="02:00:00:00:00:20" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="stbDiscoveryIdentityHint">
-              </label>
-              <label>
-                抓包网卡
-                <select id="stbDiscoveryIface"></select>
-              </label>
+            <div class="channel-section-tabs capture-mode-tabs" role="tablist" aria-label="频道发现方式">
+              <button id="stbDiscoveryLiveModeBtn" class="tab-button active" type="button" role="tab" aria-selected="true">实时抓包</button>
+              <button id="stbDiscoveryImportModeBtn" class="tab-button" type="button" role="tab" aria-selected="false">导入抓包</button>
             </div>
-            <p id="stbDiscoveryIdentityHint" class="task-description">IP 与 MAC 至少填写一项。填写 MAC 时，IP 可留空；请选择实际以太网网卡，系统会从匹配的 DHCP ACK 确认 IP。仅按 IP 捕获时可选择 any。</p>
-            <div class="form-actions">
-              <button id="stbDiscoveryStartBtn" class="primary" type="button">开始捕获</button>
-              <button id="stbDiscoveryStopBtn" class="secondary" type="button" disabled>停止 &amp; 分析</button>
-              <button id="refreshInterfacesBtn" class="secondary" type="button">刷新网卡</button>
-              <button id="stbDiscoveryResetBtn" class="secondary" type="button">重置</button>
+            <div id="stbDiscoveryLivePanel" class="capture-mode-panel mt-12">
+              <p class="task-description">填写机顶盒 IP 或 MAC，点击「开始捕获」后重启机顶盒，系统将自动捕获开机与运营商 EPG 门户交互。需要 <code>tcpdump</code> 可用且容器具有 <code>NET_RAW</code> 能力。</p>
+              <div class="form-grid capture-grid">
+                <label>
+                  机顶盒 IP
+                  <input id="stbDiscoveryIp" type="text" placeholder="如 192.168.1.100" autocomplete="off" aria-describedby="stbDiscoveryIdentityHint">
+                </label>
+                <label>
+                  机顶盒 MAC
+                  <input id="stbDiscoveryMac" type="text" placeholder="02:00:00:00:00:20" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="stbDiscoveryIdentityHint">
+                </label>
+                <label>
+                  抓包网卡
+                  <select id="stbDiscoveryIface"></select>
+                </label>
+              </div>
+              <p id="stbDiscoveryIdentityHint" class="task-description">IP 与 MAC 至少填写一项。填写 MAC 时，IP 可留空；请选择实际以太网网卡，系统会从匹配的 DHCP ACK 确认 IP。仅按 IP 捕获时可选择 any。</p>
+              <div class="form-actions">
+                <button id="stbDiscoveryStartBtn" class="primary" type="button">开始捕获</button>
+                <button id="stbDiscoveryStopBtn" class="secondary" type="button" disabled>停止 &amp; 分析</button>
+                <button id="refreshInterfacesBtn" class="secondary" type="button">刷新网卡</button>
+                <button id="stbDiscoveryResetBtn" class="secondary" type="button">重置</button>
+              </div>
+            </div>
+            <div id="stbDiscoveryImportPanel" class="capture-mode-panel mt-12" hidden>
+              <div class="form-grid capture-import-grid">
+                <label>
+                  抓包来源
+                  <select id="stbCaptureSource">
+                    <option value="ikuai">爱快</option>
+                    <option value="openwrt">OpenWrt</option>
+                    <option value="wireshark">Wireshark</option>
+                    <option value="other">其他</option>
+                  </select>
+                </label>
+              </div>
+              <div id="stbCaptureGuide" class="notice capture-guide"></div>
+              <div id="stbCaptureDropzone" class="capture-dropzone" tabindex="0" role="button" aria-label="选择或拖入 PCAP、PCAPNG 文件">
+                <strong>拖入 PCAP / PCAPNG</strong>
+                <span>或点击选择文件，最大 128 MiB；文件可能包含认证信息，请仅在可信本地环境使用。</span>
+              </div>
+              <input id="stbCaptureFile" type="file" accept=".pcap,.pcapng,application/vnd.tcpdump.pcap,application/x-pcapng" class="hidden-control">
+              <div class="form-actions mt-12">
+                <button id="stbCaptureChooseBtn" class="secondary" type="button">选择抓包文件</button>
+                <button id="stbCaptureAnalyzeBtn" class="primary" type="button" disabled>分析抓包</button>
+              </div>
+              <div id="stbCapturePreflight" class="result-box muted" hidden></div>
+              <label id="stbCaptureClientRow" class="mt-12" hidden>
+                IPTV 客户端（抓包侧 IP）
+                <select id="stbCaptureClient"></select>
+                <small>WAN2 抓包经过 NAT 时，这里显示的是爱快在 IPTV 线路上的地址，不一定是机顶盒 LAN 地址。</small>
+              </label>
             </div>
             <div id="stbDiscoveryStatus" class="result-box muted">等待开始…</div>
             <details id="stbDiscoveryDiagnostics" class="stb-diag" hidden>

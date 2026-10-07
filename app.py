@@ -72,7 +72,7 @@ from services.snapshot_service import SnapshotService
 from services.diagnostic_service import playback_evidence, diagnostic_verdict
 from services import subscription_service
 from services.catchup_scheduler import CatchupScheduler
-from services.io_limits import validate_http_url, HttpOnlyRedirects, read_bounded, gunzip_bounded, MAX_HTTP_BYTES
+from services.io_limits import validate_http_url, HttpOnlyRedirects, read_bounded, gunzip_bounded, MAX_HTTP_BYTES, MAX_PCAP_BYTES
 from urllib.request import build_opener
 from services.media_task_service import ProcessTail
 from utils import with_playseek, valid_playseek
@@ -1526,7 +1526,7 @@ _BACKUP_VERSION = 2
 _DISASTER_BACKUP_VERSION = 1
 _DISASTER_MAX_FILES = 10_000
 _DISASTER_MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
-_DISASTER_PCAP_RE = re.compile(r"^pcaps/(stb-boot-[A-Za-z0-9._-]+\.pcap)$")
+_DISASTER_PCAP_RE = re.compile(r"^pcaps/(stb-boot-[A-Za-z0-9._-]+\.pcap(?:ng)?)$")
 _DISASTER_MANIFEST_RE = re.compile(r"^metadata/(stb-boot-[A-Za-z0-9._-]+)\.manifest\.json$")
 _BACKUP_FILES: list[tuple[str, Path]] = [
     ("settings", SETTINGS_FILE),
@@ -1979,7 +1979,9 @@ def api_disaster_backup_export():
         archive_files = []
         archive_dir = stb_discovery_service.archive_dir
         if include_pcaps and archive_dir:
-            for path in sorted(Path(archive_dir).glob("stb-boot-*.pcap")):
+            for path in sorted(Path(archive_dir).glob("stb-boot-*")):
+                if path.suffix.lower() not in {".pcap", ".pcapng"}:
+                    continue
                 if path.is_file():
                     archive_files.append((f"pcaps/{path.name}", path))
                     manifest = Path(archive_dir) / f"{path.stem}.artifacts" / "manifest.json"
@@ -2244,6 +2246,47 @@ def api_stb_discovery_reanalyze():
         return api_error(str(exc), 500)
 
 
+@app.post("/api/stb_discovery/capture-import/preflight")
+def api_stb_discovery_capture_import_preflight():
+    """Persist an external capture privately and return a safe preflight."""
+    if request.content_length and request.content_length > MAX_PCAP_BYTES + 1024 * 1024:
+        return api_error("抓包文件超过 128 MiB 导入上限，请拆分后重试", 413)
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return api_error("请选择 .pcap 或 .pcapng 抓包文件")
+    try:
+        report = stb_discovery_service.import_capture(upload.stream, upload.filename)
+        return api_success(report)
+    except ValueError as exc:
+        return api_error(str(exc), 400)
+    except RuntimeError as exc:
+        return api_error(str(exc), 409)
+    except Exception as exc:
+        logger.error(f"外部抓包预检失败：{exc}")
+        return api_error(str(exc), 500)
+
+
+@app.post("/api/stb_discovery/capture-import/analyze")
+def api_stb_discovery_capture_import_analyze():
+    """Analyze a preflighted capture with an explicit or automatic client IP."""
+    data = request.get_json(silent=True) or {}
+    archive_name = str(data.get("archive_name") or "").strip()
+    client_ip = str(data.get("client_ip") or "auto").strip()
+    if not archive_name:
+        return api_error("缺少已预检的抓包名称")
+    if client_ip != "auto" and not valid_ip_or_host(client_ip):
+        return api_error("IPTV 客户端 IP 格式不正确")
+    try:
+        return api_success(stb_discovery_service.analyze_archive(archive_name, client_ip))
+    except FileNotFoundError as exc:
+        return api_error(str(exc), 404)
+    except (ValueError, RuntimeError) as exc:
+        return api_error(str(exc), 400)
+    except Exception as exc:
+        logger.error(f"外部抓包分析失败：{exc}")
+        return api_error(str(exc), 500)
+
+
 @app.post("/api/stb_discovery/reset")
 def api_stb_discovery_reset():
     stb_discovery_service.reset()
@@ -2265,11 +2308,12 @@ def api_stb_discovery_pcap():
         return api_error("暂无可导出的 STB 抓包文件，请先完成一次 STB 开机捕获", 404)
     stopped_at = int(stb_discovery_service.status().get("stopped_at") or time.time())
     filename = Path(path).name or time.strftime("stb-boot-%Y%m%d-%H%M%S.pcap", time.localtime(stopped_at))
+    is_pcapng = Path(path).suffix.lower() == ".pcapng"
     return send_file(
         path,
         as_attachment=True,
         download_name=filename,
-        mimetype="application/vnd.tcpdump.pcap",
+        mimetype="application/x-pcapng" if is_pcapng else "application/vnd.tcpdump.pcap",
         max_age=0,
     )
 

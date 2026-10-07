@@ -29,8 +29,9 @@ const state = {
 };
 
 async function requestJsonRaw(url, options = {}) {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const response = await fetch(url, {
-    headers: {"Content-Type": "application/json"},
+    headers: isFormData ? {} : {"Content-Type": "application/json"},
     ...options,
   });
   let payload;
@@ -1414,6 +1415,89 @@ const STB_STATUS_CHIP = {
   error: "error",
 };
 
+let stbCapturePreflight = null;
+const STB_CAPTURE_GUIDES = {
+  ikuai: `<strong>爱快推荐抓法：优先抓 STB 所在 LAN / VLAN</strong><ol>
+    <li>打开爱快的「抓包工具」或「网络调试 → 自定义抓包」，选择机顶盒所在 LAN / VLAN 接口。</li>
+    <li>IP 填机顶盒地址（知道 MAC 也可按 MAC 过滤）；端口和协议留空，保留完整开机交互。</li>
+    <li>开始抓包后立即重启机顶盒；等频道画面出现后再等几十秒，随后停止并下载。</li>
+    <li>LAN 侧抓不到时再抓 WAN2：建议只筛 TCP、端口留空。WAN2 经过 NAT 时不要填写机顶盒的 LAN IP。</li>
+  </ol>`,
+  openwrt: `<strong>OpenWrt 抓包提示</strong><ol>
+    <li>优先选择机顶盒所在 bridge / VLAN 接口，并从重启机顶盒前开始抓。</li>
+    <li>保留完整 TCP 交互；频道正常出现后再等几十秒即可停止，避免长时间录入大量 RTP。</li>
+  </ol>`,
+  wireshark: `<strong>Wireshark 抓包提示</strong><ol>
+    <li>选择能看到机顶盒与 IPTV 网关通信的镜像口或本地接口。</li>
+    <li>从机顶盒重启前开始，完成 EPG 登录与频道表下发后停止，保存为 PCAP 或 PCAPNG。</li>
+  </ol>`,
+  other: `<strong>通用抓包提示</strong><ol>
+    <li>优先在机顶盒侧抓取，确保覆盖重启、EPG 登录、认证与频道表下发。</li>
+    <li>支持 Ethernet、VLAN / QinQ、PPPoE、Linux SLL / SLL2 封装的 PCAP 与 PCAPNG。</li>
+  </ol>`,
+};
+
+function setStbDiscoveryMode(mode) {
+  const imported = mode === "import";
+  $("stbDiscoveryLivePanel").hidden = imported;
+  $("stbDiscoveryImportPanel").hidden = !imported;
+  $("stbDiscoveryLiveModeBtn").classList.toggle("active", !imported);
+  $("stbDiscoveryImportModeBtn").classList.toggle("active", imported);
+  $("stbDiscoveryLiveModeBtn").setAttribute("aria-selected", String(!imported));
+  $("stbDiscoveryImportModeBtn").setAttribute("aria-selected", String(imported));
+}
+
+function renderStbCaptureGuide() {
+  const source = $("stbCaptureSource").value || "other";
+  $("stbCaptureGuide").innerHTML = STB_CAPTURE_GUIDES[source] || STB_CAPTURE_GUIDES.other;
+}
+
+function renderStbCapturePreflight(report) {
+  stbCapturePreflight = report;
+  const box = $("stbCapturePreflight");
+  const candidates = report.client_candidates || [];
+  const lines = [
+    `文件：${report.filename || "—"}（${formatBytes(report.size)}）`,
+    `格式：${report.format || "—"} · 链路层：${(report.link_layers || []).join(" / ") || "未识别"}`,
+    `封装：VLAN ${report.has_vlan ? "是" : "否"} · PPPoE ${report.has_pppoe ? "是" : "否"}`,
+    `数据包：${Number(report.packet_count || 0).toLocaleString("zh-CN")} · IPv4 ${Number(report.ipv4_packet_count || 0).toLocaleString("zh-CN")} · TCP 流 ${Number(report.stream_count || 0).toLocaleString("zh-CN")}`,
+    `内容：EPG/认证 ${report.has_epg_auth ? "已发现" : "未发现"} · 频道表 ${report.has_channel_data ? "已发现" : "未发现"} · FCC ${report.has_fcc ? "已发现" : "未发现"} · 回看 ${report.has_timeshift ? "已发现" : "未发现"}`,
+  ];
+  if ((report.operator_servers || []).length) lines.push(`运营商服务器：${report.operator_servers.join("，")}`);
+  if ((report.warnings || []).length) lines.push(`提示：${report.warnings.join("；")}`);
+  box.hidden = false;
+  box.textContent = lines.join("\n");
+  box.className = `result-box ${report.ready ? "ok" : "warning"}`;
+
+  const row = $("stbCaptureClientRow");
+  const select = $("stbCaptureClient");
+  select.innerHTML = candidates.map((candidate) => {
+    const reason = (candidate.reasons || []).join("、");
+    return `<option value="${escapeHtml(candidate.ip)}">${escapeHtml(candidate.ip)} · 置信度 ${Number(candidate.confidence || 0)}%${reason ? ` · ${escapeHtml(reason)}` : ""}</option>`;
+  }).join("");
+  row.hidden = !candidates.length;
+  $("stbCaptureAnalyzeBtn").disabled = !report.ready || !candidates.length;
+}
+
+async function preflightStbCapture(file) {
+  if (!file) return;
+  if (!/\.(pcap|pcapng)$/i.test(file.name || "")) { alert("仅支持 .pcap 或 .pcapng 文件"); return; }
+  if (file.size > 128 * 1024 * 1024) { alert("抓包文件超过 128 MiB，请拆分后重试"); return; }
+  const box = $("stbCapturePreflight");
+  box.hidden = false; box.className = "result-box warning"; box.textContent = "正在上传并预检抓包……";
+  $("stbCaptureAnalyzeBtn").disabled = true;
+  const form = new FormData();
+  form.append("file", file, file.name);
+  try {
+    const report = await requestJson("/api/stb_discovery/capture-import/preflight", {method: "POST", body: form});
+    renderStbCapturePreflight(report);
+    await loadStbDiscoveryState();
+  } catch (err) {
+    stbCapturePreflight = null;
+    box.className = "result-box error"; box.textContent = `预检失败：${err.message}`;
+  }
+}
+
 function renderStbDiscoveryStatus(state) {
   const status = state.status || "idle";
   const badge = $("stbDiscoveryBadge");
@@ -1437,6 +1521,9 @@ function renderStbDiscoveryStatus(state) {
   $("stbDiscoveryStartBtn").disabled = isCapturing || isAnalyzing;
   $("stbDiscoveryStopBtn").disabled = !isCapturing;
   $("stbDiscoveryResetBtn").disabled = isCapturing || isAnalyzing;
+  if ($("stbCaptureAnalyzeBtn")) {
+    $("stbCaptureAnalyzeBtn").disabled = isCapturing || isAnalyzing || !stbCapturePreflight?.ready;
+  }
   const latestArchive = state.latest_archive || null;
   const exportAvailable = !!state.pcap_available || !!latestArchive;
   if ($("stbDiscoveryPcapBtn")) {
@@ -1473,9 +1560,10 @@ function renderStbDiscoveryStatus(state) {
   } else if (isDone) {
     const n = state.channel_count || 0;
     const diag = state.diagnostics || {};
+    const completedLabel = state.source_mode === "imported" ? "抓包分析完成" : "捕获完成";
     let text = n > 0
-      ? `捕获完成，共发现 ${n} 个频道。`
-      : "捕获完成，未发现频道。请确认机顶盒已完成开机流程。";
+      ? `${completedLabel}，共发现 ${n} 个频道。`
+      : `${completedLabel}，未发现频道。请确认抓包覆盖了机顶盒完整开机流程。`;
     // A wrong MAC still yields a valid filter, so tcpdump records nothing and
     // the user is left with a bare "0 channels".  Say what actually happened.
     if (diag.mac_not_seen && n === 0) {
@@ -1550,8 +1638,12 @@ function renderStbDiscoveryDiagnostics(state) {
   );
   if (diag.pcap_size !== undefined) addRow("抓包大小", formatBytes(diag.pcap_size));
   if (diag.packet_count !== undefined) addRow("完整数据包", Number(diag.packet_count).toLocaleString("zh-CN"), true);
+  if ((diag.link_layers || []).length) addRow("链路层", diag.link_layers.join(" / "));
+  if (diag.ipv4_packet_count !== undefined) addRow("IPv4 数据包", Number(diag.ipv4_packet_count).toLocaleString("zh-CN"), true);
+  if (diag.has_vlan !== undefined) addRow("VLAN", diag.has_vlan ? "已检测" : "未检测");
+  if (diag.has_pppoe !== undefined) addRow("PPPoE", diag.has_pppoe ? "已检测" : "未检测");
   if (diag.effective_stb_ip) addRow("实际解析 IP", diag.effective_stb_ip, true);
-  if (diag.identity_source) addRow("IP 依据", ({dhcp_ack: "目标 MAC 对应的 DHCP ACK", provided_ip: "用户填写的 IP", unresolved: "尚未确认"})[diag.identity_source] || "未知");
+  if (diag.identity_source) addRow("IP 依据", ({dhcp_ack: "目标 MAC 对应的 DHCP ACK", provided_ip: "用户选择或填写的 IP", auto_detected: "根据 IPTV 协议特征自动识别", unresolved: "尚未确认"})[diag.identity_source] || "未知");
   if (diag.mac_requested) addRow("过滤 MAC", diag.mac_requested, true);
   if (diag.mac_supported === false) addRow("MAC 统计", "当前链路不支持，无法判断是否出现");
   else if (diag.mac_seen_count !== undefined) addRow("该 MAC 出现次数", Number(diag.mac_seen_count).toLocaleString("zh-CN"), true);
@@ -1656,6 +1748,53 @@ function stopStbDiscoveryPoll() {
     stbDiscoveryPollTimer = null;
   }
 }
+
+
+$("stbDiscoveryLiveModeBtn")?.addEventListener("click", () => setStbDiscoveryMode("live"));
+$("stbDiscoveryImportModeBtn")?.addEventListener("click", () => setStbDiscoveryMode("import"));
+$("stbCaptureSource")?.addEventListener("change", renderStbCaptureGuide);
+$("stbCaptureChooseBtn")?.addEventListener("click", () => $("stbCaptureFile").click());
+$("stbCaptureDropzone")?.addEventListener("click", () => $("stbCaptureFile").click());
+$("stbCaptureDropzone")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); $("stbCaptureFile").click(); }
+});
+$("stbCaptureFile")?.addEventListener("change", (event) => preflightStbCapture(event.target.files?.[0]));
+for (const eventName of ["dragenter", "dragover"]) {
+  $("stbCaptureDropzone")?.addEventListener(eventName, (event) => {
+    event.preventDefault(); $("stbCaptureDropzone").classList.add("dragover");
+  });
+}
+for (const eventName of ["dragleave", "drop"]) {
+  $("stbCaptureDropzone")?.addEventListener(eventName, (event) => {
+    event.preventDefault(); $("stbCaptureDropzone").classList.remove("dragover");
+  });
+}
+$("stbCaptureDropzone")?.addEventListener("drop", (event) => preflightStbCapture(event.dataTransfer?.files?.[0]));
+$("stbCaptureAnalyzeBtn")?.addEventListener("click", async () => {
+  if (!stbCapturePreflight?.archive_name) return;
+  const clientIp = $("stbCaptureClient").value || "auto";
+  const box = $("stbCapturePreflight");
+  $("stbCaptureAnalyzeBtn").disabled = true;
+  box.className = "result-box warning";
+  box.textContent = "预检通过，正在分析频道、FCC、回看和认证信息……";
+  try {
+    const data = await requestJson("/api/stb_discovery/capture-import/analyze", {
+      method: "POST",
+      body: JSON.stringify({archive_name: stbCapturePreflight.archive_name, client_ip: clientIp}),
+    });
+    renderStbDiscoveryStatus(data);
+    renderStbDiscoveryChannels(data.channels || []);
+    box.className = `result-box ${(data.channel_count || 0) > 0 ? "ok" : "warning"}`;
+    box.textContent = (data.channel_count || 0) > 0
+      ? `分析完成：发现 ${data.channel_count} 个频道。请检查结果后再导入频道列表。`
+      : "分析完成但未解析出频道；请查看下方捕获诊断，确认抓包覆盖了开机频道表下发。";
+    await loadStbDiscoveryState();
+  } catch (err) {
+    box.className = "result-box error"; box.textContent = `分析失败：${err.message}`;
+    $("stbCaptureAnalyzeBtn").disabled = false;
+  }
+});
+renderStbCaptureGuide();
 
 
 $("stbDiscoveryStartBtn").addEventListener("click", async () => {

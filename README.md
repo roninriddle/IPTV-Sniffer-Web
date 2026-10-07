@@ -2,7 +2,7 @@
 
 从机顶盒开机流量中发现频道，管理订阅、EPG 与回看，并提供固定的播放器订阅地址。适用于飞牛 NAS、Linux Docker 和交换机镜像口环境。
 
-当前测试版：**1.3.7-test**；稳定版：**1.3.3**。代码统一维护在 `main`，1.3.3 之后的改进统一收录于本版。
+当前测试版：**1.3.8-test**；稳定版：**1.3.3**。代码统一维护在 `main`，1.3.3 之后的改进统一收录于本版。
 
 ## 快速开始
 
@@ -18,7 +18,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/output:/app/output" \
-  roninriddle/iptv-sniffer-web:1.3.7-test
+  roninriddle/iptv-sniffer-web:1.3.8-test
 ```
 
 访问 `http://宿主机IP:8787`。需要稳定版时，将镜像标签改为 `1.3.3`；`latest` 仍指向稳定版，测试版不会覆盖它。镜像支持 `linux/amd64` 和 `linux/arm64`。
@@ -39,7 +39,7 @@ docker run -d \
 
 ## 发现频道并播放
 
-1. 进入「运营商频道」，选择抓包网卡，填写机顶盒 IP 或 MAC，点击「开始捕获」后重启机顶盒。
+1. 进入「运营商频道」，选择「实时抓包」并在开始后重启机顶盒；也可以选择「导入抓包」，上传爱快、OpenWrt 或 Wireshark 生成的 PCAP / PCAPNG。
 2. 停止并分析，将发现的频道导入频道库。诊断面板可查看完整包数、解析 IP 和频道解析结果。
 3. 在频道库勾选频道，加入「订阅中心」。同名多线路、FCC/FEC、回看、时移与来源信息随频道保存。
 4. 在播放器中添加下表的固定订阅地址。运营商地址或回看 Token 更新后，无需重新导入订阅。
@@ -51,6 +51,13 @@ docker run -d \
 - 按 MAC 捕获时，只有匹配目标的 DHCP ACK 才更新解析 IP；没有 ACK 时仍使用已填写的 IP。
 - `any` 可用于按 IP 捕获，不支持按 MAC 过滤。SLL/SLL2 抓包无法统计 MAC 时，页面会显示无法判断。
 - 解析到频道表只代表发现成功，实际播放仍取决于上游链路、认证和播放器支持。
+
+### 从爱快导入抓包
+
+- 优先在机顶盒所在 LAN / VLAN 抓包，可保留真实终端 IP 和 MAC；开始抓包后立即重启机顶盒，频道正常出现后再等几十秒即可停止。
+- LAN 侧无法取得流量时再抓 WAN2。建议筛选 TCP、端口留空；WAN2 经过 NAT 时，预检显示的是 IPTV 线路侧客户端 IP，不一定是机顶盒 LAN 地址。
+- 上传后先执行预检，页面会显示文件格式、链路层、VLAN / PPPoE、IPv4、TCP 流、候选客户端以及频道、FCC、回看特征。确认候选客户端后再分析，不会直接导入频道库。
+- 支持经典 PCAP 与 PCAPNG，以及 Ethernet、VLAN / QinQ、PPPoE、Linux SLL / SLL2。文件上限 128 MiB，原始抓包会以仅所有者可读写权限保存在本地归档中。
 
 ### 固定订阅地址
 
@@ -124,7 +131,7 @@ UCI 下划线键名等价于 INI 连字符键名；支持引号、行尾注释�
 | --- | --- |
 | 媒体任务 | 最多同时 4 个，直播最多 2、回看最多 2、截图最多 1、诊断最多 1；同时受 Waitress 线程数限制，满载返回 429，可在诊断页取消。 |
 | 截图缓存 | 30 秒、32 项、16 MiB，检查 JPEG 边界并避免重复生成。 |
-| PCAP | 经典 PCAP 支持大小端、微秒与纳秒；pcapng 需先转换。解析上限 128 MiB，单包 1 MiB，TCP 重组 32 MiB / 262144 段 / 4096 流。 |
+| PCAP | 支持经典 PCAP（大小端、微秒与纳秒）和 PCAPNG；可解析 Ethernet、VLAN / QinQ、PPPoE、Linux SLL / SLL2。上限 128 MiB，单包 1 MiB，TCP 重组 32 MiB / 262144 段 / 4096 流。 |
 | 抓包归档 | 超过 16 MiB 暂停实时重复解析；约每 3 秒检查 128 MiB 停抓阈值，可能短暂超限。归档达 1 GiB 拒绝新抓包，不自动删除已有文件。 |
 | 下载 | EPG / M3U 下载 16 MiB、gzip 展开 64 MiB；仅支持 HTTP(S)，重定向也检查协议。 |
 | EPG 与静态导出 | 每分钟检查主源，刷新周期 12 小时；静态导出使用独立批次，24 小时过期、最多 100 批。 |
@@ -140,7 +147,7 @@ UCI 下划线键名等价于 INI 连字符键名；支持引号、行尾注释�
 python -m pip install --require-hashes -r requirements-dev.lock
 python -m pytest -q
 node --test tests/settings-queue.test.cjs
-python tools/check_release.py --tag v1.3.7-test
+python tools/check_release.py --tag v1.3.8-test
 ```
 
 推送版本标签后，GitHub Actions 对同一提交运行 Linux/macOS 回归、amd64/arm64 构建和运行检查，生成 SBOM 并扫描可修复的 HIGH/CRITICAL 漏洞，通过后发布至 Docker Hub 和 GHCR。运行依赖带哈希锁定，基础镜像固定 digest。发布凭据使用 GitHub Secrets `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`。
@@ -151,6 +158,7 @@ python tools/check_release.py --tag v1.3.7-test
 
 | 版本 | 更新摘要 |
 | --- | --- |
+| **1.3.8-test** | 第一阶段外部抓包导入：爱快 / OpenWrt / Wireshark 页面向导、PCAP / PCAPNG 上传预检、VLAN / QinQ / PPPoE 归一化、抓包侧 IPTV 客户端自动识别，并复用频道、FCC、回看和认证分析链路。 |
 | **1.3.7-test** | 汇总稳定版之后的所有改进：MAC/IP 捕获与 DHCP 目标关联、非 `10.*` 租约识别、MAC 恢复校验、持久回看调度、稳定订阅与来源记录、备份暂存回滚、UCI 诊断、媒体配额、解析器与发布检查。本次修正捕获表单输入框对齐和移动端排版，重整 README，统一为 main 分支与单一当前测试版。 |
 | **1.3.3（稳定版）** | 历史 PCAP 管理、包含原始抓包和敏感材料的可选灾备、两次确认、rtp2httpd 动态原始源订阅。 |
 | 1.3.2 及以前 | 建立频道发现、认证辅助、订阅与多线路管理、回看/HLS、EPG 和播放诊断。详细变化保留在 [Git 提交历史](https://github.com/roninriddle/IPTV-Sniffer-Web/commits/main)。 |
