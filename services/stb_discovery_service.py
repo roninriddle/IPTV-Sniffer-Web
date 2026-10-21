@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 """STB boot capture and channel list discovery via tcpdump + TCP stream reassembly."""
 from __future__ import annotations
-from services.io_limits import iter_pcap_packets, gunzip_bounded, MAX_PCAP_BYTES
+from services.io_limits import (
+    iter_pcap_packets, gunzip_bounded, MAX_OFFLINE_PCAP_BYTES,
+    MAX_LIVE_PCAP_BYTES, MAX_PCAP_ARCHIVE_BYTES,
+)
 
 import gzip
 import json
@@ -667,19 +670,23 @@ def inspect_pcap(pcap_path: str, display_name: str = "") -> dict[str, Any]:
     has_epg_auth = has_channel_data = has_fcc = has_timeshift = False
     servers: set[str] = set()
     for (src_ip, src_port, _dst_ip, _dst_port), raw in streams.items():
-        lowered = raw.lower()
-        if any(marker in lowered for marker, _weight, _reason in _CLIENT_MARKERS):
+        raw_lower = raw.lower()
+        if any(marker in raw_lower for marker, _weight, _reason in _CLIENT_MARKERS):
             has_epg_auth = True
-        channel_hit = any(marker in lowered for marker in _CHANNEL_RESPONSE_MARKERS)
-        if not channel_hit:
-            channel_hit = any(adapter.matches(raw) for adapter in ADAPTERS)
-        if channel_hit:
-            has_channel_data = True
-            servers.add(f"{src_ip}:{src_port}")
-        has_fcc = has_fcc or b"channelfcc" in lowered or b"fccip" in lowered
-        has_timeshift = has_timeshift or any(marker in lowered for marker in (
-            b"timeshift", b"backtv", b"backtime", b"catchup",
-        ))
+        # Channel lists can be gzip/chunked HTTP responses. Inspect the same
+        # decoded bodies used by channel analysis, as well as unwrapped streams.
+        for payload in (raw, *(body for _headers, body in _split_http_responses(raw))):
+            lowered = raw_lower if payload is raw else payload.lower()
+            channel_hit = any(marker in lowered for marker in _CHANNEL_RESPONSE_MARKERS)
+            if not channel_hit:
+                channel_hit = any(adapter.matches(payload) for adapter in ADAPTERS)
+            if channel_hit:
+                has_channel_data = True
+                servers.add(f"{src_ip}:{src_port}")
+            has_fcc = has_fcc or b"channelfcc" in lowered or b"fccip" in lowered
+            has_timeshift = has_timeshift or any(marker in lowered for marker in (
+                b"timeshift", b"backtv", b"backtime", b"catchup",
+            ))
     warnings: list[str] = []
     if not packet_count:
         warnings.append("抓包文件中没有完整数据包")
@@ -1156,7 +1163,8 @@ class StbDiscoveryService:
             if self._state["status"] in {self.STATUS_CAPTURING, self.STATUS_ANALYZING}:
                 raise RuntimeError("正在捕获或分析 STB 流量，请稍后再导入")
         self.archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if sum(path.stat().st_size for path in self._archive_paths()) >= 1024 * 1024 * 1024:
+        archive_bytes = sum(path.stat().st_size for path in self._archive_paths())
+        if archive_bytes >= MAX_PCAP_ARCHIVE_BYTES:
             raise RuntimeError("PCAP 归档达到 1 GiB，请先导出或清理旧归档再导入")
         fd, temp_name = tempfile.mkstemp(prefix=".stb-import-", suffix=".capture", dir=str(self.archive_dir))
         os.close(fd)
@@ -1169,8 +1177,10 @@ class StbDiscoveryService:
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > MAX_PCAP_BYTES:
-                        raise ValueError("抓包文件超过 128 MiB 导入上限，请拆分后重试")
+                    if total > MAX_OFFLINE_PCAP_BYTES:
+                        raise ValueError("抓包文件超过 512 MiB 导入上限，请拆分后重试")
+                    if archive_bytes + total > MAX_PCAP_ARCHIVE_BYTES:
+                        raise RuntimeError("PCAP 归档将超过 1 GiB，请先导出或清理旧归档再导入")
                     output.write(chunk)
             if total < 24:
                 raise ValueError("抓包文件为空或文件头不完整")
@@ -1421,8 +1431,8 @@ class StbDiscoveryService:
                 return
             try:
                 size = Path(pcap_path).stat().st_size
-                if size >= MAX_PCAP_BYTES:
-                    self.logger.warning("捕获达到 128 MiB 阈值，自动停止；保留 PCAP 供拆分分析")
+                if size >= MAX_LIVE_PCAP_BYTES:
+                    self.logger.warning("捕获达到 256 MiB 阈值，自动停止；保留 PCAP 供拆分分析")
                     self.stop()
                     return
                 if size == last_size or size > 16 * 1024 * 1024:
@@ -1504,7 +1514,7 @@ class StbDiscoveryService:
             raise ValueError("请填写机顶盒 IP 或 MAC 地址")
         if mac and not full_capture:
             _validate_mac_filter(interface, expression)
-        if self.archive_dir and sum(p.stat().st_size for p in self._archive_paths()) >= 1024*1024*1024:
+        if self.archive_dir and sum(p.stat().st_size for p in self._archive_paths()) >= MAX_PCAP_ARCHIVE_BYTES:
             raise RuntimeError("PCAP 归档达到 1 GiB，请先导出或清理旧归档再开始捕获")
         rt = self.runtime_check()
         if not rt["ok"]:

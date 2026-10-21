@@ -72,7 +72,7 @@ from services.snapshot_service import SnapshotService
 from services.diagnostic_service import playback_evidence, diagnostic_verdict
 from services import subscription_service
 from services.catchup_scheduler import CatchupScheduler
-from services.io_limits import validate_http_url, HttpOnlyRedirects, read_bounded, gunzip_bounded, MAX_HTTP_BYTES, MAX_PCAP_BYTES
+from services.io_limits import validate_http_url, HttpOnlyRedirects, read_bounded, gunzip_bounded, MAX_HTTP_BYTES, MAX_OFFLINE_PCAP_BYTES
 from urllib.request import build_opener
 from services.media_task_service import ProcessTail
 from utils import with_playseek, valid_playseek
@@ -2249,8 +2249,8 @@ def api_stb_discovery_reanalyze():
 @app.post("/api/stb_discovery/capture-import/preflight")
 def api_stb_discovery_capture_import_preflight():
     """Persist an external capture privately and return a safe preflight."""
-    if request.content_length and request.content_length > MAX_PCAP_BYTES + 1024 * 1024:
-        return api_error("抓包文件超过 128 MiB 导入上限，请拆分后重试", 413)
+    if request.content_length and request.content_length > MAX_OFFLINE_PCAP_BYTES + 1024 * 1024:
+        return api_error("抓包文件超过 512 MiB 导入上限，请拆分后重试", 413)
     upload = request.files.get("file")
     if upload is None or not upload.filename:
         return api_error("请选择 .pcap 或 .pcapng 抓包文件")

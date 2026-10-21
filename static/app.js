@@ -1482,7 +1482,7 @@ function renderStbCapturePreflight(report) {
 async function preflightStbCapture(file) {
   if (!file) return;
   if (!/\.(pcap|pcapng)$/i.test(file.name || "")) { alert("仅支持 .pcap 或 .pcapng 文件"); return; }
-  if (file.size > 128 * 1024 * 1024) { alert("抓包文件超过 128 MiB，请拆分后重试"); return; }
+  if (file.size > 512 * 1024 * 1024) { alert("抓包文件超过 512 MiB，请拆分后重试"); return; }
   const box = $("stbCapturePreflight");
   box.hidden = false; box.className = "result-box warning"; box.textContent = "正在上传并预检抓包……";
   $("stbCaptureAnalyzeBtn").disabled = true;

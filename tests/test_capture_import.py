@@ -1,7 +1,12 @@
 """External PCAP/PCAPNG import, PPPoE normalization and client detection."""
+import gzip
 import io
 import struct
 
+import pytest
+
+from services import io_limits
+import services.stb_discovery_service as discovery_module
 from services.io_limits import iter_pcap_packets
 from services.log_service import AppLogger
 from services.stb_discovery_service import StbDiscoveryService, inspect_pcap
@@ -75,6 +80,88 @@ def test_pcapng_reader_and_pppoe_preflight(tmp_path):
     assert report["has_epg_auth"] and report["has_channel_data"] and report["has_fcc"]
     assert report["client_candidates"][0]["ip"] == CLIENT
     assert report["ready"] is True
+
+
+def test_preflight_detects_fcc_in_gzip_channel_response(tmp_path):
+    body = (b"CUSetConfig('Channel','ChannelName=\"CCTV1\" UserChannelID=\"1\" "
+            b"ChannelURL=\"igmp://239.1.1.1:8000\" ChannelID=\"1\" "
+            b"ChannelFCCIP=\"10.0.0.8\" ChannelFCCPort=\"9000\" "
+            b"TimeShift=\"1\" TimeShiftURL=\"rtsp://10.0.0.9/backtv\"')")
+    compressed = gzip.compress(body)
+    assert b"channelfcc" not in compressed.lower()
+    chunked = f"{len(compressed):x}\r\n".encode() + compressed + b"\r\n0\r\n\r\n"
+    response = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                b"Content-Encoding: gzip\r\n\r\n" + chunked)
+    request = b"GET /EDS/jsp/AuthenticationURL?UserID=test HTTP/1.1\r\nHost: epg\r\n\r\n"
+    frames = [
+        _pppoe_frame(CLIENT, SERVER, 50000, 8082, 1, request),
+        _pppoe_frame(SERVER, CLIENT, 8082, 50000, 1, response),
+    ]
+    path = tmp_path / "gzip-channel-list.pcap"
+    path.write_bytes(_pcap(frames))
+
+    report = inspect_pcap(str(path), path.name)
+    assert report["ready"] is True
+    assert report["has_channel_data"] is True
+    assert report["has_fcc"] is True
+    assert report["has_timeshift"] is True
+
+
+def test_offline_import_limit_and_archive_budget(tmp_path, monkeypatch):
+    capture = _pcap(_frames())
+    assert io_limits.MAX_OFFLINE_PCAP_BYTES == 512 * 1024 * 1024
+    assert io_limits.MAX_LIVE_PCAP_BYTES == 256 * 1024 * 1024
+    monkeypatch.setattr(io_limits, "MAX_OFFLINE_PCAP_BYTES", len(capture))
+    monkeypatch.setattr(discovery_module, "MAX_OFFLINE_PCAP_BYTES", len(capture))
+    monkeypatch.setattr(discovery_module, "MAX_PCAP_ARCHIVE_BYTES", 2 * len(capture) - 1)
+    service = StbDiscoveryService(AppLogger(tmp_path / "app.log"), archive_dir=tmp_path / "archives")
+
+    report = service.import_capture(io.BytesIO(capture), "at-limit.pcap")
+    assert report["ready"] is True
+    assert service.analyze_archive(report["archive_name"], CLIENT)["channel_count"] == 1
+    with pytest.raises(ValueError, match="512 MiB"):
+        service.import_capture(io.BytesIO(capture + b"x"), "over-limit.pcap")
+    with pytest.raises(RuntimeError, match="1 GiB"):
+        service.import_capture(io.BytesIO(capture), "over-archive-budget.pcap")
+    assert len(service.list_archives()) == 1
+    assert not list((tmp_path / "archives").glob(".stb-import-*"))
+
+
+def test_parser_rejects_sparse_capture_above_offline_limit(tmp_path):
+    path = tmp_path / "too-large.pcap"
+    with path.open("wb") as stream:
+        stream.truncate(io_limits.MAX_OFFLINE_PCAP_BYTES + 1)
+    with pytest.raises(ValueError, match="512 MiB"):
+        list(iter_pcap_packets(path))
+
+
+def test_capture_import_api_rejects_oversized_request_before_reading(monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_OFFLINE_PCAP_BYTES", 10)
+    oversized_length = 10 + 1024 * 1024 + 1
+    with app_module.app.test_request_context(
+        "/api/stb_discovery/capture-import/preflight",
+        method="POST",
+        environ_overrides={"CONTENT_LENGTH": str(oversized_length)},
+    ):
+        response, status = app_module.api_stb_discovery_capture_import_preflight()
+    assert status == 413
+    assert "512 MiB" in response.get_json()["error"]
+
+
+def test_live_capture_stops_at_its_own_limit(tmp_path, monkeypatch):
+    path = tmp_path / "capture.pcap"
+    path.write_bytes(b"x" * 10)
+    service = StbDiscoveryService(AppLogger(tmp_path / "app.log"), archive_dir=tmp_path / "archives")
+    service._state["status"] = service.STATUS_CAPTURING
+    monkeypatch.setattr(discovery_module, "MAX_LIVE_PCAP_BYTES", 10)
+    monkeypatch.setattr(discovery_module.time, "sleep", lambda _seconds: None)
+    stopped = []
+    monkeypatch.setattr(service, "stop", lambda: stopped.append(True))
+
+    service._live_watcher(str(path), CLIENT, service._generation)
+    assert stopped == [True]
 
 
 def test_import_is_private_and_analysis_reuses_channel_pipeline(tmp_path):

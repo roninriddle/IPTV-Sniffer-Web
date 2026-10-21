@@ -6,7 +6,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler
 
-MAX_PCAP_BYTES = 128 * 1024 * 1024
+MAX_OFFLINE_PCAP_BYTES = 512 * 1024 * 1024
+MAX_LIVE_PCAP_BYTES = 256 * 1024 * 1024
+MAX_PCAP_ARCHIVE_BYTES = 1024 * 1024 * 1024
 MAX_PACKET_BYTES = 1024 * 1024
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_XML_BYTES = 64 * 1024 * 1024
@@ -46,8 +48,8 @@ def gunzip_bounded(data, limit=MAX_XML_BYTES):
 
 
 def iter_pcap_packets(path):
-    if Path(path).stat().st_size > MAX_PCAP_BYTES:
-        raise ValueError('PCAP 超过 128 MiB 解析上限，请拆分后重试')
+    if Path(path).stat().st_size > MAX_OFFLINE_PCAP_BYTES:
+        raise ValueError('PCAP 超过 512 MiB 解析上限，请拆分后重试')
     with open(path, 'rb') as stream:
         magic = stream.read(4)
         stream.seek(0)
@@ -74,7 +76,7 @@ def iter_pcap_packets(path):
             if size > MAX_PACKET_BYTES or (snaplen and size > snaplen):
                 raise ValueError('PCAP 包长度超过上限或 snaplen')
             consumed += 16 + size
-            if consumed > MAX_PCAP_BYTES:
+            if consumed > MAX_OFFLINE_PCAP_BYTES:
                 raise ValueError('PCAP 超过解析字节上限')
             packet = stream.read(size)
             if len(packet) < size:
@@ -125,7 +127,7 @@ def _iter_pcapng_packets(stream):
         if struct.unpack(endian + 'I', block[-4:])[0] != block_len:
             raise ValueError('PCAPNG 数据块长度校验失败')
         consumed += block_len
-        if consumed > MAX_PCAP_BYTES:
+        if consumed > MAX_OFFLINE_PCAP_BYTES:
             raise ValueError('PCAPNG 超过解析字节上限')
         body = block[8:-4]
         if block_type == 1:  # Interface Description Block
