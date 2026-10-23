@@ -273,7 +273,8 @@
               <div><span>UserToken</span><strong id="iptvAuthSummaryToken">未捕获</strong></div>
               <div><span>FCC / 频道</span><strong id="iptvAuthSummaryCounts">0 / 0</strong></div>
             </div>
-            <div class="form-grid mt-12">
+            <p id="iptvAuthFccHint" class="muted small" hidden></p>
+            <div class="form-grid auth-form-grid mt-12">
               <label>
                 <strong class="danger-text">IPTV 上游接口</strong>
                 <select id="iptvAuthIface"></select>
@@ -375,33 +376,28 @@
               <h2>订阅中心</h2>
               <span id="subscriptionCandidateBadge" class="chip neutral">加载中</span>
             </div>
-            <p class="muted small">在频道库中管理已订阅频道。以下地址固定不变；运营商频道表、FCC 或回看地址刷新后，播放器下次请求会自动使用最新来源。兼容别名与主订阅内容相同。</p>
-            <div class="form-grid compact-grid">
-              <label>
-                主订阅（推荐）
-                <div class="copy-field"><input id="subscriptionBestUrl" class="mono" type="text" readonly><button class="secondary copy-subscription-btn" data-subscription-url="best" type="button">复制</button></div>
-              </label>
-              <label>
-                兼容别名
-                <div class="copy-field"><input id="subscriptionAllUrl" class="mono" type="text" readonly><button class="secondary copy-subscription-btn" data-subscription-url="all" type="button">复制</button></div>
-              </label>
-              <label>
-                HLS 兼容订阅
-                <div class="copy-field"><input id="subscriptionHlsUrl" class="mono" type="text" readonly><button class="secondary copy-subscription-btn" data-subscription-url="hls" type="button">复制</button></div>
-              </label>
-              <label>
-                rtp2httpd 最佳频道订阅
-                <div class="copy-field"><input id="subscriptionRtp2httpdUrl" class="mono" type="text" readonly><button class="secondary copy-subscription-btn" data-subscription-url="rtp2httpd" type="button">复制</button></div>
-              </label>
-              <label>
-                rtp2httpd 全部线路订阅
-                <div class="copy-field"><input id="subscriptionRtp2httpdAllUrl" class="mono" type="text" readonly><button class="secondary copy-subscription-btn" data-subscription-url="rtp2httpd_all" type="button">复制</button></div>
-              </label>
-              <label>
-                XMLTV EPG
-                <div class="copy-field"><input id="subscriptionEpgUrl" class="mono" type="text" readonly><button class="secondary copy-subscription-btn" data-subscription-url="epg" type="button">复制</button></div>
-              </label>
+            <p class="muted small">播放器使用“播放器订阅”；rtp2httpd 使用“原始源订阅”。地址固定，频道与回看参数更新后无需更换链接。</p>
+            <div class="subscription-links">
+              <div class="subscription-link recommended">
+                <div class="subscription-link-title"><h3>播放器订阅</h3><span class="chip ok">推荐</span></div>
+                <p>添加到 APTV 等播放器，包含已选频道和可用回看。</p>
+                <div class="copy-field"><a id="subscriptionBestUrl" class="subscription-url mono" target="_blank" rel="noopener">正在读取链接…</a><button class="secondary copy-subscription-btn" data-subscription-url="best" type="button" disabled>复制链接</button></div>
+              </div>
+              <div class="subscription-link">
+                <div class="subscription-link-title"><h3>rtp2httpd 原始源订阅</h3></div>
+                <p>填写到 rtp2httpd 的 external-m3u，每频道一个最佳来源。</p>
+                <div class="copy-field"><a id="subscriptionRtp2httpdUrl" class="subscription-url mono" target="_blank" rel="noopener">正在读取链接…</a><button class="secondary copy-subscription-btn" data-subscription-url="rtp2httpd" type="button" disabled>复制链接</button></div>
+              </div>
             </div>
+            <details class="advanced-links">
+              <summary>更多链接：EPG、HLS 与兼容入口</summary>
+              <div class="subscription-links mt-12">
+                <div class="subscription-link"><h3>XMLTV 节目单</h3><p>播放器需要单独填写节目单时使用。</p><div class="copy-field"><a id="subscriptionEpgUrl" class="subscription-url mono" target="_blank" rel="noopener"></a><button class="secondary copy-subscription-btn" data-subscription-url="epg" type="button" disabled>复制链接</button></div></div>
+                <div class="subscription-link"><h3>HLS 兼容订阅</h3><p>仅在播放器需要本机 HLS 转换时使用。</p><div class="copy-field"><a id="subscriptionHlsUrl" class="subscription-url mono" target="_blank" rel="noopener"></a><button class="secondary copy-subscription-btn" data-subscription-url="hls" type="button" disabled>复制链接</button></div></div>
+                <div class="subscription-link"><h3>rtp2httpd 全部来源</h3><p>保留同一频道的多条线路，供进阶配置使用。</p><div class="copy-field"><a id="subscriptionRtp2httpdAllUrl" class="subscription-url mono" target="_blank" rel="noopener"></a><button class="secondary copy-subscription-btn" data-subscription-url="rtp2httpd_all" type="button" disabled>复制链接</button></div></div>
+                <div class="subscription-link"><h3>旧订阅兼容地址</h3><p>内容与播放器主订阅相同，已有配置可继续使用。</p><div class="copy-field"><a id="subscriptionAllUrl" class="subscription-url mono" target="_blank" rel="noopener"></a><button class="secondary copy-subscription-btn" data-subscription-url="all" type="button" disabled>复制链接</button></div></div>
+              </div>
+            </details>
             <div id="subscriptionCopyStatus" class="result-box muted compact-result" hidden></div>
             <div id="subscriptionSummary" class="result-box muted compact-result">正在读取订阅频道…</div>
             <div id="rtp2httpdSubscriptionSummary" class="result-box muted compact-result">rtp2httpd 专用订阅直接输出原始 RTP 地址，不经过本站直播代理。</div>
@@ -513,7 +509,7 @@
               </div>
               <div class="notice compact">
                 <strong>工作方式：</strong>
-                <span>频道表导入时记录运营商提供的 TimeShiftLength（分钟）与 backtv_url；动态订阅中的播放器访问稳定 <code>/catchup/&lt;频道ID&gt;</code>，服务端再解析当前回看地址与合法认证状态。联通 HWCU 优先使用兼容 STB 的 RTSP/UDP 会话；其他平台按兼容链路处理。回看服务器在 IPTV 子网，需完成 IPTV 认证后才可访问。</span>
+                <span>频道表导入时记录运营商提供的 TimeShiftLength（分钟）与 backtv_url；播放器使用固定回看入口，服务端按当前平台获取播放地址。北京联通 UIOS 使用已保存会话动态获取地址；其他平台使用对应认证流程。回看服务器在 IPTV 子网，需完成 IPTV 认证后才可访问。</span>
               </div>
               <div class="form-grid">
                 <label>
@@ -547,12 +543,13 @@
               <div class="section-subtitle" style="margin-top:12px"><h3>回看地址刷新</h3></div>
               <div class="notice compact">
                 <strong>什么时候用：</strong>
-                <span>播放回看返回 403、IPTV 认证 IP 变化、或 backtv_url token 过期时再刷新。刷新会使用当前表单值重新登录运营商 EPG 门户，并写回 operator_channels.json。</span>
+                <span id="catchupRefreshDescription">回看异常或认证信息变化时可手动刷新。不同平台使用各自的登录或会话验证流程。</span>
               </div>
-              <div class="form-grid" style="grid-template-columns: repeat(2, 1fr)">
+              <div id="uiosCatchupStatus" class="result-box muted" hidden></div>
+              <div class="form-grid two-column-grid">
                 <label class="checkbox-label align-self-center" style="grid-column: 1 / -1">
                   <input type="checkbox" id="catchupAutoRefreshEnabled">
-                  自动定时刷新回看地址（建议先手动刷新成功一次，再打开）
+                  自动定时检查 / 刷新回看会话
                 </label>
                 <label>
                   自动刷新间隔（小时）
@@ -561,11 +558,11 @@
                 </label>
                 <div id="catchupAutoRefreshStatus" class="result-box muted" style="grid-column: 1 / -1">自动刷新状态尚未加载。</div>
               </div>
-              <div class="form-grid" style="grid-template-columns: repeat(2, 1fr)">
+              <div id="legacyCatchupCredentials" class="form-grid two-column-grid">
                 <label>
                   认证模式
                   <select id="epgAuthProfile">
-                    <option value="cu_hwcu">联通华为 HWCU（当前设备）</option>
+                    <option value="cu_hwcu">联通华为 HWCU</option>
                     <option value="auto">自动兼容（仅用于已确认的其他平台）</option>
                     <option value="ctc_hwctc">电信 CTC-HWCTC（supzhang/get_iptv_channels）</option>
                     <option value="cu_hwctc">联通旧版 / 通用 CU-HWCTC（兼容模式）</option>
@@ -634,22 +631,27 @@
               <button id="refreshBacktvBtn" class="secondary" type="button" style="display:none">刷新回看地址</button>
               <span id="exportSettingsSaveStatus" class="muted small"></span><button id="exportSettingsRetry" type="button" class="secondary" hidden>重试保存</button>
             </div>
-            <div class="section-subtitle"><h3>最佳来源（每频道组只导出主源）</h3></div>
+            <div class="section-subtitle"><h3>静态导出</h3></div>
             <div class="form-grid compact-grid" style="margin-bottom: 8px">
               <label class="checkbox-label align-self-center" style="grid-column: 1 / -1">
                 <input id="preExportHealthCheck" type="checkbox">
                 导出前来源健康检查（需已完成 IPTV 认证，rtp2httpd 能访问组播流）
               </label>
             </div>
-            <div class="button-row">
-              <button id="clDownloadBestM3u" class="primary" type="button">播放器 M3U：最佳来源</button>
-              <button id="clDownloadFnosHlsM3u" class="primary" type="button">飞牛影视 HLS M3U</button>
-              <button id="clDownloadRtpBestM3u" class="primary" type="button">rtp2httpd 源文件：最佳来源</button>
+            <div class="export-source-grid">
+              <div class="export-source-card"><h3>最佳来源</h3><p class="muted small">每个频道保留一个最佳来源。</p><div class="export-buttons">
+                <button id="clDownloadBestM3u" class="primary" type="button">播放器 M3U</button>
+                <button id="clDownloadRtpBestM3u" class="secondary" type="button">rtp2httpd 源 M3U</button>
+              </div></div>
+              <div class="export-source-card"><h3>全部来源</h3><p class="muted small">保留同一频道的全部线路。</p><div class="export-buttons">
+                <button id="clDownloadAllM3u" class="primary" type="button">播放器 M3U</button>
+                <button id="clDownloadRtpAllM3u" class="secondary" type="button">rtp2httpd 源 M3U</button>
+              </div></div>
             </div>
-            <div class="section-subtitle mt-10"><h3>全部来源</h3></div>
+            <div class="section-subtitle mt-12"><h3>兼容格式与数据文件</h3></div>
+            <p class="muted small">HLS M3U 使用最佳来源；JSON、TXT、CSV 包含全部来源的频道资料。</p>
             <div class="button-row">
-              <button id="clDownloadAllM3u" class="secondary" type="button">播放器 M3U：全部来源</button>
-              <button id="clDownloadRtpAllM3u" class="secondary" type="button">rtp2httpd 源文件：全部来源</button>
+              <button id="clDownloadFnosHlsM3u" class="secondary" type="button">HLS M3U（最佳来源）</button>
               <button id="clDownloadJson" class="secondary" type="button">JSON</button>
               <button id="clDownloadTxt" class="secondary" type="button">TXT</button>
               <button id="clDownloadCsv" class="secondary" type="button">CSV</button>

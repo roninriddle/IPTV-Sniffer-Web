@@ -290,7 +290,9 @@ function renderCatchupAutoRefreshStatus(data) {
   if (data.next_run_at) parts.push(`下次刷新：${formatDateTime(data.next_run_at)}`);
   if (data.token_expires_at) parts.push(`门户 Cookie 过期：${formatDateTime(data.token_expires_at)}`);
   else if (data.token_expiry_note) parts.push(`有效期：${data.token_expiry_note}`);
-  if (data.last_result) parts.push(`最近更新：${data.last_result.updated ?? 0}/${data.last_result.total ?? 0}，模式：${data.last_result.profile || "auto"}`);
+  if (data.last_result) parts.push(data.last_result.dynamic
+    ? "最近会话检查成功，播放地址按需获取"
+    : `最近更新：${data.last_result.updated ?? 0}/${data.last_result.total ?? 0}，模式：${data.last_result.profile || "auto"}`);
   if (data.last_error) parts.push(`最近错误：${data.last_error}`);
   box.textContent = parts.join("；");
   box.className = "result-box " + (data.last_error ? "warning" : (data.enabled ? "ok" : "muted"));
@@ -353,10 +355,34 @@ async function loadSettings() {
   if ($("epgSoftwareVersion")) $("epgSoftwareVersion").value = data.epg_software_version || "";
   if ($("epgUserAgent")) $("epgUserAgent").value = data.epg_user_agent || "";
   if ($("epgAccessUserName")) $("epgAccessUserName").value = data.epg_access_user_name || "";
+  renderCatchupAuth(data.catchup_auth || {});
   if ($("refreshBacktvBtn")) $("refreshBacktvBtn").style.display = data.catchup_enabled ? "" : "none";
   loadCatchupAutoRefreshStatus().catch(() => {});
   if ($("fccType") && data.fcc_type !== undefined) $("fccType").value = data.fcc_type || "";
   if ($("preExportHealthCheck")) $("preExportHealthCheck").checked = !!data.pre_export_health_check;
+}
+
+function renderCatchupAuth(auth) {
+  const uios = auth.profile === "bj_unicom_uios";
+  const box = $("uiosCatchupStatus");
+  if (box) {
+    box.hidden = !uios;
+    box.className = "result-box " + (auth.session_saved ? "ok" : "warning");
+    box.textContent = [
+      "已识别：北京联通 UIOS",
+      auth.session_saved ? "登录会话已保存，播放时自动获取有效地址。" : "尚未保存登录会话。",
+      `认证服务器：${auth.auth_host || "尚未识别"}`,
+      `用户 ID：${auth.user_id_present ? "已捕获" : "未捕获"}；机顶盒 ID：${auth.stb_id_present ? "已捕获" : "未捕获"}`,
+      auth.server_expiry ? `运营商标注到期：${auth.server_expiry}（未注明时区）` : "当前抓包未提供明确到期时间。",
+      "此回看流程不需要填写 DES/DES3 密钥、加密模式或其他平台登录参数。",
+      "定时检查验证现有会话；暂不支持会话失效后自动重新登录。",
+    ].join("\n");
+  }
+  if ($("legacyCatchupCredentials")) $("legacyCatchupCredentials").hidden = uios;
+  if ($("catchupRefreshDescription")) $("catchupRefreshDescription").textContent = uios
+    ? "北京联通 UIOS：检查已保存的登录会话，播放时动态获取回看／时移地址，无需填写下方其他平台的加密参数。"
+    : "回看异常或认证信息变化时，按当前平台的认证参数刷新回看地址。";
+  if ($("refreshBacktvBtn")) $("refreshBacktvBtn").textContent = uios ? "检查回看会话" : "刷新回看地址";
 }
 
 async function appendLogs() {
@@ -465,7 +491,17 @@ function renderSubscription(data) {
     rtp2httpd_all: "subscriptionRtp2httpdAllUrl",
     epg: "subscriptionEpgUrl",
   };
-  Object.entries(ids).forEach(([kind, id]) => { if ($(id)) $(id).value = subscriptionUrl(urls[kind] || ""); });
+  Object.entries(ids).forEach(([kind, id]) => {
+    const link = $(id);
+    const path = urls[kind];
+    const value = typeof path === "string" && path.startsWith("/") ? subscriptionUrl(path) : "";
+    if (link) {
+      link.textContent = value || "链接暂不可用";
+      if (value) link.href = value;
+      else link.removeAttribute("href");
+    }
+    document.querySelectorAll(`.copy-subscription-btn[data-subscription-url="${kind}"]`).forEach(btn => { btn.disabled = !value; });
+  });
   const total = Number(data.total_candidates || 0);
   const badge = $("subscriptionCandidateBadge");
   badge.className = total ? "chip ok" : "chip warning";
@@ -1005,7 +1041,7 @@ document.querySelectorAll(".copy-subscription-btn").forEach((btn) => btn.addEven
     rtp2httpd_all: "subscriptionRtp2httpdAllUrl",
     epg: "subscriptionEpgUrl",
   };
-  const value = $(inputIds[key] || "subscriptionBestUrl").value;
+  const value = $(inputIds[key] || "subscriptionBestUrl").getAttribute("href") || "";
   const labels = {
     best: "主订阅", all: "兼容别名", hls: "HLS 兼容订阅",
     rtp2httpd: "rtp2httpd 最佳频道订阅", rtp2httpd_all: "rtp2httpd 全部线路订阅", epg: "XMLTV EPG",
@@ -1034,10 +1070,15 @@ document.querySelectorAll(".copy-subscription-btn").forEach((btn) => btn.addEven
     status.textContent = "复制失败：浏览器未授权剪贴板访问，请检查网页权限后重试。";
   }
 }));
-$("subscriptionPreviewBtn").addEventListener("click", () => window.open($("subscriptionBestUrl").value, "_blank", "noopener"));
+$("subscriptionPreviewBtn").addEventListener("click", () => {
+  const url = $("subscriptionBestUrl").getAttribute("href");
+  if (url) window.open(url, "_blank", "noopener");
+});
 $("subscriptionDownloadBtn").addEventListener("click", () => {
   const a = document.createElement("a");
-  a.href = $("subscriptionBestUrl").value;
+  const url = $("subscriptionBestUrl").getAttribute("href");
+  if (!url) return;
+  a.href = url;
   a.download = "iptv-subscription.m3u";
   document.body.appendChild(a);
   a.click();
@@ -2015,6 +2056,11 @@ async function loadIptvAuthSummary() {
     _setAuthField("iptvAuthSummaryOption60", d.vendor_class);
     _setAuthField("iptvAuthSummaryToken", d.has_token ? "已捕获" : "");
     _setAuthField("iptvAuthSummaryCounts", `FCC ${d.fcc_count || 0} 条 / 频道 ${d.channel_count || 0} 个`, "0 / 0");
+    const fccHint = $("iptvAuthFccHint");
+    if (fccHint) {
+      fccHint.hidden = Number(d.fcc_count || 0) > 0;
+      fccHint.textContent = "当前尚未识别到 FCC 地址，不代表运营商不支持。请捕获机顶盒切换多个直播频道的流量后重新分析；支持频道表字段及华为／电信 FCC 切台请求识别。";
+    }
     if (!$("iptvAuthMac").value && d.mac) $("iptvAuthMac").value = d.mac;
     if (!$("iptvAuthHostname").value && d.hostname) $("iptvAuthHostname").value = d.hostname;
     if (!$("iptvAuthOption60").value && d.vendor_class) $("iptvAuthOption60").value = d.vendor_class;

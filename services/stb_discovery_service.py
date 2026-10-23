@@ -9,6 +9,7 @@ from services.io_limits import (
 
 import gzip
 import json
+import ipaddress
 import os
 import re
 import shutil
@@ -26,6 +27,7 @@ from services.log_service import AppLogger
 from services.uios_catchup_service import extract_uios_session
 from services.media_task_service import reap_process
 from services.parsers import ADAPTERS, _parse_chanlist_html, _parse_vsp_json, _parse_channel_acquire_json
+from services.parsers.fcc import parse_fcc_request
 from services.parsers.common import (_extract_json_object, _parse_pc_channel_catalog, _decode_payload_text, _safe_int, _truthy, _first_text, _first_int, _clean_group_name, _channel_category_from_group, _fallback_classify_channel_name, _parse_multicast_url, _parse_stream_params, _iter_channel_dicts, _extract_channel_objects_from_partial_json)
 from collections import deque
 
@@ -64,6 +66,7 @@ def _capture_diagnostics(path, stb_ip, streams, channels, mac=""):
             "ipv4_packet_count": ipv4_count, "tcp_packet_count": tcp_packets,
             "udp_packet_count": udp_packets, "link_layers": sorted(link_layers),
             "has_vlan": has_vlan, "has_pppoe": has_pppoe}
+    result["fcc_channels"] = sum(bool(ch.get("fcc_ip") and ch.get("fcc_port")) for ch in channels)
     if mac:
         result.update(mac_requested=mac, mac_supported=supported is True,
                       mac_not_seen=supported is True and seen == 0)
@@ -1030,6 +1033,38 @@ def _extract_ctc_portal_auth(streams: dict[Any, bytes], stb_ip: str) -> dict[str
 
 
 
+def _merge_fcc_requests(pcap_path, stb_ip, channels):
+    ports = {}
+    for channel in channels.values():
+        ports.setdefault(channel["ip"], set()).add(channel["port"])
+    for decoded in iter_ipv4_packets(pcap_path):
+        ip = decoded["ip"]
+        if len(ip) < 28 or ip[9] != 17 or _parse_ip(ip, 12) != stb_ip:
+            continue
+        off = (ip[0] & 15) * 4
+        if off < 20 or off + 8 > len(ip) or int.from_bytes(ip[6:8], "big") & 0x3FFF:
+            continue
+        size = int.from_bytes(ip[off+4:off+6], "big")
+        if size < 8 or off + size > len(ip):
+            continue
+        found = parse_fcc_request(ip[off+8:off+size], ports)
+        if not found:
+            continue
+        channel = channels.get(f"{found['ip']}:{found['port']}")
+        server, server_port = _parse_ip(ip, 16), int.from_bytes(ip[off+2:off+4], "big")
+        address = ipaddress.IPv4Address(server)
+        if not channel or not 1 <= server_port <= 65535 or address.is_multicast or address.is_loopback or address.is_unspecified:
+            continue
+        if channel.get("fcc_ip") and channel.get("fcc_port"):
+            continue
+        channel.update(fcc_ip=server, fcc_port=server_port, fcc_protocol=found["fcc_protocol"])
+        provenance = channel["provenance"]
+        index = len(provenance["sources"])
+        provenance["sources"].append({"pcap": Path(pcap_path).name, "parser": "fcc-rtcp-request",
+                                      "parser_version": "1", "protocol": "UDP/RTCP"})
+        provenance["fields"].update(fcc_ip=index, fcc_port=index, fcc_protocol=index)
+
+
 def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any]]:
     """Main analysis entry point: returns channel list extracted from pcap."""
     streams = _reassemble_tcp_streams(pcap_path)
@@ -1062,6 +1097,7 @@ def analyze_pcap_for_channels(pcap_path: str, stb_ip: str) -> list[dict[str, Any
                         "fields": {field: 0 for field in channel}, "method": "parser_output"}
                     channels[key] = channel
                 break
+    _merge_fcc_requests(pcap_path, stb_ip, channels)
     all_channels = list(channels.values())
     for channel in all_channels:
         metadata, evidence = catalog.get(str(channel.get("channel_id") or ""), ({}, {}))

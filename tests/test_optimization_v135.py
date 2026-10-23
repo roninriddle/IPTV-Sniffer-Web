@@ -181,6 +181,7 @@ def test_parser_provenance_survives_operator_and_json_round_trip(isolated,tmp_pa
     import services.stb_discovery_service as stb
     body=json.dumps({'channleInfoStruct':[{'channelName':'Fixture','channelURL':'rtp://239.1.2.3:5000','channelID':'42'}]}).encode()
     monkeypatch.setattr(stb,'_reassemble_tcp_streams',lambda path:{('192.0.2.1',80,'192.0.2.2',1000):body})
+    monkeypatch.setattr(stb,'_merge_fcc_requests',lambda *args: None)
     channels=stb.analyze_pcap_for_channels('stb-boot-fixture.pcap','192.0.2.2')
     assert len(channels)==1
     provenance=channels[0]['provenance'];assert provenance['sources'][0]['parser']=='channel-acquire'
@@ -221,6 +222,7 @@ def test_adapter_fixture_provenance_and_field_mapping(name,monkeypatch):
     body=(Path(__file__).parent/'fixtures'/'protocols'/name).read_bytes()
     response=b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body)).encode()+b'\r\n\r\n'+body
     monkeypatch.setattr(stb,'_reassemble_tcp_streams',lambda path:{('192.0.2.10',80,'192.0.2.2',1000):response})
+    monkeypatch.setattr(stb,'_merge_fcc_requests',lambda *args: None)
     rows=stb.analyze_pcap_for_channels('stb-boot-synthetic.pcap','192.0.2.2')
     assert len(rows)==1 and rows[0]['channel_id']=='101'
     row=rows[0];assert row['ip']=='239.1.2.3' and row['port']==5000

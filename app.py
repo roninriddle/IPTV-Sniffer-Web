@@ -137,6 +137,16 @@ def _public_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:
                 break
     public["epg_des3_key"] = epg_key_store.get_epg_key()
     public["epg_des3_key_configured"] = bool(public["epg_des3_key"])
+    uios = token_store.load_uios_session()
+    public["catchup_auth"] = {
+        "profile": "bj_unicom_uios" if uios else str(public.get("epg_auth_profile") or "auto"),
+        "session_saved": bool(uios.get("authorization")),
+        "requires_des_key": not bool(uios),
+        "auth_host": urlsplit(uios.get("endpoint") or "").netloc,
+        "server_expiry": str(uios.get("server_expiry") or ""),
+        "user_id_present": bool((uios.get("login") or {}).get("UserID")),
+        "stb_id_present": bool((uios.get("login") or {}).get("STBID")),
+    }
     return public
 
 
@@ -145,6 +155,7 @@ def _backup_settings() -> dict[str, Any]:
     settings = _public_settings()
     for key in _CREDENTIAL_SETTING_KEYS:
         settings.pop(key, None)
+    settings.pop("catchup_auth", None)
     return settings
 
 
@@ -2388,6 +2399,9 @@ def api_stb_discovery_import():
             "channels_saved": 0,
         }
         current = settings_store.load()
+        fcc_protocols = {ch.get("fcc_protocol") for ch in channels if ch.get("fcc_protocol")}
+        if len(fcc_protocols) == 1 and not current.get("fcc_type"):
+            settings_store.save({"fcc_type": next(iter(fcc_protocols))})
         # Auto-populate timeshift_host if detected and not yet configured
         timeshift_host = str(state.get("timeshift_host") or "").strip()
         if timeshift_host and not str(current.get("timeshift_host") or "").strip():
@@ -3080,7 +3094,7 @@ def api_stb_summary():
     if auth:
         token_store.save_auth_info(auth)
     token_data = token_store.load()
-    has_token = bool((token_data.get("history") or []))
+    has_token = bool(token_data.get("history") or token_store.load_uios_session().get("authorization"))
     fcc_count = len(fcc_store.load())
     ch_count = len(channel_store.load())
     return api_success({
@@ -3410,8 +3424,9 @@ def _run_diagnose(cancel_event=None):
 
     # --- Check 4: UserToken captured ---
     token_data = token_store.load()
-    has_token = bool(token_data.get("history"))
-    add_check("auth", "UserToken 已捕获", has_token, f"历史记录 {len(token_data.get('history') or [])} 条")
+    has_uios_session = bool(token_store.load_uios_session().get("authorization"))
+    has_token = bool(token_data.get("history") or has_uios_session)
+    add_check("auth", "登录会话已捕获", has_token, "已保存北京联通 UIOS 会话" if has_uios_session else f"历史记录 {len(token_data.get('history') or [])} 条")
     if not has_token:
         conclusions.append("未捕获到 UserToken，channelAcquire 鉴权播放列表不可用。")
 
@@ -3419,7 +3434,7 @@ def _run_diagnose(cancel_event=None):
     fcc_count = len(fcc_store.load())
     add_check("fcc", "FCC 记录", fcc_count > 0, f"已记录 {fcc_count} 条 FCC 服务器地址")
     if fcc_count == 0:
-        conclusions.append("没有 FCC 记录，快速换台功能不可用（不影响正常播放）。")
+        conclusions.append("当前尚无 FCC 地址，未验证快速换台；可补抓机顶盒切台流量后重新分析，不能据此判断运营商不支持 FCC。")
 
     # --- Check 6: FCC TCP reachability (if channel provided) ---
     # Note: this tests TCP connect only; actual FCC uses a proprietary protocol.

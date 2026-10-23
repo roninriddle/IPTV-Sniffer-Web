@@ -26,7 +26,7 @@ class UiosCatchupError(RuntimeError):
 
 
 def extract_uios_session(streams, stb_ip):
-    from services.stb_discovery_service import _iter_http_requests
+    from services.stb_discovery_service import _iter_http_requests, _split_http_responses
 
     session = {}
     servers = set()
@@ -76,6 +76,18 @@ def extract_uios_session(streams, stb_ip):
             except (ValueError, TypeError):
                 pass
     session["server_ips"] = sorted(servers)[:32]
+    for (src, _sport, dst, _dport), raw in streams.items():
+        if dst != stb_ip or src == stb_ip:
+            continue
+        for _headers, body in _split_http_responses(raw):
+            try:
+                response = json.loads(body)
+            except (ValueError, UnicodeError):
+                continue
+            if isinstance(response, dict) and response.get("userToken") == session["authorization"]:
+                expiry = str(response.get("tokenExpiredTime") or "")
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", expiry):
+                    session["server_expiry"] = expiry
     session.update(captured_at=int(time.time()), profile="bj_unicom_uios")
     return session
 

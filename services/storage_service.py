@@ -661,6 +661,7 @@ class OperatorChannelStore:
                     "operator_group": str(ch.get("operator_group", "")).strip(),
                     "fcc_ip": str(ch.get("fcc_ip", "")).strip(),
                     "fcc_port": ch.get("fcc_port"),
+                    "fcc_protocol": str(ch.get("fcc_protocol") or ""),
                     "fec_port": ch.get("fec_port"),
                     "channel_id": str(ch.get("channel_id", "")).strip(),
                     "backtv_url": str(ch.get("backtv_url", "")).strip(),

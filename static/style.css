@@ -218,6 +218,8 @@ details summary {
 
 .form-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; min-width: 0; }
 .form-grid > * { min-width: 0; }
+.form-grid.auth-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.form-grid.two-column-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-grid.capture-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
 .form-grid.capture-import-grid { grid-template-columns: minmax(180px, 320px); align-items: start; }
 .capture-grid > label { align-content: start; }
@@ -249,6 +251,18 @@ details summary {
 .copy-field { display: flex; gap: 6px; min-width: 0; }
 .copy-field input { min-width: 0; flex: 1 1 auto; }
 .copy-field button { flex: 0 0 auto; }
+.subscription-links, .export-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; }
+.subscription-link, .export-source-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.subscription-link.recommended { border-color: #b9cbff; background: #f5f8ff; }
+.subscription-link-title { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.subscription-link h3, .export-source-card h3 { margin: 0; font-size: 15px; }
+.subscription-link p { margin: 8px 0 12px; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+.subscription-link .copy-field { align-items: center; }
+.subscription-url { display: block; flex: 1 1 0; min-width: 0; color: var(--primary-dark); line-height: 1.6; overflow-wrap: anywhere; word-break: break-word; }
+.advanced-links { margin-top: 12px; }
+.advanced-links > summary { cursor: pointer; padding: 10px 0; color: var(--muted); }
+.export-buttons { display: grid; gap: 8px; }
+.export-buttons button { width: 100%; }
 .form-grid.watch-grid { grid-template-columns: minmax(220px, 1.3fr) minmax(130px, .8fr) minmax(220px, 1.1fr) minmax(260px, 1.4fr); align-items: end; }
 .auto-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; min-width: 0; }
 .auto-grid .checkbox-label { flex: 0 0 150px; }
@@ -660,8 +674,18 @@ body.logs-open .footer {
   .home-hero { padding: 18px; min-height: 0; }
   .home-hero h2 { font-size: 23px; }
   .grid.two, .home-steps, .form-grid, .form-grid.capture-grid, .metrics-grid { grid-template-columns: 1fr; }
-  .channel-section-tabs { overflow-x: auto; flex-wrap: nowrap; }
-  .channel-section-tabs .tab-button { white-space: nowrap; }
+  .form-grid.auth-form-grid, .form-grid.two-column-grid,
+  .form-grid.compact-grid, .form-grid.watch-grid,
+  .subscription-links, .export-source-grid { grid-template-columns: minmax(0, 1fr); }
+  .card { padding: 14px; }
+  .card input:not([type="checkbox"]):not([type="radio"]), .card select, .card textarea { font-size: 16px; min-height: 44px; }
+  .card button, .advanced-links > summary { min-height: 44px; }
+  .card label > span { min-width: 0; overflow-wrap: anywhere; }
+  .subscription-link .copy-field { flex-wrap: wrap; }
+  .subscription-link .copy-field button { margin-left: auto; }
+  .button-row > button { max-width: 100%; white-space: normal; line-height: 1.45; padding-top: 8px; padding-bottom: 8px; }
+  .channel-section-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .channel-section-tabs .tab-button { white-space: normal; line-height: 1.45; min-width: 0; }
   .source-row-grid { grid-template-columns: 1fr; }
   .source-name-input { max-width: none; }
   .auto-grid .checkbox-label { flex: 0 0 100%; }
