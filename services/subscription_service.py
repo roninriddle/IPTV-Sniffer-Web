@@ -94,7 +94,7 @@ def _operator_time_shift_minutes(operator: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return 0
 
-def _subscription_m3u(settings, catalog, candidate_ids, base_url, hls_compat: bool = False) -> str:
+def _subscription_m3u(settings, catalog, candidate_ids, base_url, hls_compat: bool = False, *, utc_catchup: bool = False) -> str:
     """Build a fast, state-only subscription; never run health checks here."""
     records = [catalog[stable_id] for stable_id in candidate_ids]
     # The active catalog already keeps one current source per durable channel
@@ -107,7 +107,7 @@ def _subscription_m3u(settings, catalog, candidate_ids, base_url, hls_compat: bo
     catchup_enabled = bool(settings.get("catchup_enabled")) and int(settings.get("catchup_days") or 0) > 0
     lines = [f'#EXTM3U x-tvg-url="{base_url}/epg.xml"' if epg_url else "#EXTM3U"]
     if catchup_enabled:
-        lines[0] += ' catchup-correction="8"'
+        lines[0] += f' catchup-correction="{0 if utc_catchup else 8}"'
     for item in records:
         row = item["row"]
         operator = item["operator"]

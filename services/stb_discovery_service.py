@@ -18,10 +18,12 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 from services.log_service import AppLogger
+from services.uios_catchup_service import extract_uios_session
 from services.media_task_service import reap_process
 from services.parsers import ADAPTERS, _parse_chanlist_html, _parse_vsp_json, _parse_channel_acquire_json
 from services.parsers.common import (_extract_json_object, _parse_pc_channel_catalog, _decode_payload_text, _safe_int, _truthy, _first_text, _first_int, _clean_group_name, _channel_category_from_group, _fallback_classify_channel_name, _parse_multicast_url, _parse_stream_params, _iter_channel_dicts, _extract_channel_objects_from_partial_json)
@@ -522,6 +524,78 @@ def _response_cookie_names(raw: bytes) -> list[str]:
     return sorted(set(name for name in names if name))
 
 
+def _tcp_segments(pcap_path):
+    """Yield validated IPv4 TCP payloads without retaining the media body."""
+    for decoded in iter_ipv4_packets(pcap_path):
+        ip = decoded["ip"]
+        if len(ip) < 20 or ip[9] != 6:
+            continue
+        off = (ip[0] & 15) * 4
+        if off < 20 or off + 20 > len(ip):
+            continue
+        tcp_len = (ip[off + 12] >> 4) * 4
+        if tcp_len < 20 or off + tcp_len > len(ip):
+            continue
+        payload = ip[off + tcp_len:]
+        if payload:
+            yield ((_parse_ip(ip, 12), int.from_bytes(ip[off:off+2], "big"),
+                    _parse_ip(ip, 16), int.from_bytes(ip[off+2:off+4], "big")),
+                   int.from_bytes(ip[off+4:off+8], "big"), payload)
+
+
+def _media_response_ranges(pcap_path):
+    """Locate length-delimited HTTP audio/video responses in a bounded pass.
+
+    Drop whole responses, rather than truncating a connection: a keep-alive
+    connection can carry useful JSON after a large TS download. Recent TCP
+    segments cover split/reordered headers; no video bodies are accumulated.
+    Unknown traffic still goes through the normal 32 MiB safety limit.
+    """
+    recent = OrderedDict()
+    recent_bytes = 0
+    ranges = {}
+    count = 0
+    for key, seq, payload in _tcp_segments(pcap_path):
+        parts = recent.pop(key, {})
+        recent_bytes -= sum(map(len, parts.values()))
+        if seq not in parts or len(payload) > len(parts[seq]):
+            parts[seq] = payload
+        # A small header window, including retransmissions in either order.
+        while len(parts) > 8 or sum(map(len, parts.values())) > 65536:
+            del parts[min(parts)]
+        recent[key] = parts
+        recent_bytes += sum(map(len, parts.values()))
+        while recent_bytes > 8 * 1024 * 1024:
+            _, old = recent.popitem(last=False)
+            recent_bytes -= sum(map(len, old.values()))
+        blocks = []
+        for start, chunk in sorted(parts.items()):
+            if blocks and start <= blocks[-1][0] + len(blocks[-1][1]):
+                begin, body = blocks[-1]
+                blocks[-1] = (begin, body + chunk[max(0, begin + len(body) - start):])
+            else:
+                blocks.append((start, chunk))
+        for begin, block in blocks:
+            for match in re.finditer(br"HTTP/1\.[01] [0-9]{3}[^\r\n]*\r\n", block):
+                end = block.find(b"\r\n\r\n", match.start())
+                if end < 0:
+                    continue
+                header = block[match.start():end].lower()
+                if not re.search(br"\r\ncontent-type:\s*(?:video|audio)/", header):
+                    continue
+                length = re.search(br"\r\ncontent-length:\s*(\d+)", header)
+                if not length or b"transfer-encoding:" in header:
+                    continue
+                interval = (begin + match.start(), begin + end + 4 + int(length[1]))
+                entries = ranges.setdefault(key, set())
+                if interval not in entries:
+                    entries.add(interval)
+                    count += 1
+                    if count > 262144:
+                        raise ValueError("媒体响应数量超过 262144 上限")
+    return {key: sorted(value) for key, value in ranges.items()}
+
+
 def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], bytes]:
     """Read a pcap file and reassemble TCP payload streams by 4-tuple key.
 
@@ -533,51 +607,38 @@ def _reassemble_tcp_streams(pcap_path: str) -> dict[tuple[str, int, str, int], b
     stream_seqs: dict[tuple[str, int, str, int], dict[int, bytes]] = {}
     total_payload = 0
     total_segments = 0
-    for decoded in iter_ipv4_packets(pcap_path):
-        ip_packet = decoded["ip"]
-        if len(ip_packet) < 20 or ip_packet[9] != 6:
-            continue  # not TCP
-        ip_ihl = (ip_packet[0] & 0x0F) * 4
-        src_ip = _parse_ip(ip_packet, 12)
-        dst_ip = _parse_ip(ip_packet, 16)
-        tcp_off = ip_ihl
-        if tcp_off + 20 > len(ip_packet):
-            continue
-        src_port = struct.unpack(">H", ip_packet[tcp_off : tcp_off + 2])[0]
-        dst_port = struct.unpack(">H", ip_packet[tcp_off + 2 : tcp_off + 4])[0]
-        seq = struct.unpack(">I", ip_packet[tcp_off + 4 : tcp_off + 8])[0]
-        data_off = tcp_off + ((ip_packet[tcp_off + 12] >> 4) * 4)
-        if data_off > len(ip_packet):
-            continue
-        payload = ip_packet[data_off:]
-        if not payload:
-            continue
-        key = (src_ip, src_port, dst_ip, dst_port)
-        if key not in stream_seqs and len(stream_seqs) >= 4096:
-            raise ValueError("TCP 流数量超过 4096 上限")
-        seqs = stream_seqs.setdefault(key, {})
-        # A partial retransmission can arrive before the full segment.
-        # Keep the longest payload for a sequence number; keeping the
-        # first packet caused form fields (STBID/STBType/STBVersion) to
-        # disappear from otherwise complete boot captures.
-        if seq not in seqs or len(payload) > len(seqs[seq]):
-            total_payload += len(payload) - len(seqs.get(seq, b""))
-            total_segments += int(seq not in seqs)
-            if total_payload > 32 * 1024 * 1024 or total_segments > 262144:
-                raise ValueError("TCP 重组超过 32 MiB 或 262144 段上限")
-            seqs[seq] = payload
+    media_ranges = _media_response_ranges(pcap_path)
+    for key, seq, payload in _tcp_segments(pcap_path):
+        pieces = [(seq, payload)]
+        for lo, hi in media_ranges.get(key, ()):
+            remaining = []
+            for start, chunk in pieces:
+                end = start + len(chunk)
+                if end <= lo or start >= hi:
+                    remaining.append((start, chunk))
+                else:
+                    if start < lo:
+                        remaining.append((start, chunk[:lo-start]))
+                    if end > hi:
+                        remaining.append((hi, chunk[hi-start:]))
+            pieces = remaining
+        for seq, payload in pieces:
+            if key not in stream_seqs and len(stream_seqs) >= 4096:
+                raise ValueError("TCP 流数量超过 4096 上限")
+            seqs = stream_seqs.setdefault(key, {})
+            # Partial retransmissions must not replace a complete segment.
+            if seq not in seqs or len(payload) > len(seqs[seq]):
+                total_payload += len(payload) - len(seqs.get(seq, b""))
+                total_segments += int(seq not in seqs)
+                if total_payload > 32 * 1024 * 1024 or total_segments > 262144:
+                    raise ValueError("TCP 重组超过 32 MiB 或 262144 段上限")
+                seqs[seq] = payload
     streams: dict[tuple[str, int, str, int], bytes] = {}
     for key, seq_map in stream_seqs.items():
         merged = bytearray()
         next_seq: int | None = None
         for seq, payload in sorted(seq_map.items()):
-            if next_seq is None:
-                merged.extend(payload)
-                next_seq = seq + len(payload)
-                continue
-            if seq >= next_seq:
-                # Preserve a capture gap rather than inventing bytes.  Later
-                # HTTP parsing can still use the complete following segment.
+            if next_seq is None or seq >= next_seq:
                 merged.extend(payload)
                 next_seq = seq + len(payload)
                 continue
@@ -1246,6 +1307,9 @@ class StbDiscoveryService:
         selected: list[dict[str, Any]] = []
         response_stream_keys: set[tuple[str, int, str, int]] = set()
         auth_paths = (
+            "/epg/jsp/index4uios.jsp",
+            "/epg/jsp/getplayurl4uios.jsp",
+            "/bj_stb/v1/stb/userauthenticator",
             "/eds/jsp/authenticationurl",
             "/epg/jsp/authlogin",
             "/epg/jsp/validauthentication",
@@ -1378,6 +1442,10 @@ class StbDiscoveryService:
         with self._lock:
             if generation != self._generation:
                 return dict(self._state)
+            if self.token_store:
+                session = extract_uios_session(streams, stb_ip)
+                if session:
+                    self.token_store.save_uios_session(session)
             if token and self.token_store:
                 self.token_store.save_token({
                 "token": token,
@@ -1664,6 +1732,10 @@ class StbDiscoveryService:
                     with self._lock:
                         if generation != self._generation:
                             return
+                        if self.token_store:
+                            session = extract_uios_session(streams, stb_ip or "")
+                            if session:
+                                self.token_store.save_uios_session(session)
                         if token and self.token_store:
                             self.token_store.save_token({
                                 "token": token,

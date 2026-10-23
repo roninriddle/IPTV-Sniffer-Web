@@ -332,6 +332,18 @@ class IptvAuthService:
         gateway = str(data.get("gateway") or auth.get("gateway") or "").strip()
         client_id = _normalize_hex(data.get("client_id") or auth.get("client_id") or "")
         option125 = _normalize_hex(data.get("vendor_specific_125_raw") or auth.get("vendor_specific_125_raw") or "")
+        unicast_hosts = data.get("unicast_hosts") or []
+        if not isinstance(unicast_hosts, list) or len(unicast_hosts) > 32:
+            raise ValueError("IPTV 单播服务器列表无效")
+        validated_hosts = []
+        for value in unicast_hosts:
+            try:
+                address = ipaddress.IPv4Address(value)
+            except (ValueError, TypeError):
+                raise ValueError("IPTV 单播服务器必须是 IPv4 地址") from None
+            if address.is_loopback or address.is_multicast or address.is_unspecified or address.is_link_local:
+                raise ValueError("IPTV 单播服务器地址无效")
+            validated_hosts.append(str(address))
         return {
             "interface": interface,
             "mac": mac,
@@ -343,9 +355,10 @@ class IptvAuthService:
             "route_mode": route_mode,
             "client_id": client_id,
             "option125": option125,
+            "unicast_hosts": sorted(set(validated_hosts)) if route_mode != "none" else [],
         }
 
-    def _udhcpc_hook_content(self, interface: str, route_mode: str) -> str:
+    def _udhcpc_hook_content(self, interface: str, route_mode: str, unicast_hosts=()) -> str:
         iface = _valid_iface(interface)
         route_mode = route_mode if route_mode in {"none", "multicast", "iptv_private"} else "multicast"
         return f"""#!/bin/sh
@@ -410,6 +423,13 @@ case "$1" in
       # rejected and unicast playback falls back to the ordinary LAN route.
       ip -4 route replace 10.0.0.0/8 via "$router" dev "$interface" onlink metric 50 || true
     fi
+    if [ -n "${{router:-}}" ]; then
+      # UIOS uses public-addressed EPG/media servers on the IPTV access port.
+      # Install only captured /32 destinations; preserve the household default.
+      for server in {" ".join(unicast_hosts)}; do
+        ip -4 route replace "$server/32" via "${{router%% *}}" dev "$interface" onlink metric 50 || true
+      done
+    fi
     echo "$(date '+%F %T') udhcpc hook_stage=bound_configured" >> "$LOG"
     ;;
 esac
@@ -470,7 +490,7 @@ exit 0
             raise RuntimeError("容器内未找到 udhcpc，无法执行一键认证")
 
         self._ensure_backup(iface)
-        hook_content = self._udhcpc_hook_content(iface, p["route_mode"])
+        hook_content = self._udhcpc_hook_content(iface, p["route_mode"], p["unicast_hosts"])
         hook_path = self.data_dir / f"iptv-auth-{iface}.udhcpc.sh"
         hook_path.write_text(hook_content, encoding="utf-8")
         hook_path.chmod(0o700)
@@ -567,6 +587,14 @@ exit 0
                     "dev", iface, "onlink", "metric", "50",
                 ], check=False)
 
+        if p["unicast_hosts"]:
+            snap_for_gw = self.snapshot(iface)
+            gateway = p.get("gateway") or next((r.get("gateway") for r in snap_for_gw.get("routes", []) if r.get("gateway")), "")
+            if not gateway:
+                raise RuntimeError("未取得 IPTV 网关，无法添加回看服务器路由")
+            for server in p["unicast_hosts"]:
+                run_step(["ip", "-4", "route", "replace", f"{server}/32", "via", gateway,
+                          "dev", iface, "onlink", "metric", "50"])
         snap = self.snapshot(iface)
         with self._backup_lock:
             data_store = self._backup_data()

@@ -1974,7 +1974,8 @@ $("refreshBacktvBtn")?.addEventListener("click", async () => {
       epg_user_agent: $("epgUserAgent")?.value.trim() || "",
       epg_access_user_name: $("epgAccessUserName")?.value.trim() || "",
     })});
-    alert(`回看地址刷新完成：更新 ${result.updated} / ${result.total} 个频道（EPG：${result.epg_host}，模式：${result.profile || "auto"}）`);
+    alert(result.dynamic ? "北京联通回看会话已验证，播放时会自动获取有效地址。" :
+      `回看地址刷新完成：更新 ${result.updated} / ${result.total} 个频道（EPG：${result.epg_host}，模式：${result.profile || "auto"}）`);
     await loadCatchupAutoRefreshStatus();
   } catch (err) {
     const message = String(err.message || "请求失败");

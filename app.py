@@ -78,6 +78,7 @@ from services.media_task_service import ProcessTail
 from utils import with_playseek, valid_playseek
 from services.backup_service import RestoreTransaction, STORAGE_LOCK, validate_modules, restore_modules
 from services.rtsp_catchup_service import CombinedRtspUdpSession, RtspCatchupError
+from services.uios_catchup_service import resolve_playback_url, validate_session, UiosCatchupError
 from services.stb_discovery_service import StbDiscoveryService
 from services.storage_service import ChannelSnapshotStore, ChannelStore, DiscoveryStore, FccStore, LocalSecretStore, OperatorChannelStore, SettingsStore, StbTokenStore, SubscriptionStore
 from utils import channel_group_key, channel_primary_score, channel_variant_key, classify_channel_name, natural_key, normalize_channel_name_for_group, redact_sensitive_text, valid_ip_or_host, valid_ipv4_multicast
@@ -1115,7 +1116,8 @@ def _operator_time_shift_minutes(operator):
 def _subscription_m3u(hls_compat=False):
     catalog = _stable_channel_catalog()
     return subscription_service._subscription_m3u(settings_store.load(), catalog,
-        _subscription_candidate_ids(catalog), request.url_root.rstrip("/"), hls_compat)
+        _subscription_candidate_ids(catalog), request.url_root.rstrip("/"), hls_compat,
+        utc_catchup=bool(token_store.load_uios_session()))
 
 
 def _subscription_response(hls_compat: bool = False) -> Response:
@@ -2537,6 +2539,7 @@ def api_export():
     if not isinstance(rows, list):
         return api_error("channels 必须是数组")
     settings = {**settings_store.load(), **{k: v for k, v in data.items() if k != "channels"}}
+    settings["_catchup_utc_proxy"] = bool(token_store.load_uios_session())
     if not settings.get("use_epg", True):
         settings["epg_url"] = ""
     if not settings.get("use_logo", True):
@@ -2673,16 +2676,31 @@ def _hls_catchup_response(hls_key: str, lease):
         return api_error("回看地址仅支持有效的 RTSP／HTTP(S) 网络地址", 400)
     settings = settings_store.load()
     user_agent = str(settings.get("epg_user_agent") or "").strip()
+    uios = token_store.load_uios_session()
+    candidates = _catchup_rtsp_candidates(backtv, playseek)
+    session_options = {}
+    if uios:
+        try:
+            dynamic_url = resolve_playback_url(
+                uios, ch_info, playseek,
+                str(settings.get("media_interface") or settings.get("interface") or ""),
+            )
+        except UiosCatchupError as exc:
+            return api_error(str(exc), 502, catchup_diagnostic="uios_authorization_failed")
+        candidates = [("uios_dynamic", dynamic_url)]
+        user_agent = "Lavf56.40.101"
+        session_options = {"interface": str(settings.get("media_interface") or settings.get("interface") or ""),
+                           "transport_profile": "uios"}
     last_start_error = "回看上游未返回媒体数据"
     last_diagnostic = "rtsp_no_media"
     # HWCU's media server requires the STB's four MP2T transport alternatives
     # in one SETUP request plus a dynamic X-NAT_ADDRESS. FFmpeg emits separate
     # SETUP requests even for ``udp+tcp`` and receives 461. Try the compatible
     # control flow first, while retaining FFmpeg for other operator profiles.
-    for url_mode, rtsp_url in _catchup_rtsp_candidates(backtv, playseek):
+    for url_mode, rtsp_url in candidates:
         if lease.cancel_requested:
             return api_error("回看任务已取消", 409)
-        session = CombinedRtspUdpSession(rtsp_url, user_agent)
+        session = CombinedRtspUdpSession(rtsp_url, user_agent, **session_options)
         lease.attach(session.close)
         try:
             first_chunk = session.open()
@@ -2697,6 +2715,9 @@ def _hls_catchup_response(hls_key: str, lease):
         resp.headers["Cache-Control"] = "no-cache"
         return resp
 
+    if uios:
+        return api_error("联通已返回动态地址，但回看媒体连接失败，请检查 IPTV 接管状态", 504,
+                         catchup_diagnostic=last_diagnostic)
     if shutil.which("ffmpeg") is None:
         return api_error("缺少 ffmpeg 命令，无法转换回看流", 503, catchup_diagnostic=last_diagnostic)
     for url_mode, rtsp_url in _catchup_rtsp_candidates(backtv, playseek):
@@ -2834,6 +2855,12 @@ def _refresh_backtv_with_state(settings: dict[str, Any], source: str) -> dict[st
     catchup_scheduler.state = _catchup_auto_state
     def refresh():
         interface = str(settings.get("interface") or "").strip()
+        uios = token_store.load_uios_session()
+        if uios:
+            validate_session(uios, str(settings.get("media_interface") or interface))
+            return {"updated": 0, "total": len(operator_channel_store.load()),
+                    "profile": "bj_unicom_uios", "epg_host": urlsplit(uios["endpoint"]).netloc,
+                    "dynamic": True, "token_expiry_note": "播放时动态取链；登录会话失效后需重新捕获登录"}
         if interface and str(settings.get("epg_auth_host") or "").startswith("10."):
             snapshot = iptv_auth_service.snapshot(interface)
             if not any(str(item.get("local") or "").startswith("10.") for item in snapshot.get("ipv4") or []):
@@ -2925,6 +2952,7 @@ def api_hls_m3u():
             op_channels,
             catchup_enabled=catchup_enabled,
             catchup_days=catchup_days,
+            utc_catchup=bool(token_store.load_uios_session()),
         )
         resp = Response(
             content,
@@ -3090,6 +3118,9 @@ def api_iptv_auth_status():
 def api_iptv_auth_apply():
     data = request.get_json(silent=True) or {}
     try:
+        uios = token_store.load_uios_session()
+        if uios and "unicast_hosts" not in data:
+            data["unicast_hosts"] = uios.get("server_ips", [])
         result = iptv_auth_service.apply(data, _latest_stb_auth_info())
         # Keep the successfully authenticated interface as the active IPTV
         # interface.  HWCU refresh then uses its current lease address rather

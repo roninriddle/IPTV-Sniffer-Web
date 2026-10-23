@@ -28,10 +28,13 @@ class RtspCatchupError(RuntimeError):
 class CombinedRtspUdpSession:
     """Open one STB-compatible RTSP session and expose MPEG-TS chunks."""
 
-    def __init__(self, url: str, user_agent: str = "", timeout_seconds: float = 12.0) -> None:
+    def __init__(self, url: str, user_agent: str = "", timeout_seconds: float = 12.0,
+                 *, interface: str = "", transport_profile: str = "hwcu") -> None:
         self.url = self._validate_url(url)
         self.user_agent = self._clean_header(user_agent or "IPTV-Sniffer-Web")
         self.timeout_seconds = max(1.0, float(timeout_seconds))
+        self.interface = interface
+        self.transport_profile = transport_profile
         self.control: socket.socket | None = None
         self.rtp: socket.socket | None = None
         self.rtcp: socket.socket | None = None
@@ -89,9 +92,21 @@ class CombinedRtspUdpSession:
     def _connect(self, url: str) -> socket.socket:
         parsed = urlsplit(url)
         try:
-            sock = socket.create_connection(
-                (parsed.hostname, parsed.port or 554), timeout=self.timeout_seconds,
-            )
+            if self.interface:
+                if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", self.interface):
+                    raise RtspCatchupError("rtsp_interface_invalid")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    sock.settimeout(self.timeout_seconds)
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self.interface.encode() + b"\0")
+                    sock.connect((parsed.hostname, parsed.port or 554))
+                except BaseException:
+                    sock.close()
+                    raise
+            else:
+                sock = socket.create_connection(
+                    (parsed.hostname, parsed.port or 554), timeout=self.timeout_seconds,
+                )
             sock.settimeout(self.timeout_seconds)
             return sock
         except socket.timeout as exc:
@@ -250,11 +265,14 @@ class CombinedRtspUdpSession:
             self._adopt_sockets(rtp=rtp, rtcp=rtcp)
             self.rtp.settimeout(self.timeout_seconds)
             setup_url = self._setup_url(current_url, headers.get("content-base", ""), sdp)
-            self._send("SETUP", setup_url, {
-                "Transport": self._build_transport(str(local_ip), client_port),
+            setup_headers = {
+                "Transport": (f"RTP/AVP/UDP;unicast;client_port={client_port}-{client_port+1}"
+                              if self.transport_profile == "uios" else self._build_transport(str(local_ip), client_port)),
                 "User-Agent": self.user_agent,
-                "X-NAT_ADDRESS": f"{local_ip}:{local_control_port}",
-            })
+            }
+            if self.transport_profile != "uios":
+                setup_headers["X-NAT_ADDRESS"] = f"{local_ip}:{local_control_port}"
+            self._send("SETUP", setup_url, setup_headers)
             status, headers, _ = self._read_response()
             if status != 200:
                 raise RtspCatchupError(self._status_category(status))

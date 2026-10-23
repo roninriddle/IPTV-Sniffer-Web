@@ -470,6 +470,20 @@ class StbTokenStore:
                 return {}
             return data.get("auth_info") or {}
 
+    def load_uios_session(self) -> dict[str, Any]:
+        # Separate from portable token/identity backups and public API views.
+        with self._lock:
+            data = _safe_load_json(self.path.with_name("uios-session.secret"), {})
+            return data if isinstance(data, dict) else {}
+
+    def save_uios_session(self, session: dict[str, Any]) -> None:
+        if not session.get("authorization") or not session.get("endpoint"):
+            return
+        with self._lock:
+            path = self.path.with_name("uios-session.secret")
+            _atomic_dump_json(path, session)
+            os.chmod(path, 0o600)
+
     def save_auth_info(self, auth_info: dict[str, Any]) -> None:
         with self._lock:
             data = _safe_load_json(self.path, {})

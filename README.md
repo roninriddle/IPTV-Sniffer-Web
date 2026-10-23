@@ -2,7 +2,7 @@
 
 从机顶盒开机流量中发现频道，管理订阅、EPG 与回看，并提供固定的播放器订阅地址。适用于飞牛 NAS、Linux Docker 和交换机镜像口环境。
 
-当前稳定版：**1.3.9**。代码统一维护在 `main`；1.3.8-test 的外部抓包导入现已纳入正式版。
+当前稳定版：**1.3.10**。代码统一维护在 `main`；本版增加北京联通 UIOS 回看、时移动态取链，并改进含视频流的大抓包解析。
 
 ## 快速开始
 
@@ -18,10 +18,10 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/output:/app/output" \
-  roninriddle/iptv-sniffer-web:1.3.9
+  roninriddle/iptv-sniffer-web:1.3.10
 ```
 
-访问 `http://宿主机IP:8787`。正式标签 `1.3.9` 与 `latest` 指向同一稳定版；镜像支持 `linux/amd64` 和 `linux/arm64`。
+访问 `http://宿主机IP:8787`。正式标签 `1.3.10` 与 `latest` 指向同一稳定版；镜像支持 `linux/amd64` 和 `linux/arm64`。
 
 `data/` 保存频道、设置、认证材料与历史抓包；`output/` 保存导出文件。升级前请从网页导出备份，并保留这两个目录。源码构建可使用 `docker compose up -d --build`。
 
@@ -102,6 +102,17 @@ UCI 下划线键名等价于 INI 连字符键名；支持引号、行尾注释�
 
 遇到回看 403、超时或零字节，检查认证 IP、账号与机顶盒字段、门户 Token，以及到 IPTV 网段的路由。「媒体接收网口」控制本应用的直播、截图和主动组播检测；外部 rtp2httpd 仍使用自己的上游接口配置。
 
+### 北京联通 UIOS 回看与时移
+
+- 补充捕获机顶盒登录、节目回看和直播时移流量，再停止并分析。应用从 `getPlayURL4UIOS.jsp` 请求中提取独立会话凭据；已有原始抓包可离线重新解析，不必因为旧版本的重组限制重新抓包。
+- 播放时获取新的带签名地址：已结束节目使用节目单中的节目编号请求 TVOD 回看，进行中的节目使用 PLTV 时移。保留运营商签名参数与重定向，不能只在频道表的裸 RTSP 地址后拼接时间。
+- 使用「媒体接收网口」，未填写时使用认证网口，通过单一 RTP/AVP/UDP 传输回看。该网口需要能主动访问 IPTV 上游；开始接管前应断开机顶盒，解除抓包口镜像。
+- 固定订阅接收 UTC 时间，由后台转换为北京时间；UIOS 订阅使用 `catchup-correction="0"`，更新后请让播放器重新加载订阅。
+- 认证助手会为抓包确认的 EPG／媒体服务器添加 `/32` 主机路由，并在 DHCP 续租时恢复，不替换家庭默认路由。没有重新认证时，仍需自行确保这些服务器可经 IPTV 网口访问。
+- UIOS 自动刷新当前验证已捕获的登录会话，播放时另行获取新签名地址，**尚不支持 Token 失效后的自动重新登录**。会话失效后需要重新解析包含有效登录及回看请求的抓包；其他 HWCU/HWCTC 认证流程保持原行为。
+
+UIOS 会话仅保存于本地 `data/uios-session.secret`（0600），不出现在状态接口或普通便携备份中。升级应保留整个 data 目录；跨机迁移后，可由保留的原始 PCAP 重新分析恢复会话。不要把该文件、真实 Token 或完整带签名的播放地址上传到公开 Issue。
+
 ## 导入、备份与恢复
 
 「导入频道 / 恢复备份」是统一入口，支持应用导出的 M3U、rtp2httpd 源文件、`channels.json` 和按模块备份。
@@ -131,7 +142,7 @@ UCI 下划线键名等价于 INI 连字符键名；支持引号、行尾注释�
 | --- | --- |
 | 媒体任务 | 最多同时 4 个，直播最多 2、回看最多 2、截图最多 1、诊断最多 1；同时受 Waitress 线程数限制，满载返回 429，可在诊断页取消。 |
 | 截图缓存 | 30 秒、32 项、16 MiB，检查 JPEG 边界并避免重复生成。 |
-| PCAP | 支持经典 PCAP（大小端、微秒与纳秒）和 PCAPNG；可解析 Ethernet、VLAN / QinQ、PPPoE、Linux SLL / SLL2。外部导入与离线解析上限 512 MiB，单包 1 MiB，TCP 重组 32 MiB / 262144 段 / 4096 流。 |
+| PCAP | 支持经典 PCAP（大小端、微秒与纳秒）和 PCAPNG；可解析 Ethernet、VLAN / QinQ、PPPoE、Linux SLL / SLL2。外部导入与离线解析上限 512 MiB，单包 1 MiB，TCP 重组 32 MiB / 262144 段 / 4096 流；有长度的 HTTP 音视频响应在受限预扫描中排除，保留同连接后续控制消息。 |
 | 抓包归档 | 超过 16 MiB 暂停实时重复解析；约每 3 秒检查 256 MiB 实时停抓阈值，可能短暂超限。新导入不得使归档超过 1 GiB；已有归档达 1 GiB 时拒绝开始实时抓包，不自动删除已有文件。 |
 | 下载 | EPG / M3U 下载 16 MiB、gzip 展开 64 MiB；仅支持 HTTP(S)，重定向也检查协议。 |
 | EPG 与静态导出 | 每分钟检查主源，刷新周期 12 小时；静态导出使用独立批次，24 小时过期、最多 100 批。 |
@@ -147,7 +158,7 @@ UCI 下划线键名等价于 INI 连字符键名；支持引号、行尾注释�
 python -m pip install --require-hashes -r requirements-dev.lock
 python -m pytest -q
 node --test tests/settings-queue.test.cjs
-python tools/check_release.py --tag v1.3.9
+python tools/check_release.py --tag v1.3.10
 ```
 
 推送版本标签后，GitHub Actions 对同一提交运行 Linux/macOS 回归、amd64/arm64 构建和运行检查，生成 SBOM 并扫描可修复的 HIGH/CRITICAL 漏洞，通过后发布至 Docker Hub 和 GHCR。运行依赖带哈希锁定，基础镜像固定 digest。发布凭据使用 GitHub Secrets `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`。
@@ -158,7 +169,8 @@ python tools/check_release.py --tag v1.3.9
 
 | 版本 | 更新摘要 |
 | --- | --- |
-| **1.3.9（稳定版）** | 纳入 1.3.8-test 的外部抓包导入；修复 gzip 频道响应导致的 FCC 预检误报；外部导入与离线解析上限提高至 512 MiB，实时抓包在约 256 MiB 停止。 |
+| **1.3.10（稳定版）** | 增加北京联通 UIOS 回看／时移动态取链、IPTV 网口与 RTP/AVP/UDP 适配；修复订阅重复时区偏移；认证及续租恢复已捕获服务器的主机路由；含 HTTP 音视频的大抓包保留资源上限并继续解析控制流。 |
+| 1.3.9 | 纳入 1.3.8-test 的外部抓包导入；修复 gzip 频道响应导致的 FCC 预检误报；外部导入与离线解析上限提高至 512 MiB，实时抓包在约 256 MiB 停止。 |
 | **1.3.8-test** | 第一阶段外部抓包导入：爱快 / OpenWrt / Wireshark 页面向导、PCAP / PCAPNG 上传预检、VLAN / QinQ / PPPoE 归一化、抓包侧 IPTV 客户端自动识别，并复用频道、FCC、回看和认证分析链路。 |
 | **1.3.7-test** | 汇总稳定版之后的所有改进：MAC/IP 捕获与 DHCP 目标关联、非 `10.*` 租约识别、MAC 恢复校验、持久回看调度、稳定订阅与来源记录、备份暂存回滚、UCI 诊断、媒体配额、解析器与发布检查。本次修正捕获表单输入框对齐和移动端排版，重整 README，统一为 main 分支与单一当前测试版。 |
 | **1.3.3** | 历史 PCAP 管理、包含原始抓包和敏感材料的可选灾备、两次确认、rtp2httpd 动态原始源订阅。 |

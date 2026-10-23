@@ -218,7 +218,8 @@ class ExportService:
         m3u_kwargs = dict(http_host=http_host, http_port=http_port, path_mode=path_mode,
                           epg_url=epg_url, catchup_days=catchup_days,
                           catchup_template=catchup_template, op_ch=op_ch, fcc_type=fcc_type,
-                          flask_base_url=flask_base_url, path_prefix=path_prefix)
+                          flask_base_url=flask_base_url, path_prefix=path_prefix,
+                          utc_catchup=bool(settings.get("_catchup_utc_proxy") and flask_base_url))
         # New canonical files
         best_m3u_path  = self.output_dir / "channels-best.m3u"
         all_m3u_path   = self.output_dir / "channels-all.m3u"
@@ -329,13 +330,14 @@ class ExportService:
         op_ch: dict[str, Any] | None = None,
         flask_base_url: str = "",
         path_prefix: str = "",
+        utc_catchup: bool = False,
     ) -> None:
         # Each source is written exactly once, grouped by its original category.
         op_ch = op_ch or {}
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             # catchup-correction="8" shifts player's UTC time to Beijing time (UTC+8)
             # so the catchup server receives the correct local time in the URL params.
-            catchup_attr = ' catchup-correction="8"' if catchup_days > 0 else ""
+            catchup_attr = f' catchup-correction="{0 if utc_catchup else 8}"' if catchup_days > 0 else ""
             if epg_url:
                 safe_epg_url = epg_url.replace('"', "%22")
                 handle.write(f'#EXTM3U x-tvg-url="{safe_epg_url}"{catchup_attr}\n')
@@ -555,6 +557,7 @@ class ExportService:
         operator_channels: dict | None = None,
         catchup_enabled: bool = False,
         catchup_days: int = 7,
+        utc_catchup: bool = False,
     ) -> str:
         """Generate in-memory M3U with HLS stream URLs for browser-based players."""
         channels = self._normalize_channels(list(channels_data.values()))
@@ -564,7 +567,7 @@ class ExportService:
         safe_epg = epg_url.replace('"', "%22")
         header = f'#EXTM3U x-tvg-url="{safe_epg}"' if epg_url else "#EXTM3U"
         if catchup_enabled and catchup_days > 0:
-            header += ' catchup-correction="8"'
+            header += f' catchup-correction="{0 if utc_catchup else 8}"'
         lines.append(header)
         op_chs = operator_channels or {}
         for ch in best:
